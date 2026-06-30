@@ -1,0 +1,10 @@
+# BurstGPT cloned repo (fetched by setup.sh)
+BurstGPT/
+
+# Raw log timeseries (can be large)
+logs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
