@@ -18,30 +18,45 @@ def find_field(record, candidates):
     return None
 
 def load_burstgpt(path):
+    """Load JSONL or JSON detail log. Returns (records_list, field_map)."""
     if not os.path.exists(path):
         return [], {}
+    records = []
     with open(path) as f:
-        raw = json.load(f)
-    if not raw:
+        content = f.read().strip()
+    if not content:
         return [], {}
-    if isinstance(raw, list):
-        sample = raw[0]
-    elif isinstance(raw, dict):
-        for v in raw.values():
-            if isinstance(v, list) and v:
-                raw = v
-                sample = v[0]
-                break
-        else:
-            return [], {}
-    else:
+    # Try JSONL first (one JSON object per line)
+    for line in content.splitlines():
+        line = line.strip()
+        if line:
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    # Fall back to a single JSON array/object if JSONL parsing yielded nothing
+    if not records:
+        try:
+            raw = json.loads(content)
+            if isinstance(raw, list):
+                records = raw
+            elif isinstance(raw, dict):
+                for v in raw.values():
+                    if isinstance(v, list) and v:
+                        records = v
+                        break
+        except json.JSONDecodeError:
+            pass
+    if not records:
         return [], {}
-    print(f"[analyze] BurstGPT record keys: {list(sample.keys())}")
-    ttft_field = find_field(sample, ["ttft", "first_token_latency", "time_to_first_token",
-                                      "first_token_time", "TTFT"])
-    lat_field  = find_field(sample, ["latency", "elapsed_time", "e2e_latency",
-                                      "total_time", "end2end_latency", "response_time"])
-    return raw, {"ttft": ttft_field, "lat": lat_field}
+    sample = records[0]
+    print(f"[analyze] {len(records)} BurstGPT records, keys: {list(sample.keys())}")
+    ttft_field = find_field(sample, ["first_chunk_time", "ttft", "first_token_latency",
+                                      "time_to_first_token", "first_token_time", "TTFT"])
+    lat_field  = find_field(sample, ["total_chunk_time", "latency", "elapsed_time",
+                                      "e2e_latency", "total_time", "end2end_latency",
+                                      "response_time"])
+    return records, {"ttft": ttft_field, "lat": lat_field}
 
 def load_gpu(path):
     if not os.path.exists(path):

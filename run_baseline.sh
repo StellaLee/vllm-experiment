@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 PYTHON=/root/miniconda3/bin/python3
+BURSTGPT_BENCH=/root/miniconda3/bin/burstgpt-bench
 DATE=$(date +%Y-%m-%d)
 EXPERIMENT_DIR=/root/vllm-experiment
 BURSTGPT_DIR=$EXPERIMENT_DIR/BurstGPT
@@ -15,6 +16,17 @@ GPU_LOG=$LOG_DIR/${DATE}-gpu.json
 BURSTGPT_LOG=$LOG_DIR/${DATE}-burstgpt.jsonl
 BURSTGPT_DETAIL=$LOG_DIR/${DATE}-burstgpt-detail.jsonl
 FINDINGS=$FINDINGS_DIR/${DATE}-baseline-qwen2.5-0.5b.md
+
+MON_PID=""
+
+cleanup() {
+  if [ -n "$MON_PID" ]; then
+    echo "Stopping GPU monitor (PID $MON_PID)..."
+    kill "$MON_PID" 2>/dev/null || true
+    wait "$MON_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
 
 echo "=== [1/5] Waiting for vLLM on $HOST:$PORT ==="
 for i in $(seq 1 60); do
@@ -59,11 +71,12 @@ else
   FLAGS="$FLAGS --qps=1.0"
 fi
 
-burstgpt-bench $FLAGS
+$BURSTGPT_BENCH $FLAGS
 
 echo "=== [4/5] Stopping GPU monitor ==="
-kill $MON_PID 2>/dev/null || true
-wait $MON_PID 2>/dev/null || true
+kill "$MON_PID" 2>/dev/null || true
+wait "$MON_PID" 2>/dev/null || true
+MON_PID=""
 
 echo "=== [5/5] Running analysis ==="
 $PYTHON /root/vllm-experiment/analyze.py \
