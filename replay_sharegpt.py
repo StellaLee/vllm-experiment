@@ -12,7 +12,12 @@ from datetime import datetime
 
 
 def stream_request(host, port, prompt, max_tokens):
-    """POST to /generate with stream=True. Returns (ttft_s, total_s)."""
+    """POST to /generate with stream=True. Returns (ttft_s, total_s).
+
+    vLLM native API server streams raw JSONL (no SSE prefix):
+      {"text": ["prompt + generated tokens so far"]}
+    TTFT = time until the first chunk whose text is longer than the prompt.
+    """
     url = f"http://{host}:{port}/generate"
     payload = json.dumps({
         "prompt": prompt,
@@ -28,17 +33,16 @@ def stream_request(host, port, prompt, max_tokens):
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line or line == "data: [DONE]":
+                if not line:
                     continue
-                if line.startswith("data: "):
-                    chunk = line[6:]
-                    try:
-                        obj = json.loads(chunk)
-                        text = obj.get("text", "")
-                        if ttft is None and text and text != prompt:
-                            ttft = time.monotonic() - t0
-                    except json.JSONDecodeError:
-                        pass
+                try:
+                    obj = json.loads(line)
+                    texts = obj.get("text", [])
+                    full_text = texts[0] if isinstance(texts, list) and texts else (texts or "")
+                    if ttft is None and len(full_text) > len(prompt):
+                        ttft = time.monotonic() - t0
+                except json.JSONDecodeError:
+                    pass
         total = time.monotonic() - t0
     except urllib.error.URLError as e:
         raise RuntimeError(f"Request failed: {e}")
@@ -116,7 +120,8 @@ def main():
                 }
                 records.append(record)
                 history.append((human_msg, gpt_placeholder))
-                print(f"  [{ci+1}/{len(convs)}] turn {turn_num+1}: ttft={ttft:.3f if ttft else 0:.3f}s  lat={total:.3f}s  prompt_words={len(prompt.split())}")
+                ttft_str = f"{ttft:.3f}" if ttft is not None else "N/A"
+                print(f"  [{ci+1}/{len(convs)}] turn {turn_num+1}: ttft={ttft_str}s  lat={total:.3f}s  prompt_words={len(prompt.split())}")
 
             except RuntimeError as e:
                 print(f"  [{ci+1}/{len(convs)}] turn {turn_num+1} SKIP: {e}")
