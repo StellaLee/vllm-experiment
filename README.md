@@ -121,6 +121,32 @@ EVICTION_POLICY=cf bash scripts/start_server.sh
 Full results: [`findings/2026-07-03-full-eviction-comparison.md`](findings/2026-07-03-full-eviction-comparison.md)  
 See [`patches/README.md`](patches/README.md) for patch details and revert instructions.
 
+## How Monitoring and Recording Work
+
+Each experiment script runs two processes in parallel:
+
+```
+shell script
+ ├── src/monitor_gpu.py &    ← background: polls nvidia-smi every 0.5 s
+ └── src/replay_sharegpt.py  ← foreground: streams requests, blocks until done
+      ↓ (replay finishes)
+ kill monitor → monitor flushes JSON → analyze.py joins both files
+```
+
+**GPU monitor (`src/monitor_gpu.py`):** Calls `nvidia-smi` every 0.5 s and appends
+`{ts, power_w, mem_mib, util_pct, temp_c}` to an in-memory list. On `SIGTERM` (sent
+by the shell after replay finishes) it exits the loop and writes the full timeseries
+to `logs/YYYY-MM-DD-*-gpu.json`. Nothing is written during the run.
+
+**Request recorder (`src/replay_sharegpt.py`):** N conversations run concurrently via
+`ThreadPoolExecutor`. Each completed request appends `{conv_id, turn, ttft, tpot,
+latency, …}` to a shared list (protected by a `threading.Lock`). After all threads
+finish, records are sorted and written to `logs/YYYY-MM-DD-*-detail.jsonl`.
+
+**Analysis (`src/analyze.py`):** Joins the two files after the fact using wall-clock
+timestamps — GPU telemetry is trimmed to the replay window and averaged/summed to
+produce the per-experiment energy, power, and latency tables in `findings/`.
+
 ## Output
 
 ```
