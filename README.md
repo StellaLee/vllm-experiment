@@ -79,6 +79,45 @@ git commit -m "results: baseline run $(date +%Y-%m-%d)"
 git push
 ```
 
+## Eviction Policy Comparison
+
+KV cache eviction policy comparison using vLLM 0.23.0 with Qwen2.5-Coder-7B-Instruct on
+ShareGPT multi-turn conversations. Three policies patched into vLLM's `BlockPool`:
+
+| Policy | Score formula | Description |
+|--------|---------------|-------------|
+| LRU | — | vLLM default; recency-only |
+| TDF | `(hit_count+1)·exp(−λ·age)` | Time-Decayed Frequency; penalizes old blocks |
+| **CF** | `(hit_count+1)/(prefix_depth+1)` | Cascaded Frequency; preserves structurally critical prefix roots |
+
+**Result (200 conversations, ≥4 turns, concurrency=20):**
+
+| Turn | LRU P95 TTFT | CF P95 TTFT | Improvement |
+|------|-------------|-------------|-------------|
+| 1 | 166.7 ms | 127.9 ms | +23.3% |
+| 2 | 149.8 ms | 122.7 ms | +18.1% |
+| 3 | 102.6 ms | 97.5 ms | +5.0% |
+| 4 | 108.1 ms | 99.8 ms | +7.7% |
+
+TPOT (decode phase) is identical across policies (within noise) — eviction affects prefix cache
+hit rate only, not decode arithmetic.
+
+Full results: [`findings/2026-07-03-full-eviction-comparison.md`](findings/2026-07-03-full-eviction-comparison.md)
+
+### Applying the patches
+
+```bash
+# Patches in patches/ apply to vLLM 0.23.0 in-place
+bash patches/apply_patches.sh
+
+# Select policy via env var before starting vLLM
+EVICTION_POLICY=cf   vllm serve ...   # CF (recommended)
+EVICTION_POLICY=tdf  vllm serve ...   # TDF (λ=0.1 default, tune via TDF_LAMBDA)
+EVICTION_POLICY=lru  vllm serve ...   # LRU (default, no patch needed)
+```
+
+See [`patches/README.md`](patches/README.md) for prerequisites and revert instructions.
+
 ## Docs
 
 - [`docs/2026-06-30-baseline-design.md`](docs/2026-06-30-baseline-design.md) — experiment design
