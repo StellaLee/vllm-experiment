@@ -15,11 +15,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def stream_request(host, port, prompt, max_tokens):
-    """POST to /generate with stream=True. Returns (ttft_s, total_s).
+    """POST to /generate with stream=True. Returns (ttft_s, total_s, output_tokens).
 
     vLLM native API server streams raw JSONL (no SSE prefix):
       {"text": ["prompt + generated tokens so far"]}
     TTFT = time until the first chunk whose text is longer than the prompt.
+    output_tokens = word count of generated text (proxy; ~0.75 words/token).
     """
     url = f"http://{host}:{port}/generate"
     payload = json.dumps({
@@ -32,6 +33,7 @@ def stream_request(host, port, prompt, max_tokens):
         url, data=payload, headers={"Content-Type": "application/json"})
     t0 = time.monotonic()
     ttft = None
+    last_full_text = prompt
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -42,6 +44,8 @@ def stream_request(host, port, prompt, max_tokens):
                     obj = json.loads(line)
                     texts = obj.get("text", [])
                     full_text = texts[0] if isinstance(texts, list) and texts else (texts or "")
+                    if full_text:
+                        last_full_text = full_text
                     if ttft is None and len(full_text) > len(prompt):
                         ttft = time.monotonic() - t0
                 except json.JSONDecodeError:
@@ -49,7 +53,9 @@ def stream_request(host, port, prompt, max_tokens):
         total = time.monotonic() - t0
     except urllib.error.URLError as e:
         raise RuntimeError(f"Request failed: {e}")
-    return ttft, total
+    output_text = last_full_text[len(prompt):]
+    output_tokens = max(1, len(output_text.split()))
+    return ttft, total, output_tokens
 
 
 def build_prompt(history, new_human):
@@ -77,17 +83,22 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
         prompt = build_prompt(history, human_msg)
 
         try:
-            ttft, total = stream_request(args.host, args.port, prompt, args.max_tokens)
+            ttft, total, output_tokens = stream_request(args.host, args.port, prompt, args.max_tokens)
             gpt_placeholder = f"[turn {turn_num+1} response]"
             if i + 1 < len(turns) and turns[i + 1].get("from") == "gpt":
                 gpt_placeholder = turns[i + 1]["value"].strip()[:256]
+
+            decode_s = total - (ttft or 0)
+            tpot = round(decode_s / output_tokens, 5) if output_tokens > 0 else None
 
             record = {
                 "conv_id": conv.get("id", ci),
                 "turn": turn_num + 1,
                 "history_turns": len(history),
                 "prompt_tokens_approx": len(prompt.split()),
+                "output_tokens": output_tokens,
                 "ttft": round(ttft, 4) if ttft is not None else None,
+                "tpot": tpot,
                 "latency": round(total, 4),
                 "ts": time.time(),
             }
@@ -96,8 +107,9 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
 
             history.append((human_msg, gpt_placeholder))
             ttft_str = f"{ttft:.3f}" if ttft is not None else "N/A"
+            tpot_str = f"{tpot*1000:.1f}ms" if tpot is not None else "N/A"
             with print_lock:
-                print(f"  [conv {ci+1}] turn {turn_num+1}: ttft={ttft_str}s  lat={total:.3f}s  words={len(prompt.split())}")
+                print(f"  [conv {ci+1}] turn {turn_num+1}: ttft={ttft_str}s  tpot={tpot_str}/tok  lat={total:.3f}s")
 
         except RuntimeError as e:
             with print_lock:
@@ -118,6 +130,9 @@ def main():
     ap.add_argument("--concurrency", type=int, default=1,
                     help="Parallel conversations (default 1 = sequential). "
                          "Higher values create KV cache pressure for eviction studies.")
+    ap.add_argument("--min-turns", type=int, default=1,
+                    help="Only include conversations with at least this many human turns. "
+                         "Use --min-turns 4 to guarantee all conversations reach turn 4.")
     ap.add_argument("--output", required=True, help="JSONL output path for per-request records")
     args = ap.parse_args()
 
@@ -129,15 +144,19 @@ def main():
     else:
         data = raw
 
+    def human_turn_count(c):
+        return sum(1 for t in c.get("conversations", []) if t.get("from") == "human")
+
     convs = [
         c for c in data
         if isinstance(c.get("conversations"), list)
-        and len(c["conversations"]) >= 2
+        and human_turn_count(c) >= max(2, args.min_turns)
     ]
     if not convs:
-        raise SystemExit("ERROR: no valid multi-turn conversations found in dataset.")
+        raise SystemExit("ERROR: no valid conversations found matching --min-turns filter.")
 
     convs = convs[:args.num_convs]
+    print(f"[replay] filtered to {len(convs)} conversations (min_turns={args.min_turns})")
     print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "
           f"max_tokens={args.max_tokens} | concurrency={args.concurrency}")
 

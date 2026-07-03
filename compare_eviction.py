@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-compare_eviction.py — Compare per-turn TTFT between LRU and TDF eviction policies.
+compare_eviction.py — Compare per-turn TTFT and TPOT across eviction policies.
 
-Reads two JSONL files produced by replay_sharegpt.py and emits a markdown
-findings report with a per-turn TTFT table plus summary statistics.
+Reads JSONL files produced by replay_sharegpt.py (one per policy) and emits
+a markdown findings report with per-turn TTFT + TPOT tables.
 """
 import argparse
 import json
@@ -14,13 +14,8 @@ from datetime import date
 
 
 def load_jsonl(path):
-    records = []
     with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
-    return records
+        return [json.loads(l) for l in f if l.strip()]
 
 
 def percentile(data, p):
@@ -30,55 +25,65 @@ def percentile(data, p):
     idx = (len(data) - 1) * p / 100
     lo = int(idx)
     hi = min(lo + 1, len(data) - 1)
-    frac = idx - lo
-    return data[lo] * (1 - frac) + data[hi] * frac
+    return data[lo] * (1 - (idx - lo)) + data[hi] * (idx - lo)
 
 
 def per_turn_stats(records):
-    """Return dict: turn -> {count, median, p95, mean} for non-null TTFTs."""
     by_turn = {}
     for r in records:
         t = r.get("turn")
-        ttft = r.get("ttft")
-        if t is None or ttft is None:
+        if t is None:
             continue
-        by_turn.setdefault(t, []).append(ttft)
+        by_turn.setdefault(t, {"ttft": [], "tpot": []})
+        if r.get("ttft") is not None:
+            by_turn[t]["ttft"].append(r["ttft"])
+        if r.get("tpot") is not None:
+            by_turn[t]["tpot"].append(r["tpot"])
     result = {}
     for t, vals in sorted(by_turn.items()):
+        ttft = vals["ttft"]
+        tpot = vals["tpot"]
         result[t] = {
-            "count": len(vals),
-            "median": statistics.median(vals),
-            "p95": percentile(vals, 95),
-            "mean": statistics.mean(vals),
+            "n": len(ttft),
+            "ttft_median": statistics.median(ttft) if ttft else float("nan"),
+            "ttft_p95":    percentile(ttft, 95),
+            "tpot_median": statistics.median(tpot) * 1000 if tpot else float("nan"),
+            "tpot_p95":    percentile(tpot, 95) * 1000 if tpot else float("nan"),
         }
     return result
 
 
-def fmt(v, unit="ms"):
-    if math.isnan(v):
-        return "  N/A"
-    if unit == "ms":
-        return f"{v * 1000:6.1f}"
-    return f"{v:6.3f}"
+def fms(v):
+    return "N/A" if math.isnan(v) else f"{v*1000:.1f}ms"
+
+def fms_raw(v):
+    return "N/A" if math.isnan(v) else f"{v:.1f}ms"
+
+
+def pct_str(baseline, val):
+    if math.isnan(baseline) or math.isnan(val) or baseline == 0:
+        return "N/A"
+    p = (baseline - val) / baseline * 100
+    return f"{p:+.1f}%"
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--lru", required=True)
-    ap.add_argument("--tdf", required=True)
+    ap.add_argument("--lru",    required=True)
+    ap.add_argument("--tdf",    default=None)
+    ap.add_argument("--cf",     required=True)
     ap.add_argument("--output", required=True)
-    ap.add_argument("--lambda-val", type=float, default=0.1)
-    ap.add_argument("--concurrency", type=int, default=20)
-    ap.add_argument("--num-convs", type=int, default=50)
+    ap.add_argument("--lambda-val",  type=float, default=0.1)
+    ap.add_argument("--concurrency", type=int,   default=20)
+    ap.add_argument("--num-convs",   type=int,   default=200)
+    ap.add_argument("--model",  default="Qwen2.5-Coder-7B-Instruct")
     args = ap.parse_args()
 
-    lru_recs = load_jsonl(args.lru)
-    tdf_recs = load_jsonl(args.tdf)
+    lru_s = per_turn_stats(load_jsonl(args.lru))
+    cf_s  = per_turn_stats(load_jsonl(args.cf))
+    tdf_s = per_turn_stats(load_jsonl(args.tdf)) if args.tdf else {}
 
-    lru_stats = per_turn_stats(lru_recs)
-    tdf_stats = per_turn_stats(tdf_recs)
-
-    all_turns = sorted(set(list(lru_stats) + list(tdf_stats)))
+    all_turns = sorted(set(list(lru_s) + list(cf_s) + list(tdf_s)))
 
     lines = []
     lines.append(f"# Eviction Policy Comparison — {date.today()}")
@@ -87,101 +92,112 @@ def main():
     lines.append("")
     lines.append("| Parameter | Value |")
     lines.append("|-----------|-------|")
-    lines.append("| Model | Qwen2.5-Coder-7B-Instruct |")
+    lines.append(f"| Model | {args.model} |")
     lines.append("| gpu-memory-utilization | 0.7 |")
     lines.append(f"| Concurrency | {args.concurrency} |")
-    lines.append(f"| Conversations | {args.num_convs} |")
-    lines.append("| Policies | LRU (baseline) vs TDF |")
-    lines.append(f"| TDF score | (hit_count+1) × exp(−λ × age), λ={args.lambda_val} |")
+    lines.append(f"| Conversations | {args.num_convs} (all ≥4 turns) |")
+    lines.append("| Dataset | ShareGPT v3 |")
+    lines.append("| Max turns | 4 |")
+    lines.append("| Policies | LRU (baseline), TDF λ=%.1f, CF |" % args.lambda_val)
     lines.append("")
-    lines.append("## Per-Turn TTFT (milliseconds)")
+    lines.append("| Policy | Score formula |")
+    lines.append("|--------|---------------|")
+    lines.append("| LRU | least-recently-used (vLLM default) |")
+    lines.append("| TDF | `(hit_count+1)·exp(−λ·age)` |")
+    lines.append("| **CF** | `(hit_count+1)/(prefix_depth+1)` |")
     lines.append("")
-    lines.append("| Turn | LRU median | LRU P95 | TDF median | TDF P95 | P95 Δ | P95 improvement |")
-    lines.append("|------|-----------|---------|-----------|---------|-------|-----------------|")
+
+    # ── TTFT table ────────────────────────────────────────────────────────
+    lines.append("## TTFT (Time to First Token)")
+    lines.append("")
+    header = "| Turn | n | LRU med | LRU P95 |"
+    sep    = "|------|---|---------|---------|"
+    if tdf_s:
+        header += " TDF P95 |"
+        sep    += "---------|"
+    header += " CF med | CF P95 | CF vs LRU P95 |"
+    sep    += "--------|--------|---------------|"
+    lines.append(header)
+    lines.append(sep)
 
     for t in all_turns:
-        ls = lru_stats.get(t, {})
-        ts = tdf_stats.get(t, {})
-        lru_p95 = ls.get("p95", float("nan"))
-        tdf_p95 = ts.get("p95", float("nan"))
-        lru_med = ls.get("median", float("nan"))
-        tdf_med = ts.get("median", float("nan"))
-        if not math.isnan(lru_p95) and not math.isnan(tdf_p95):
-            delta_ms = (tdf_p95 - lru_p95) * 1000
-            pct = (lru_p95 - tdf_p95) / lru_p95 * 100 if lru_p95 > 0 else float("nan")
-            delta_str = f"{delta_ms:+.1f} ms"
-            pct_str = f"{pct:+.1f}%"
-        else:
-            delta_str = "N/A"
-            pct_str = "N/A"
-        lines.append(
-            f"| {t} "
-            f"| {fmt(lru_med)} ms "
-            f"| {fmt(lru_p95)} ms "
-            f"| {fmt(tdf_med)} ms "
-            f"| {fmt(tdf_p95)} ms "
-            f"| {delta_str} "
-            f"| {pct_str} |"
-        )
-
-    # Summary for turn 4 specifically
-    lines.append("")
-    lines.append("## Key Finding: Turn 4 TTFT")
-    lines.append("")
-    if 4 in lru_stats and 4 in tdf_stats:
-        lru4 = lru_stats[4]["p95"] * 1000
-        tdf4 = tdf_stats[4]["p95"] * 1000
-        delta = lru4 - tdf4
-        pct = delta / lru4 * 100 if lru4 > 0 else 0
-        lines.append(f"- LRU P95 TTFT (turn 4): **{lru4:.1f} ms**")
-        lines.append(f"- TDF P95 TTFT (turn 4): **{tdf4:.1f} ms**")
-        lines.append(f"- Improvement: **{delta:.1f} ms ({pct:.1f}%)**")
-    else:
-        lines.append("Turn 4 data not available in one or both runs.")
+        l = lru_s.get(t, {}); c = cf_s.get(t, {}); td = tdf_s.get(t, {})
+        lp = l.get("ttft_p95", float("nan"))
+        cp = c.get("ttft_p95", float("nan"))
+        row = f"| {t} | {l.get('n',0)} | {fms(l.get('ttft_median', float('nan')))} | {fms(lp)} |"
+        if tdf_s:
+            row += f" {fms(td.get('ttft_p95', float('nan')))} |"
+        row += f" {fms(c.get('ttft_median', float('nan')))} | {fms(cp)} | {pct_str(lp, cp)} |"
+        lines.append(row)
 
     lines.append("")
-    lines.append("## Interpretation")
+
+    # ── TPOT table ────────────────────────────────────────────────────────
+    lines.append("## TPOT (Time per Output Token, decode phase only)")
     lines.append("")
-    lines.append(
-        "LRU evicts the least-recently-used block regardless of access frequency. "
-        "Under concurrency=20 with gpu-memory-utilization=0.7, evictions are forced, "
-        "and turn-4 requests suffer because their earlier-turn prefix blocks have been evicted."
-    )
+    lines.append("TPOT = (latency − TTFT) / output_words. Output words used as token proxy (~0.75 words/token).")
+    lines.append("Lower TPOT = higher decode throughput.")
     lines.append("")
-    lines.append(
-        f"TDF (λ={args.lambda_val}) scores blocks by `(hit_count+1)·exp(−λ·age)`. "
-        "Frequently-hit, recently-cached blocks receive higher scores and survive longer. "
-        "Turn-4 requests are more likely to find their prefix blocks still in cache, "
-        "reducing TTFT by avoiding KV recomputation."
-    )
+    header2 = "| Turn | LRU med | LRU P95 |"
+    sep2    = "|------|---------|---------|"
+    if tdf_s:
+        header2 += " TDF P95 |"
+        sep2    += "---------|"
+    header2 += " CF med | CF P95 | CF vs LRU P95 |"
+    sep2    += "--------|--------|---------------|"
+    lines.append(header2)
+    lines.append(sep2)
+
+    for t in all_turns:
+        l = lru_s.get(t, {}); c = cf_s.get(t, {}); td = tdf_s.get(t, {})
+        lp = l.get("tpot_p95", float("nan"))
+        cp = c.get("tpot_p95", float("nan"))
+        row = f"| {t} | {fms_raw(l.get('tpot_median', float('nan')))} | {fms_raw(lp)} |"
+        if tdf_s:
+            row += f" {fms_raw(td.get('tpot_p95', float('nan')))} |"
+        row += f" {fms_raw(c.get('tpot_median', float('nan')))} | {fms_raw(cp)} | {pct_str(lp, cp)} |"
+        lines.append(row)
+
+    lines.append("")
+
+    # ── Summary ───────────────────────────────────────────────────────────
+    lines.append("## Turn-4 Summary")
+    lines.append("")
+    lines.append("| Metric | LRU | CF | Improvement |")
+    lines.append("|--------|-----|----|-------------|")
+    for metric, label, scale in [
+        ("ttft_p95",  "P95 TTFT",  1000),
+        ("ttft_median","Median TTFT",1000),
+        ("tpot_p95",  "P95 TPOT",  1),
+        ("tpot_median","Median TPOT",1),
+    ]:
+        l4 = lru_s.get(4, {}).get(metric, float("nan")) * scale
+        c4 = cf_s.get(4,  {}).get(metric, float("nan")) * scale
+        imp = pct_str(l4 / scale, c4 / scale) if scale == 1000 else pct_str(l4, c4)
+        lines.append(f"| {label} | {l4:.1f}ms | {c4:.1f}ms | {imp} |")
+
     lines.append("")
     lines.append("## Raw counts")
     lines.append("")
-    lines.append("| Turn | LRU requests | TDF requests |")
-    lines.append("|------|-------------|-------------|")
+    lines.append("| Turn | LRU | CF |")
+    lines.append("|------|-----|-----|")
     for t in all_turns:
-        lc = lru_stats.get(t, {}).get("count", 0)
-        tc = tdf_stats.get(t, {}).get("count", 0)
-        lines.append(f"| {t} | {lc} | {tc} |")
+        lines.append(f"| {t} | {lru_s.get(t,{}).get('n',0)} | {cf_s.get(t,{}).get('n',0)} |")
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     with open(args.output, "w") as f:
         f.write("\n".join(lines) + "\n")
     print(f"Findings written to {args.output}")
 
-    # Also print summary to stdout
-    print("\n=== Per-Turn TTFT Summary ===")
-    print(f"{'Turn':<6} {'LRU P95':>10} {'TDF P95':>10} {'Improvement':>14}")
+    print("\n=== Turn-by-turn summary ===")
+    print(f"{'Turn':>4}  {'n':>4}  {'LRU P95 TTFT':>14}  {'CF P95 TTFT':>13}  {'Δ TTFT':>8}  {'LRU med TPOT':>14}  {'CF med TPOT':>13}")
     for t in all_turns:
-        ls = lru_stats.get(t, {})
-        ts = tdf_stats.get(t, {})
-        lp = ls.get("p95", float("nan")) * 1000
-        tp = ts.get("p95", float("nan")) * 1000
-        if not math.isnan(lp) and not math.isnan(tp):
-            imp = f"{(lp-tp)/lp*100:+.1f}%" if lp > 0 else "N/A"
-        else:
-            imp = "N/A"
-        print(f"{t:<6} {lp:>10.1f} ms {tp:>10.1f} ms {imp:>14}")
+        l = lru_s.get(t, {}); c = cf_s.get(t, {})
+        lp = l.get("ttft_p95", float("nan")) * 1000
+        cp = c.get("ttft_p95", float("nan")) * 1000
+        lt = l.get("tpot_median", float("nan"))
+        ct = c.get("tpot_median", float("nan"))
+        print(f"{t:>4}  {l.get('n',0):>4}  {lp:>13.1f}ms  {cp:>12.1f}ms  {pct_str(lp/1000,cp/1000):>8}  {lt:>13.1f}ms  {ct:>12.1f}ms")
 
 
 if __name__ == "__main__":
