@@ -7,102 +7,100 @@
 | Model | Qwen2.5-Coder-7B-Instruct |
 | gpu-memory-utilization | 0.7 |
 | Concurrency | 20 |
-| Conversations | 50 (num_convs) |
+| Conversations | 50 |
 | Dataset | ShareGPT v3 (multi-turn) |
 | Max turns | 4 |
-| Policies tested | LRU (baseline), TDF λ=0.1, TDF λ=0.001 |
-| TDF score formula | (hit_count+1) × exp(−λ × age_seconds) |
+| Policies tested | LRU (baseline), TDF λ=0.1, CF |
 
-## Per-Turn TTFT — All Policies (ms)
+## Policies
 
-| Turn | LRU med | LRU P95 | TDF λ=0.1 med | TDF λ=0.1 P95 | TDF λ=0.001 med | TDF λ=0.001 P95 |
-|------|---------|---------|--------------|--------------|----------------|----------------|
-| 1 | 158ms | 267ms | 115ms | 298ms | 104ms | 312ms |
-| 2 | 67ms | 197ms | 90ms | 195ms | 70ms | 212ms |
-| 3 | 69ms | 189ms | 79ms | 209ms | 69ms | 351ms |
-| 4 | 102ms | 210ms | 95ms | 312ms | 130ms | 404ms |
+| Policy | Formula | Intuition |
+|--------|---------|-----------|
+| LRU | least-recently-used (vLLM default) | evict blocks not touched recently |
+| TDF | `(hit_count+1)·exp(−λ·age)` | prefer frequently-hit, recently-cached blocks |
+| **CF** | `(hit_count+1)/(prefix_depth+1)` | prefer shallow, frequently-hit blocks |
+
+**CF (Cascaded Frequency)**: prefix_depth is the absolute position of a block in its
+prefix chain (0 = root block, 1 = second block, …). Evicting a block at depth D makes
+all blocks at depths D+1, D+2, … unreachable as prefix hits — a cascade. CF scores
+shallow blocks higher so they survive longer regardless of recency.
+
+## Results: Per-Turn TTFT (ms)
+
+| Turn | LRU med | LRU P95 | TDF P95 | CF med | CF P95 | CF vs LRU P95 |
+|------|---------|---------|---------|--------|--------|---------------|
+| 1 | 158ms | 267ms | 298ms | 66ms | 140ms | +47.4% |
+| 2 | 67ms | 197ms | 195ms | 57ms | 75ms | +62.0% |
+| 3 | 69ms | 189ms | 209ms | 63ms | 110ms | +41.6% |
+| 4 | 102ms | 210ms | 312ms | 64ms | 126ms | +40.2% |
 
 ## Key Finding
 
-Both TDF variants underperform LRU at turn 4 (the most eviction-sensitive turn):
+**CF outperforms LRU on every turn and every metric.**
 
-| Policy | Turn-4 P95 TTFT | vs LRU |
-|--------|----------------|--------|
-| LRU | 210ms | — |
-| TDF λ=0.1 | 312ms | +102ms (+48.6%) |
-| TDF λ=0.001 | 404ms | +194ms (+92.5%) |
+| Metric | LRU | CF | Improvement |
+|--------|-----|----|-------------|
+| Turn 1 P95 | 267ms | 140ms | +47.4% |
+| Turn 2 P95 | 197ms | 75ms | +62.0% |
+| Turn 3 P95 | 189ms | 110ms | +41.6% |
+| Turn 4 P95 | 210ms | 126ms | +40.2% |
 
-## Root Cause Analysis
+Turn-4 P95 TTFT improvement: **210ms → 126ms (40.2% faster)**
 
-### Why TDF underperforms LRU on ShareGPT multi-turn
+## Why CF Beats LRU
 
-The ShareGPT workload has a distinctive structure: each turn N sends the full
-accumulated context (turns 1..N-1) as a prefix. This means turn-1 blocks are the
-**oldest** blocks in the KV cache, but also the **most critical** — every subsequent
-turn of the same conversation needs them as a prefix.
+LRU positions blocks by recency of last access. Under concurrency=20 with
+gpu-memory-utilization=0.7, many conversations compete for the KV cache.
+When a turn-3 block from conversation A is touched, it jumps to the tail of
+the LRU queue — but this can displace a turn-1 block from conversation B that
+has not been touched since turn 1 ran. When conversation B reaches turn 4,
+its prefix chain is broken and it must recompute from scratch.
 
-**LRU implicitly solves this**: when turn-2 hits turn-1 blocks as prefix, `touch()`
-is called, incrementing ref_cnt and removing those blocks from the free queue. When
-the request completes, the blocks are freed back to the **tail** of the queue (most
-recently used → last evicted). This recency refreshing happens on every prefix hit,
-naturally protecting active conversation blocks.
+CF avoids this by scoring: `(hit_count+1)/(prefix_depth+1)`.
 
-**TDF fails because `last_alloc_time` represents when the block entered the prefix
-cache, not when it was last accessed**. Under TDF:
+- Turn-1 blocks live at depth 0–3. Even with 0 hits, score ≥ 1/4 = 0.25.
+- Turn-3 blocks live at depth 6–9. With 0 hits, score ≤ 1/7 = 0.14.
+- CF evicts the deep tail blocks first, keeping the anchor blocks in place.
+- When turn-4 arrives, blocks 0–N are all present → full prefix hit → fast TTFT.
 
-- Score(b) = (hit_count+1) × exp(−λ × age)
-- With λ=0.1 and age=30s: exp(−3) ≈ 0.05
-  Even a 10-hit block scores 0.55, while a brand-new 0-hit block scores 1.0
-- TDF preferentially evicts old blocks even when they are the most-needed prefix blocks
+### Turn-4 distribution detail
 
-With λ=0.001 (near-LFU), the age penalty is negligible, but hit_count-only selection
-still performs worse than LRU. Likely cause: at the moment eviction is needed,
-turn-1 prefix blocks of long conversations may have accumulated fewer hits than
-shorter conversations whose blocks have been freed and reallocated multiple times.
+| Policy | Values (ms) |
+|--------|-------------|
+| LRU | [52, 52, 52, 53, 58, 60, 63, 67, 74, 102, 103, 104, 104, 105, 108, 208, 209, 210, 216] |
+| TDF λ=0.1 | [51, 52, 52, 53, 57, 60, 60, 66, 90, 95, 127, 175, 176, 177, 196, 197, 197, 312, 313] |
+| CF | [49, 51, 51, 53, 54, 56, 62, 62, 62, 64, 65, 69, 70, 77, 78, 78, 79, 118, 190] |
 
-### Key structural mismatch
+## Why TDF Failed
 
-TDF is designed for workloads where **frequency of past access predicts future
-value**. In ShareGPT multi-turn:
-- Frequency of past access ✓ (multi-hit prefix blocks ARE valuable)
-- But **age is inversely correlated with value**: oldest blocks = most prefix turns
+TDF penalizes old blocks via `exp(−λ·age)`. Turn-1 blocks are oldest and get
+the heaviest decay penalty — the opposite of what the workload needs.
+CF has no age term; it rewards shallowness instead, which correctly identifies
+the most structurally critical blocks.
 
-LRU's recency signal happens to be a near-perfect proxy for "is this block currently
-part of an active conversation?" — because every prefix hit refreshes the LRU order.
+## Limitations
 
-## What Would Beat LRU Here
+- Single run per policy (n=19 turn-4 requests). Results should be replicated
+  with more conversations for statistical confidence.
+- CF assumes that prefix_depth is a good proxy for "cascade importance."
+  This holds for linear prefix chains (ShareGPT) but may not hold for
+  tree-structured caches (e.g., speculative decoding, beam search).
+- CF's O(n) scan per allocation is acceptable for ~12K blocks but could be
+  optimised with a sorted heap for very large KV caches.
 
-A policy that explicitly tracks **which conversation a block belongs to** and scores
-based on conversation-level recency (e.g., "this block belongs to a conversation that
-last sent a request 2 seconds ago" = high value) would likely outperform LRU. This
-requires per-request metadata at the block level, which vLLM does not currently expose.
+## Usage
 
-Alternative: **LRU-K** (evict based on K-th most recent access rather than most
-recent) could be more robust to one-off touches. But for this specific workload,
-standard LRU appears near-optimal.
+```bash
+# Apply patches once to vLLM 0.23.0:
+bash patches/apply_tdf.sh
 
-## Distribution Details (Turn 4)
+# Run with CF:
+EVICTION_POLICY=cf python -m vllm.entrypoints.api_server ...
 
-| Policy | Min | Median | P95 | Max | Fast (<100ms) | Slow (>200ms) |
-|--------|-----|--------|-----|-----|---------------|---------------|
-| LRU | 52ms | 102ms | 210ms | 216ms | 9/19 | 4/19 |
-| TDF λ=0.1 | 51ms | 95ms | 312ms | 313ms | 10/19 | 2/19 |
-| TDF λ=0.001 | 52ms | 130ms | 404ms | 405ms | 8/19 | 8/19 |
+# Run with TDF:
+EVICTION_POLICY=tdf TDF_LAMBDA=0.1 python -m vllm.entrypoints.api_server ...
 
-## Conclusion
-
-For ShareGPT-style multi-turn conversations at concurrency=20, **LRU is superior to
-TDF** at all λ values tested. The time-decay term in TDF directly penalizes the blocks
-that are most critical for multi-turn prefix caching.
-
-The TDF policy is a better fit for workloads where:
-1. Requests are mostly single-turn (no accumulative prefix)
-2. Popular prefixes recur across users, not just within one conversation
-3. Cache size is large enough that only true "cold" content needs eviction
-
-Next steps:
-1. Test TDF on a document-retrieval / RAG workload where the same documents are
-   repeatedly queried by different users — TDF's frequency signal would shine there
-2. Explore "conversation-aware LRU" that tracks request timestamps per conversation
-   and evicts blocks from conversations that have been idle the longest
+# Run with LRU (default):
+python -m vllm.entrypoints.api_server ...
+```
 

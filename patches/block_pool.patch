@@ -8,51 +8,64 @@
  from collections.abc import Iterable, Sequence
  from typing import Any
  
-@@ -181,6 +183,11 @@
+@@ -181,6 +183,18 @@
  
          self.metrics_collector = metrics_collector
  
-+        # Time-decayed frequency eviction policy (TDF).
-+        # Set TDF_EVICTION=1 to enable; TDF_LAMBDA controls decay rate.
-+        self._tdf_enabled = _os.getenv("TDF_EVICTION", "0") == "1"
++        # Pluggable eviction policy.
++        # EVICTION_POLICY: "lru" (default), "tdf", or "cf"
++        #   lru — least-recently-used (vLLM default, no change)
++        #   tdf — time-decayed frequency: (hit_count+1)*exp(-lambda*age)
++        #   cf  — cascaded frequency:     (hit_count+1)/(prefix_depth+1)
++        # TDF_LAMBDA: decay rate for TDF (default 0.1)
++        self._eviction_policy = _os.getenv("EVICTION_POLICY", "lru").lower()
 +        self._tdf_lambda = float(_os.getenv("TDF_LAMBDA", "0.1"))
++        assert self._eviction_policy in ("lru", "tdf", "cf"), (
++            f"Unknown EVICTION_POLICY {self._eviction_policy!r}; use lru, tdf, or cf"
++        )
 +
      def get_cached_block(
          self, block_hash: BlockHash, kv_cache_group_ids: list[int]
      ) -> list[KVCacheBlock] | None:
-@@ -278,6 +285,7 @@
+@@ -278,6 +292,8 @@
                  block_hash, kv_cache_group_id
              )
              blk.block_hash = block_hash_with_group_id
-+            blk.last_alloc_time = _time.monotonic()  # TDF: mark cache entry time
++            blk.last_alloc_time = _time.monotonic()  # TDF/CF: mark cache entry time
++            blk.prefix_depth = num_cached_blocks + i   # CF: position in prefix chain
              self.cached_block_hash_to_block.insert(block_hash_with_group_id, blk)
              if new_hashes is not None:
                  new_hashes.append(maybe_convert_block_hash(block_hash))
-@@ -344,7 +352,13 @@
+@@ -344,7 +360,17 @@
          if num_blocks > self.get_num_free_blocks():
              raise ValueError(f"Cannot get {num_blocks} free blocks from the pool")
  
 -        ret: list[KVCacheBlock] = self.free_block_queue.popleft_n(num_blocks)
-+        _now = _time.monotonic()
-+        if self._tdf_enabled:
-+            ret: list[KVCacheBlock] = self.free_block_queue.pop_scored_n(
-+                num_blocks, _now, self._tdf_lambda
-+            )
-+        else:
++        if self._eviction_policy == "lru":
 +            ret: list[KVCacheBlock] = self.free_block_queue.popleft_n(num_blocks)
++        elif self._eviction_policy == "cf":
++            ret: list[KVCacheBlock] = self.free_block_queue.pop_scored_n(
++                num_blocks, "cf"
++            )
++        else:  # tdf
++            _now = _time.monotonic()
++            ret: list[KVCacheBlock] = self.free_block_queue.pop_scored_n(
++                num_blocks, "tdf", now=_now, lam=self._tdf_lambda
++            )
  
          # In order to only iterate the list once, we duplicated code a bit
          if self.enable_caching:
-@@ -388,6 +402,8 @@
+@@ -388,6 +414,9 @@
              return False
  
          block.reset_hash()
 +        block.hit_count = 0
 +        block.last_alloc_time = 0.0
++        block.prefix_depth = 0
  
          if self.enable_kv_cache_events:
              self.kv_event_queue.append(
-@@ -413,6 +429,7 @@
+@@ -413,6 +442,7 @@
              if block.ref_cnt == 0 and not block.is_null:
                  self.free_block_queue.remove(block)
              block.ref_cnt += 1

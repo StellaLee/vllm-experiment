@@ -1,26 +1,38 @@
 --- a/vllm/v1/core/kv_cache_utils.py
 +++ b/vllm/v1/core/kv_cache_utils.py
-@@ -133,6 +133,11 @@
+@@ -133,6 +133,14 @@
      # Whether the block is a null block that should never be cached.
      is_null: bool = False
  
-+    # Eviction policy tracking (TDF: time-decayed frequency).
-+    # hit_count: times this block was a prefix cache hit since last eviction.
++    # Eviction policy tracking (TDF / CF).
++    # hit_count:     times this block was a prefix cache hit since last eviction.
 +    # last_alloc_time: monotonic time when block entered the prefix cache.
++    # prefix_depth:  absolute position of this block in its prefix chain (0 = root).
++    #                Root blocks (depth 0) anchor all deeper blocks — evicting them
++    #                invalidates the entire chain.  CF uses this to prefer evicting
++    #                deep, rarely-hit blocks over shallow ones.
 +    hit_count: int = 0
 +    last_alloc_time: float = 0.0
++    prefix_depth: int = 0
  
      @property
      def block_hash(self) -> BlockHashWithGroupId | None:
-@@ -374,6 +379,41 @@
+@@ -376,6 +384,51 @@
  
          self.num_free_blocks += len(blocks)
  
-+    def pop_scored_n(self, n: int, now: float, lam: float):
-+        """Select and remove n free blocks with the lowest TDF score.
++    def pop_scored_n(self, n: int, policy: str, now: float = 0.0, lam: float = 0.1):
++        """Select and remove n free blocks using the given eviction policy.
 +
-+        Score(b) = (b.hit_count + 1) * exp(-lam * (now - b.last_alloc_time))
-+        Lower score => evict first (old, rarely-hit blocks).
++        policy="tdf"  Time-Decayed Frequency:
++            Score(b) = (hit_count+1) * exp(-lam * (now - last_alloc_time))
++
++        policy="cf"   Cascaded Frequency:
++            Score(b) = (hit_count+1) / (prefix_depth+1)
++            Shallow prefix blocks (depth 0) are preserved over deep tail blocks
++            because evicting a shallow block invalidates all blocks chained after it.
++
++        Lower score => evict first.
 +        """
 +        if n == 0:
 +            return []
@@ -31,8 +43,11 @@
 +        curr = self.fake_free_list_head.next_free_block
 +        pos = 0
 +        while curr is not None and curr.next_free_block is not None:
-+            age = now - curr.last_alloc_time
-+            score = (curr.hit_count + 1) * math.exp(-lam * age)
++            if policy == "cf":
++                score = (curr.hit_count + 1) / (curr.prefix_depth + 1)
++            else:  # tdf
++                age = now - curr.last_alloc_time
++                score = (curr.hit_count + 1) * math.exp(-lam * age)
 +            candidates.append((score, pos, curr))
 +            curr = curr.next_free_block
 +            pos += 1
