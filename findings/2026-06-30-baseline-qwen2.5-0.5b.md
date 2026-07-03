@@ -28,3 +28,21 @@
 ## Raw Log Paths
 - GPU timeseries: `/root/vllm-experiment/logs/2026-06-30-gpu.json`
 - BurstGPT detail: `/root/vllm-experiment/logs/2026-06-30-burstgpt-detail.jsonl`
+
+## Reproduction
+
+**Prerequisites (one-time):**
+```bash
+bash scripts/setup.sh   # clones BurstGPT, installs deps, fetches BurstGPT_1.csv
+```
+
+**Run:**
+```bash
+# Terminal 1 — start vLLM with Qwen2.5-0.5B-Instruct (wait for "Application startup complete")
+bash scripts/start_server.sh
+
+# Terminal 2 — run baseline pipeline
+bash scripts/run_baseline.sh
+```
+
+Output written to `findings/YYYY-MM-DD-baseline-qwen2.5-0.5b.md`.

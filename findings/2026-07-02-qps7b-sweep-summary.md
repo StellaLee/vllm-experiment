@@ -78,3 +78,18 @@ BurstGPT — the trace's idle gaps dominate in both cases.
 | 2× | `logs/2026-07-02-qps7b-2x-gpu.json` | `logs/2026-07-02-qps7b-2x-burstgpt-detail.jsonl` | `findings/2026-07-02-qps7b-2x.md` |
 | 4× | `logs/2026-07-02-qps7b-4x-gpu.json` | `logs/2026-07-02-qps7b-4x-burstgpt-detail.jsonl` | `findings/2026-07-02-qps7b-4x.md` |
 | 8× | `logs/2026-07-02-qps7b-8x-gpu.json` | `logs/2026-07-02-qps7b-8x-burstgpt-detail.jsonl` | `findings/2026-07-02-qps7b-8x.md` |
+
+## Reproduction
+
+**Prerequisites (one-time):**
+```bash
+bash scripts/setup.sh   # clones BurstGPT, installs deps, fetches BurstGPT_1.csv
+```
+
+**Run the full sweep (vLLM starts once, stays up across all scale runs):**
+```bash
+bash scripts/run_qps7b_sweep.sh
+```
+
+Per-scale output: `findings/YYYY-MM-DD-qps7b-{1x,2x,4x,8x}.md`  
+Summary output: `findings/YYYY-MM-DD-qps7b-sweep-summary.md`

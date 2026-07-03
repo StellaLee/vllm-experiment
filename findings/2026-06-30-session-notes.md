@@ -93,25 +93,24 @@ cd BurstGPT/example && pip install -e . && cd /root/vllm-experiment
 ### Run experiment
 ```bash
 # Terminal 1 — start vLLM (blocks; wait for "Application startup complete")
-bash /root/vllm-experiment/start_server.sh
+bash scripts/start_server.sh
 
 # Terminal 2 — run baseline
-bash /root/vllm-experiment/run_baseline.sh
+bash scripts/run_baseline.sh
 ```
 
 Results appear in `findings/YYYY-MM-DD-baseline-qwen2.5-0.5b.md`.
 
 ### Re-run analysis on existing logs
 ```bash
-/root/miniconda3/bin/python3 /root/vllm-experiment/analyze.py \
-  --gpu-log  /root/vllm-experiment/logs/2026-06-30-gpu.json \
-  --burstgpt-log /root/vllm-experiment/logs/2026-06-30-burstgpt-detail.jsonl \
-  --output   /root/vllm-experiment/findings/2026-06-30-baseline-qwen2.5-0.5b.md
+/root/miniconda3/bin/python3 src/analyze.py \
+  --gpu-log  logs/2026-06-30-gpu.json \
+  --burstgpt-log logs/2026-06-30-burstgpt-detail.jsonl \
+  --output   findings/2026-06-30-baseline-qwen2.5-0.5b.md
 ```
 
 ### Commit results after each run
 ```bash
-cd /root/vllm-experiment
 git add findings/
 git commit -m "results: baseline run $(date +%Y-%m-%d)"
 git push

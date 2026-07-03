@@ -15,3 +15,23 @@
 - [gpu-util=0.5](2026-07-01-kvcache-0.5.md)
 - [gpu-util=0.7](2026-07-01-kvcache-0.7.md)
 - [gpu-util=0.9](2026-07-01-kvcache-0.9.md)
+
+## Reproduction
+
+**Prerequisites (one-time):**
+```bash
+bash scripts/setup.sh   # fetches ShareGPT V3 dataset
+```
+
+**Run the full sweep (restarts vLLM for each utilization level):**
+```bash
+bash scripts/run_kvcache_sweep.sh
+```
+
+Per-utilization output: `findings/YYYY-MM-DD-kvcache-{0.3,0.5,0.7,0.9}.md`  
+Summary output: `findings/YYYY-MM-DD-kvcache-sweep-summary.md`
+
+**Key parameters (override via env):**
+```bash
+NUM_CONVS=100 MAX_TURNS=4 MAX_TOKENS=128 bash scripts/run_kvcache_sweep.sh
+```

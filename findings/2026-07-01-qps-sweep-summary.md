@@ -14,3 +14,22 @@
 - [0.5x](2026-07-01-qps-0.5x.md)
 - [2x](2026-07-01-qps-2x.md)
 - [4x](2026-07-01-qps-4x.md)
+
+## Reproduction
+
+**Prerequisites (one-time):**
+```bash
+bash scripts/setup.sh   # clones BurstGPT, installs deps, fetches BurstGPT_1.csv
+```
+
+**Run the full sweep (0.5×, 2×, 4× — vLLM starts once and stays up):**
+```bash
+# Terminal 1 — start vLLM with Qwen2.5-0.5B-Instruct
+bash scripts/start_server.sh
+
+# Terminal 2 — run sweep; generates per-scale findings + this summary
+bash scripts/run_qps_sweep.sh
+```
+
+Per-scale output: `findings/YYYY-MM-DD-qps-{0.5x,2x,4x}.md`  
+Summary output: `findings/YYYY-MM-DD-qps-sweep-summary.md`

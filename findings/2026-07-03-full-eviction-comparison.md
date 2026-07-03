@@ -56,3 +56,25 @@ Lower TPOT = higher decode throughput.
 | 2 | 200 | 200 |
 | 3 | 200 | 200 |
 | 4 | 200 | 200 |
+
+## Reproduction
+
+**Prerequisites:**
+```bash
+bash scripts/setup.sh          # fetches ShareGPT V3 dataset
+bash patches/apply_patches.sh  # patches vLLM 0.23.0 in-place
+```
+
+**Run (200 conversations, all ≥4 turns, concurrency=20):**
+```bash
+bash scripts/run_full_comparison.sh
+```
+
+**Key parameters (override via env):**
+```bash
+NUM_CONVS=200 MAX_TURNS=4 MAX_TOKENS=128 CONCURRENCY=20 GPU_MEM_UTIL=0.7 TDF_LAMBDA=0.1 \
+  bash scripts/run_full_comparison.sh
+```
+
+Output written to `findings/YYYY-MM-DD-full-eviction-comparison.md`.  
+Requires ~45 min on RTX 4090 (three sequential vLLM runs × ~15 min each).

@@ -104,3 +104,22 @@ EVICTION_POLICY=tdf TDF_LAMBDA=0.1 python -m vllm.entrypoints.api_server ...
 python -m vllm.entrypoints.api_server ...
 ```
 
+
+## Reproduction
+
+**Prerequisites:**
+```bash
+bash scripts/setup.sh          # fetches ShareGPT V3 dataset
+bash patches/apply_patches.sh  # patches vLLM 0.23.0 in-place
+```
+
+**Run (50-conversation pilot — same size as this run):**
+```bash
+NUM_CONVS=50 bash scripts/run_full_comparison.sh
+```
+
+Output written to `findings/YYYY-MM-DD-full-eviction-comparison.md`.
+
+Note: this was a 50-conversation pilot (n=19 turn-4 samples). For statistically
+robust results see [`2026-07-03-full-eviction-comparison.md`](2026-07-03-full-eviction-comparison.md),
+which used 200 conversations.

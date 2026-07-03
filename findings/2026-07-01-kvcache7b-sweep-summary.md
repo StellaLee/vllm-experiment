@@ -78,3 +78,23 @@ and push the turn-4 TTFT back toward 65–70ms even within a 0.7 util budget.
 - [gpu-util=0.7](2026-07-01-kvcache7b-0.7.md)
 - [gpu-util=0.8](2026-07-01-kvcache7b-0.8.md)
 - [gpu-util=0.9](2026-07-01-kvcache7b-0.9.md)
+
+## Reproduction
+
+**Prerequisites (one-time):**
+```bash
+bash scripts/setup.sh   # fetches ShareGPT V3 dataset
+```
+
+**Run the full sweep (restarts vLLM for each utilization level):**
+```bash
+bash scripts/run_kvcache_7b_sweep.sh
+```
+
+Per-utilization output: `findings/YYYY-MM-DD-kvcache7b-{0.7,0.8,0.9}.md`  
+Summary output: `findings/YYYY-MM-DD-kvcache7b-sweep-summary.md`
+
+**Key parameters (override via env):**
+```bash
+NUM_CONVS=100 MAX_TURNS=4 MAX_TOKENS=256 CONCURRENCY=20 bash scripts/run_kvcache_7b_sweep.sh
+```

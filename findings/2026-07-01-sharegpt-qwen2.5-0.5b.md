@@ -40,3 +40,23 @@ _Lower latency on later turns indicates KV prefix cache hits._
 ## Raw Log Paths
 - GPU timeseries: `/root/vllm-experiment/logs/2026-07-01-sharegpt-gpu.json`
 - Trace detail: `/root/vllm-experiment/logs/2026-07-01-sharegpt-detail.jsonl`
+
+## Reproduction
+
+**Prerequisites (one-time):**
+```bash
+bash scripts/setup.sh   # fetches ShareGPT V3 dataset into data/sharegpt_v3.json
+```
+
+**Run:**
+```bash
+# Terminal 1 — start vLLM with Qwen2.5-0.5B-Instruct
+bash scripts/start_server.sh
+
+# Terminal 2 — replay 10 conversations, up to 4 turns each
+NUM_CONVS=10 bash scripts/run_sharegpt.sh
+```
+
+Output written to `findings/YYYY-MM-DD-sharegpt-qwen2.5-0.5b.md`.  
+Note: this run used the small BurstGPT-preprocessed ShareGPT (fallback); the full
+dataset (`data/sharegpt_v3.json`) produces more conversations when available.
