@@ -1,0 +1,62 @@
+--- a/vllm/v1/core/block_pool.py
++++ b/vllm/v1/core/block_pool.py
+@@ -1,5 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import os as _os
++import time as _time
+ from collections.abc import Iterable, Sequence
+ from typing import Any
+ 
+@@ -181,6 +183,11 @@
+ 
+         self.metrics_collector = metrics_collector
+ 
++        # Time-decayed frequency eviction policy (TDF).
++        # Set TDF_EVICTION=1 to enable; TDF_LAMBDA controls decay rate.
++        self._tdf_enabled = _os.getenv("TDF_EVICTION", "0") == "1"
++        self._tdf_lambda = float(_os.getenv("TDF_LAMBDA", "0.1"))
++
+     def get_cached_block(
+         self, block_hash: BlockHash, kv_cache_group_ids: list[int]
+     ) -> list[KVCacheBlock] | None:
+@@ -278,6 +285,7 @@
+                 block_hash, kv_cache_group_id
+             )
+             blk.block_hash = block_hash_with_group_id
++            blk.last_alloc_time = _time.monotonic()  # TDF: mark cache entry time
+             self.cached_block_hash_to_block.insert(block_hash_with_group_id, blk)
+             if new_hashes is not None:
+                 new_hashes.append(maybe_convert_block_hash(block_hash))
+@@ -344,7 +352,13 @@
+         if num_blocks > self.get_num_free_blocks():
+             raise ValueError(f"Cannot get {num_blocks} free blocks from the pool")
+ 
+-        ret: list[KVCacheBlock] = self.free_block_queue.popleft_n(num_blocks)
++        _now = _time.monotonic()
++        if self._tdf_enabled:
++            ret: list[KVCacheBlock] = self.free_block_queue.pop_scored_n(
++                num_blocks, _now, self._tdf_lambda
++            )
++        else:
++            ret: list[KVCacheBlock] = self.free_block_queue.popleft_n(num_blocks)
+ 
+         # In order to only iterate the list once, we duplicated code a bit
+         if self.enable_caching:
+@@ -388,6 +402,8 @@
+             return False
+ 
+         block.reset_hash()
++        block.hit_count = 0
++        block.last_alloc_time = 0.0
+ 
+         if self.enable_kv_cache_events:
+             self.kv_event_queue.append(
+@@ -413,6 +429,7 @@
+             if block.ref_cnt == 0 and not block.is_null:
+                 self.free_block_queue.remove(block)
+             block.ref_cnt += 1
++            block.hit_count += 1  # TDF: track prefix cache hits per block
+             if self.metrics_collector:
+                 self.metrics_collector.on_block_accessed(block)
+ 

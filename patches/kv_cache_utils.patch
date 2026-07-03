@@ -1,0 +1,56 @@
+--- a/vllm/v1/core/kv_cache_utils.py
++++ b/vllm/v1/core/kv_cache_utils.py
+@@ -133,6 +133,11 @@
+     # Whether the block is a null block that should never be cached.
+     is_null: bool = False
+ 
++    # Eviction policy tracking (TDF: time-decayed frequency).
++    # hit_count: times this block was a prefix cache hit since last eviction.
++    # last_alloc_time: monotonic time when block entered the prefix cache.
++    hit_count: int = 0
++    last_alloc_time: float = 0.0
+ 
+     @property
+     def block_hash(self) -> BlockHashWithGroupId | None:
+@@ -374,6 +379,41 @@
+ 
+         self.num_free_blocks += len(blocks)
+ 
++    def pop_scored_n(self, n: int, now: float, lam: float):
++        """Select and remove n free blocks with the lowest TDF score.
++
++        Score(b) = (b.hit_count + 1) * exp(-lam * (now - b.last_alloc_time))
++        Lower score => evict first (old, rarely-hit blocks).
++        """
++        if n == 0:
++            return []
++        assert self.num_free_blocks >= n
++
++        # Collect all free blocks with scores.
++        candidates = []
++        curr = self.fake_free_list_head.next_free_block
++        pos = 0
++        while curr is not None and curr.next_free_block is not None:
++            age = now - curr.last_alloc_time
++            score = (curr.hit_count + 1) * math.exp(-lam * age)
++            candidates.append((score, pos, curr))
++            curr = curr.next_free_block
++            pos += 1
++
++        # Sort ascending: lowest score evicted first; pos breaks ties.
++        candidates.sort(key=lambda x: (x[0], x[1]))
++        selected = [blk for _, _, blk in candidates[:n]]
++
++        # Remove selected blocks from the doubly-linked list.
++        for block in selected:
++            block.prev_free_block.next_free_block = block.next_free_block
++            block.next_free_block.prev_free_block = block.prev_free_block
++            block.prev_free_block = None
++            block.next_free_block = None
++
++        self.num_free_blocks -= n
++        return selected
++
+     def get_all_free_blocks(self) -> list[KVCacheBlock]:
+         """Get all free blocks in the free list. Mainly used for testing.
+ 
