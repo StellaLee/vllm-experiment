@@ -85,12 +85,12 @@ for UTIL in 0.3 0.5 0.7 0.9; do
   wait_for_vllm
 
   echo "--- [2] Starting GPU monitor ---"
-  $PYTHON $EXPERIMENT_DIR/monitor_gpu.py --output "$GPU_LOG" &
+  $PYTHON $EXPERIMENT_DIR/src/monitor_gpu.py --output "$GPU_LOG" &
   MON_PID=$!
   sleep 1
 
   echo "--- [3] Replaying ${NUM_CONVS} conversations (max ${MAX_TURNS} turns, max_tokens=${MAX_TOKENS}) ---"
-  $PYTHON $EXPERIMENT_DIR/replay_sharegpt.py \
+  $PYTHON $EXPERIMENT_DIR/src/replay_sharegpt.py \
     --host "$HOST" --port "$PORT" \
     --dataset "$DATASET" \
     --num-convs "$NUM_CONVS" \
@@ -104,7 +104,7 @@ for UTIL in 0.3 0.5 0.7 0.9; do
   MON_PID=""
 
   echo "--- [4b] Running per-utilization analysis ---"
-  $PYTHON $EXPERIMENT_DIR/analyze.py \
+  $PYTHON $EXPERIMENT_DIR/src/analyze.py \
     --gpu-log "$GPU_LOG" \
     --trace-log "$DETAIL" \
     --trace-type sharegpt \
@@ -122,7 +122,7 @@ done
 
 echo ""
 echo "=== Running kvcache summary ==="
-$PYTHON $EXPERIMENT_DIR/summarize.py --sweep kvcache --date "$DATE" \
+$PYTHON $EXPERIMENT_DIR/src/summarize.py --sweep kvcache --date "$DATE" \
   --log-dir "$LOG_DIR" --findings-dir "$FINDINGS_DIR"
 
 echo ""

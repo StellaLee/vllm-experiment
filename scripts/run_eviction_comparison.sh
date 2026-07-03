@@ -87,12 +87,12 @@ run_policy() {
   wait_for_vllm
 
   echo "  Starting GPU monitor..."
-  $PYTHON $DIR/monitor_gpu.py --output "$gpu_log" &
+  $PYTHON $DIR/src/monitor_gpu.py --output "$gpu_log" &
   MON_PID=$!
   sleep 1
 
   echo "  Replaying ShareGPT [policy=$policy concurrency=$CONCURRENCY convs=$NUM_CONVS turns=$MAX_TURNS]..."
-  $PYTHON $DIR/replay_sharegpt.py \
+  $PYTHON $DIR/src/replay_sharegpt.py \
     --host $HOST --port $PORT \
     --dataset "$DATASET" \
     --num-convs "$NUM_CONVS" \
@@ -122,7 +122,7 @@ run_policy "tdf" "$TDF_LOG" "$TDF_GPU"
 # ── Compare ───────────────────────────────────────────────────────────────
 echo ""
 echo "=== Comparing eviction policies ==="
-$PYTHON $DIR/compare_eviction.py \
+$PYTHON $DIR/src/compare_eviction.py \
   --lru "$LRU_LOG" \
   --tdf "$TDF_LOG" \
   --output "$FINDINGS" \

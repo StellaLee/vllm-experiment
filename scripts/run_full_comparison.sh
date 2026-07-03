@@ -55,10 +55,10 @@ run_policy() {
 
   wait_for_vllm
 
-  $PYTHON $DIR/monitor_gpu.py --output $LOG_DIR/${TAG}-${policy}-gpu.json &
+  $PYTHON $DIR/src/monitor_gpu.py --output $LOG_DIR/${TAG}-${policy}-gpu.json &
   MON_PID=$!; sleep 1
 
-  $PYTHON $DIR/replay_sharegpt.py \
+  $PYTHON $DIR/src/replay_sharegpt.py \
     --host localhost --port $PORT \
     --dataset "$DATASET" \
     --num-convs $NUM_CONVS \
@@ -79,7 +79,7 @@ run_policy cf
 
 echo ""
 echo "=== Comparing ==="
-$PYTHON $DIR/compare_eviction.py \
+$PYTHON $DIR/src/compare_eviction.py \
   --lru  $LOG_DIR/${TAG}-lru.jsonl \
   --tdf  $LOG_DIR/${TAG}-tdf.jsonl \
   --cf   $LOG_DIR/${TAG}-cf.jsonl \

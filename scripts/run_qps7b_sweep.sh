@@ -91,7 +91,7 @@ for entry in "1.0:1x" "2.0:2x" "4.0:4x" "8.0:8x"; do
   HITS_BEFORE=$(read_cache_hits)
 
   echo "--- Starting GPU monitor ---"
-  $PYTHON $EXPERIMENT_DIR/monitor_gpu.py --output "$GPU_LOG" &
+  $PYTHON $EXPERIMENT_DIR/src/monitor_gpu.py --output "$GPU_LOG" &
   MON_PID=$!
   sleep 1
 
@@ -125,7 +125,7 @@ print(f'  prefix_cache_hits this run: {int(delta)}  /  {nrec} requests  →  hit
 "
 
   echo "--- Analyzing ${LABEL} ---"
-  $PYTHON $EXPERIMENT_DIR/analyze.py \
+  $PYTHON $EXPERIMENT_DIR/src/analyze.py \
     --gpu-log "$GPU_LOG" \
     --burstgpt-log "$DETAIL" \
     --output "$FINDINGS"

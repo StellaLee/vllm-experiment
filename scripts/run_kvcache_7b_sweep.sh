@@ -105,12 +105,12 @@ for UTIL in 0.7 0.8 0.9; do
   echo "KV cache: $GPU_BLOCKS (16 tokens each)"
 
   echo "--- [2] Starting GPU monitor ---"
-  $PYTHON $EXPERIMENT_DIR/monitor_gpu.py --output "$GPU_LOG" &
+  $PYTHON $EXPERIMENT_DIR/src/monitor_gpu.py --output "$GPU_LOG" &
   MON_PID=$!
   sleep 1
 
   echo "--- [3] Replaying ${NUM_CONVS} conversations (concurrency=${CONCURRENCY}, max_turns=${MAX_TURNS}, max_tokens=${MAX_TOKENS}) ---"
-  $PYTHON $EXPERIMENT_DIR/replay_sharegpt.py \
+  $PYTHON $EXPERIMENT_DIR/src/replay_sharegpt.py \
     --host "$HOST" --port "$PORT" \
     --dataset "$DATASET" \
     --num-convs "$NUM_CONVS" \
@@ -148,7 +148,7 @@ print('ok' if med < 10 else f'HIGH:{med:.1f}s')
   MON_PID=""
 
   echo "--- [5] Running per-utilization analysis ---"
-  $PYTHON $EXPERIMENT_DIR/analyze.py \
+  $PYTHON $EXPERIMENT_DIR/src/analyze.py \
     --gpu-log "$GPU_LOG" \
     --trace-log "$DETAIL" \
     --trace-type sharegpt \

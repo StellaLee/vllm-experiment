@@ -1,24 +1,40 @@
 #!/bin/bash
 set -e
 PYTHON=/root/miniconda3/bin/python3
-BURSTGPT_BENCH=/root/miniconda3/bin/burstgpt-bench
 DATE=$(date +%Y-%m-%d)
 EXPERIMENT_DIR=/root/vllm-experiment
-BURSTGPT_DIR=$EXPERIMENT_DIR/BurstGPT
 LOG_DIR=$EXPERIMENT_DIR/logs
 FINDINGS_DIR=$EXPERIMENT_DIR/findings
 PORT=8000
 HOST=localhost
 
+# Number of conversations and turns (override via env)
+NUM_CONVS=${NUM_CONVS:-50}
+MAX_TURNS=${MAX_TURNS:-4}
+MAX_TOKENS=${MAX_TOKENS:-128}
+
 mkdir -p "$LOG_DIR" "$FINDINGS_DIR"
 
-GPU_LOG=$LOG_DIR/${DATE}-gpu.json
-BURSTGPT_LOG=$LOG_DIR/${DATE}-burstgpt.jsonl
-BURSTGPT_DETAIL=$LOG_DIR/${DATE}-burstgpt-detail.jsonl
-FINDINGS=$FINDINGS_DIR/${DATE}-baseline-qwen2.5-0.5b.md
+GPU_LOG=$LOG_DIR/${DATE}-sharegpt-gpu.json
+SHAREGPT_LOG=$LOG_DIR/${DATE}-sharegpt-detail.jsonl
+FINDINGS=$FINDINGS_DIR/${DATE}-sharegpt-qwen2.5-0.5b.md
+
+# Prefer the full multi-turn dataset; fall back to BurstGPT's preprocessed copy
+DATASET_FULL=$EXPERIMENT_DIR/data/sharegpt_v3.json
+DATASET_FALLBACK=$EXPERIMENT_DIR/BurstGPT/example/preprocess_data/shareGPT.json
+
+if [ -f "$DATASET_FULL" ]; then
+  DATASET=$DATASET_FULL
+  echo "Using full ShareGPT dataset: $DATASET_FULL"
+elif [ -f "$DATASET_FALLBACK" ]; then
+  DATASET=$DATASET_FALLBACK
+  echo "WARNING: full dataset not found; using BurstGPT preprocessed ShareGPT: $DATASET_FALLBACK"
+else
+  echo "ERROR: No ShareGPT dataset found. Run setup.sh first."
+  exit 1
+fi
 
 MON_PID=""
-
 cleanup() {
   if [ -n "$MON_PID" ]; then
     echo "Stopping GPU monitor (PID $MON_PID)..."
@@ -46,32 +62,19 @@ urllib.request.urlopen(urllib.request.Request(
 done
 
 echo "=== [2/5] Starting GPU monitor ==="
-$PYTHON /root/vllm-experiment/monitor_gpu.py --output "$GPU_LOG" &
+$PYTHON $EXPERIMENT_DIR/src/monitor_gpu.py --output "$GPU_LOG" &
 MON_PID=$!
 echo "Monitor PID: $MON_PID"
 sleep 1
 
-echo "=== [3/5] Running BurstGPT profiler (50 requests, streaming) ==="
-SHAREGPT=$BURSTGPT_DIR/example/preprocess_data/shareGPT.json
-BURSTGPT_CSV=$BURSTGPT_DIR/data/BurstGPT_1.csv
-
-FLAGS="--port=$PORT --host=$HOST --temperature=0 --stream"
-FLAGS="$FLAGS --data_path=$SHAREGPT"
-FLAGS="$FLAGS --model_path=/model/ModelScope/Qwen/Qwen2.5-0.5B-Instruct"
-FLAGS="$FLAGS --surplus_prompts_num=50 --prompt_num=50"
-FLAGS="$FLAGS --max_tokens=128"
-FLAGS="$FLAGS --log_path=$BURSTGPT_LOG"
-FLAGS="$FLAGS --detail_log_path=$BURSTGPT_DETAIL"
-
-if [ -f "$BURSTGPT_CSV" ]; then
-  echo "Using BurstGPT trace: $BURSTGPT_CSV"
-  FLAGS="$FLAGS --use_burstgpt --burstgpt_path=$BURSTGPT_CSV --scale=1.2344107085"
-else
-  echo "BurstGPT_1.csv not found. Using Poisson at QPS=1."
-  FLAGS="$FLAGS --qps=1.0"
-fi
-
-$BURSTGPT_BENCH $FLAGS
+echo "=== [3/5] Replaying ShareGPT conversations (${NUM_CONVS} convs, max ${MAX_TURNS} turns) ==="
+$PYTHON $EXPERIMENT_DIR/src/replay_sharegpt.py \
+  --host $HOST --port $PORT \
+  --dataset "$DATASET" \
+  --num-convs $NUM_CONVS \
+  --max-turns $MAX_TURNS \
+  --max-tokens $MAX_TOKENS \
+  --output "$SHAREGPT_LOG"
 
 echo "=== [4/5] Stopping GPU monitor ==="
 kill "$MON_PID" 2>/dev/null || true
@@ -79,9 +82,10 @@ wait "$MON_PID" 2>/dev/null || true
 MON_PID=""
 
 echo "=== [5/5] Running analysis ==="
-$PYTHON /root/vllm-experiment/analyze.py \
+$PYTHON $EXPERIMENT_DIR/src/analyze.py \
   --gpu-log "$GPU_LOG" \
-  --burstgpt-log "$BURSTGPT_DETAIL" \
+  --trace-log "$SHAREGPT_LOG" \
+  --trace-type sharegpt \
   --output "$FINDINGS"
 
 echo ""

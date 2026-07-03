@@ -13,21 +13,24 @@ MODEL=/model/ModelScope/Qwen/Qwen2.5-0.5B-Instruct
 SHAREGPT=$EXPERIMENT_DIR/BurstGPT/example/preprocess_data/shareGPT.json
 BURSTGPT_CSV=$EXPERIMENT_DIR/BurstGPT/data/BurstGPT_1.csv
 BASE_SCALE=1.2344107085
+TARGET_REQUESTS=45
 
 mkdir -p "$LOG_DIR" "$FINDINGS_DIR"
 
-# ===== Start vLLM once for all sweep runs =====
-echo "=== Starting vLLM server (gpu-memory-utilization=0.9) ==="
+# ===== Start vLLM =====
+echo "=== Starting vLLM server ==="
 $PYTHON -m vllm.entrypoints.api_server \
   --model $MODEL --port $PORT --host 0.0.0.0 \
   --gpu-memory-utilization 0.9 \
-  > $LOG_DIR/${DATE}-qps-sweep-vllm.log 2>&1 &
+  > $LOG_DIR/${DATE}-2x4x-vllm.log 2>&1 &
 VLLM_PID=$!
 echo "vLLM PID: $VLLM_PID"
 
 MON_PID=""
+BENCH_PID=""
 cleanup() {
-  [ -n "$MON_PID" ] && { kill "$MON_PID" 2>/dev/null || true; wait "$MON_PID" 2>/dev/null || true; }
+  [ -n "$BENCH_PID" ] && { kill "$BENCH_PID" 2>/dev/null || true; }
+  [ -n "$MON_PID"   ] && { kill "$MON_PID"   2>/dev/null || true; wait "$MON_PID" 2>/dev/null || true; }
   kill $VLLM_PID 2>/dev/null || true
   wait $VLLM_PID 2>/dev/null || true
 }
@@ -45,20 +48,19 @@ urllib.request.urlopen(urllib.request.Request(
     echo " vLLM ready."
     break
   fi
-  [ $i -eq 90 ] && { echo "ERROR: vLLM not ready after 180s"; exit 1; }
+  [ $i -eq 90 ] && { echo "ERROR: vLLM not ready"; exit 1; }
   printf "."; sleep 2
 done
-sleep 2  # let KV cache settle
+sleep 2
 
-# ===== Sweep: 0.5x, 2x, 4x relative to base scale =====
-for MULT in 0.5 2.0 4.0; do
+# ===== Sweep 2x and 4x =====
+for MULT in 2.0 4.0; do
   SCALE=$($PYTHON -c "print('{:.6f}'.format($BASE_SCALE * $MULT))")
-  # "2.0" → "2x", "0.5" → "0.5x", "4.0" → "4x"
   LABEL=$(echo "$MULT" | awk '{v=$1+0; if(v==int(v)) printf "%dx",int(v); else printf "%sx",v}')
 
   echo ""
   echo "========================================================"
-  echo " QPS ${LABEL}  |  --scale=${SCALE}"
+  echo " QPS ${LABEL}  |  --scale=${SCALE}  |  stopping at ${TARGET_REQUESTS} requests"
   echo "========================================================"
 
   GPU_LOG=$LOG_DIR/${DATE}-qps-${LABEL}-gpu.json
@@ -66,12 +68,12 @@ for MULT in 0.5 2.0 4.0; do
   BURSLOG=$LOG_DIR/${DATE}-qps-${LABEL}-burstgpt.jsonl
   FINDINGS=$FINDINGS_DIR/${DATE}-qps-${LABEL}.md
 
-  echo "--- Starting GPU monitor ---"
-  $PYTHON $EXPERIMENT_DIR/monitor_gpu.py --output "$GPU_LOG" &
+  # Start GPU monitor
+  $PYTHON $EXPERIMENT_DIR/src/monitor_gpu.py --output "$GPU_LOG" &
   MON_PID=$!
   sleep 1
 
-  echo "--- Running BurstGPT (scale=${SCALE}) ---"
+  # Start BurstGPT in background
   $BURSTGPT_BENCH \
     --port=$PORT --host=$HOST \
     --temperature=0 --stream \
@@ -82,28 +84,49 @@ for MULT in 0.5 2.0 4.0; do
     --log_path=$BURSLOG \
     --detail_log_path=$DETAIL \
     --use_burstgpt --burstgpt_path=$BURSTGPT_CSV \
-    --scale=$SCALE
+    --scale=$SCALE &
+  BENCH_PID=$!
+  echo "burstgpt-bench PID: $BENCH_PID"
 
-  echo "--- Stopping GPU monitor ---"
+  # Wait until 45 requests complete or bench finishes naturally
+  echo "Waiting for ${TARGET_REQUESTS} requests..."
+  for i in $(seq 1 600); do
+    if ! kill -0 "$BENCH_PID" 2>/dev/null; then
+      echo "burstgpt-bench finished naturally."
+      BENCH_PID=""
+      break
+    fi
+    count=$(wc -l < "$DETAIL" 2>/dev/null || echo 0)
+    if [ "$count" -ge "$TARGET_REQUESTS" ]; then
+      echo "${count} requests reached — killing burstgpt-bench"
+      kill "$BENCH_PID" 2>/dev/null || true
+      wait "$BENCH_PID" 2>/dev/null || true
+      BENCH_PID=""
+      break
+    fi
+    [ $((i % 10)) -eq 0 ] && echo "  ... ${count}/${TARGET_REQUESTS} requests"
+    sleep 2
+  done
+
+  # Stop GPU monitor
   kill "$MON_PID" 2>/dev/null || true
   wait "$MON_PID" 2>/dev/null || true
   MON_PID=""
 
+  # Analyze
   echo "--- Analyzing ${LABEL} ---"
-  $PYTHON $EXPERIMENT_DIR/analyze.py \
+  $PYTHON $EXPERIMENT_DIR/src/analyze.py \
     --gpu-log "$GPU_LOG" \
     --burstgpt-log "$DETAIL" \
     --output "$FINDINGS"
 
   echo "=== ${LABEL} done ==="
-  echo ""
-  sleep 8  # cooldown between runs
+  sleep 5
 done
 
 # ===== Comparison Summary =====
 echo "=== Generating comparison summary ==="
-$PYTHON $EXPERIMENT_DIR/summarize.py --sweep qps --date "$DATE" \
+$PYTHON $EXPERIMENT_DIR/src/summarize.py --sweep qps --date "$DATE" \
   --log-dir "$LOG_DIR" --findings-dir "$FINDINGS_DIR"
 
-echo ""
-echo "=== QPS sweep complete! ==="
+echo "=== Sweep complete! ==="
