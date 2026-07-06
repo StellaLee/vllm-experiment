@@ -173,3 +173,55 @@ findings/                          # committed human-readable summaries
 
 - [`docs/2026-06-30-baseline-design.md`](docs/2026-06-30-baseline-design.md) — experiment design
 - [`docs/2026-06-30-baseline-plan.md`](docs/2026-06-30-baseline-plan.md) — implementation plan
+
+---
+
+## Dynamic Chunk Size Experiment
+
+Tests whether a feedback controller for chunked-prefill token budget reduces
+decode starvation under mixed prefill/decode workloads.
+
+**Patch:** `patches/scheduler.patch` adds `ChunkSizeController` to
+`vllm/v1/core/sched/scheduler.py`. Enabled via `DYNAMIC_CHUNK=1`.
+
+**Controller logic (bang-bang):**
+- decode depth > target x 1.5 → halve token budget (floor: DYNAMIC_CHUNK_MIN)
+- decode depth < target x 0.5 → double token budget (ceiling: static max)
+
+**Results (Qwen2.5-Coder-7B, 150 prompts, rate=inf):**
+
+| Dataset | Metric | Baseline | Dynamic | Delta |
+|---------|--------|----------|---------|-------|
+| ShareGPT | TTFT p50 | 7083 ms | 5633 ms | -20.5% |
+| ShareGPT | TTFT p95 | 14346 ms | 12378 ms | -13.7% |
+| ShareGPT | TPOT p95 | 29.5 ms | 25.3 ms | -14.2% |
+| ShareGPT | Throughput | 5.61 req/s | 6.01 req/s | +7.2% |
+| BurstGPT | TPOT p95 | 127.0 ms | 37.6 ms | -70.4% |
+| BurstGPT | TTFT p50 | 4818 ms | 5111 ms | +6.1% |
+
+ShareGPT (mixed arrival): clean win across TTFT, TPOT, and throughput.
+BurstGPT (thundering herd): TPOT improves dramatically but TTFT/E2EL
+tail rises -- controller over-shrinks chunk under pure burst load.
+
+Full results: `findings/chunk_20260706_093754/`
+
+### Running the chunk experiment
+
+```bash
+# Apply the scheduler patch
+bash patches/apply_patches.sh --chunk-only
+
+# Run all 4 benchmarks (baseline + dynamic x BurstGPT + ShareGPT)
+bash run_chunk_experiment.sh
+
+# Tune via env vars
+NUM_PROMPTS=200 DYNAMIC_CHUNK_TARGET=12 bash run_chunk_experiment.sh
+```
+
+### Env vars
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| DYNAMIC_CHUNK | 0 | Set to 1 to enable |
+| DYNAMIC_CHUNK_TARGET | 8 | Target decode-queue depth |
+| DYNAMIC_CHUNK_MIN | 256 | Minimum token budget per scheduling step |

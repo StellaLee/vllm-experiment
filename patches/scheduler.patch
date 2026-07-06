@@ -1,0 +1,84 @@
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import itertools
++import os
+ import time
+ from collections import defaultdict, deque
+ from collections.abc import Iterable
+@@ -65,6 +66,38 @@
+ logger = init_logger(__name__)
+ 
+ 
++class ChunkSizeController:
++    """Bang-bang controller for dynamic chunked-prefill token budget.
++
++    Shrinks chunk size when decode queue is deep, grows it when shallow.
++    Prevents decode starvation under mixed prefill/decode workloads.
++
++    Enable: DYNAMIC_CHUNK=1
++    Tune:   DYNAMIC_CHUNK_TARGET (int, default 8)
++            DYNAMIC_CHUNK_MIN    (int, default 256)
++    """
++
++    def __init__(self, min_tokens: int, max_tokens: int, target: int) -> None:
++        self.chunk = max_tokens
++        self.min = min_tokens
++        self.max = max_tokens
++        self.target = target
++        self._step_count = 0
++
++    def step(self, decode_depth: int) -> int:
++        self._step_count += 1
++        if decode_depth > self.target * 1.5:
++            self.chunk = max(self.min, self.chunk // 2)
++        elif decode_depth < self.target * 0.5:
++            self.chunk = min(self.max, self.chunk * 2)
++        if self._step_count % 50 == 0:
++            logger.debug(
++                "ChunkSizeController step=%d decode_depth=%d chunk=%d",
++                self._step_count, decode_depth, self.chunk,
++            )
++        return self.chunk
++
++
+ class Scheduler(SchedulerInterface):
+     def __init__(
+         self,
+@@ -111,6 +144,22 @@
+             if self.scheduler_config.max_num_scheduled_tokens is not None
+             else self.scheduler_config.max_num_batched_tokens
+         )
++        # Dynamic chunk size controller (DYNAMIC_CHUNK=1 to enable).
++        _dynamic_chunk = os.getenv("DYNAMIC_CHUNK", "0").strip() == "1"
++        if _dynamic_chunk:
++            _target = int(os.getenv("DYNAMIC_CHUNK_TARGET", "8"))
++            _min = int(os.getenv("DYNAMIC_CHUNK_MIN", "256"))
++            self._chunk_ctrl: ChunkSizeController | None = ChunkSizeController(
++                min_tokens=_min,
++                max_tokens=self.max_num_scheduled_tokens,
++                target=_target,
++            )
++            logger.info(
++                "Dynamic chunk size enabled: min=%d max=%d target=%d",
++                _min, self.max_num_scheduled_tokens, _target,
++            )
++        else:
++            self._chunk_ctrl = None
+         self.max_model_len = vllm_config.model_config.max_model_len
+         self.enable_kv_cache_events = (
+             self.kv_events_config is not None
+@@ -406,6 +455,11 @@
+         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
+         num_scheduled_tokens: dict[str, int] = {}
+         token_budget = self.max_num_scheduled_tokens
++        if self._chunk_ctrl is not None:
++            _decode_depth = sum(
++                1 for r in self.running if not r.is_prefill_chunk
++            )
++            token_budget = self._chunk_ctrl.step(_decode_depth)
+         if self._pause_state == PauseState.PAUSED_ALL:
+             # Do not schedule any requests when paused.
+             token_budget = 0
