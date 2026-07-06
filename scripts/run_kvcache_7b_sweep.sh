@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-PYTHON=/root/miniconda3/bin/python3
+PYTHON=${PYTHON:-python3}
 DATE=$(date +%Y-%m-%d)
 EXPERIMENT_DIR=/root/vllm-experiment
 LOG_DIR=$EXPERIMENT_DIR/logs

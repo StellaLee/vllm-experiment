@@ -66,9 +66,19 @@ vllm-experiment/
 
 - Linux with an NVIDIA GPU (experiments run on RTX 4090, 24 GB)
 - CUDA 12.x or 13.x
-- Python 3.10 (via conda or system)
+- Python 3.10
 
-### 1. Install vLLM 0.23.0
+### 1. Create a virtual environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+All subsequent commands assume the venv is active. Scripts resolve
+`python3` and `pip` from the active environment automatically.
+
+### 2. Install vLLM 0.23.0
 
 ```bash
 pip install vllm==0.23.0
@@ -77,13 +87,13 @@ pip install vllm==0.23.0
 > **Note:** vLLM requires a CUDA-capable GPU. Install takes ~5 min including
 > torch and flash-attention wheels.
 
-### 2. Install experiment dependencies
+### 3. Install experiment dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Apply vLLM patches
+### 4. Apply vLLM patches
 
 The patches in `patches/` modify vLLM in-place to add pluggable eviction
 policies and a dynamic chunk size controller:
@@ -100,7 +110,7 @@ bash patches/apply_patches.sh --chunk-size   # dynamic chunk size only
 The script auto-detects your vLLM install location and is idempotent —
 safe to run again if already applied.
 
-### 4. Fetch datasets
+### 5. Fetch datasets
 
 ```bash
 bash scripts/setup.sh

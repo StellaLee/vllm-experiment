@@ -1,5 +1,5 @@
 #!/bin/bash
-PYTHON=/root/miniconda3/bin/python3
+PYTHON=${PYTHON:-python3}
 MODEL=/model/ModelScope/Qwen/Qwen2.5-0.5B-Instruct
 PORT=8000
 

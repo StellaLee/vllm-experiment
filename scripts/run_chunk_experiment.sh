@@ -26,7 +26,7 @@ DATE=$(date +%Y%m%d_%H%M%S)
 RESULTS=findings/chunk_${DATE}
 BURSTGPT=BurstGPT/data/BurstGPT_1.csv
 SHAREGPT=data/sharegpt_v3.json
-VLLM=/root/miniconda3/bin/python3
+VLLM=${PYTHON:-python3}
 PID_FILE=/tmp/vllm_chunk_pid
 
 mkdir -p "$RESULTS"
