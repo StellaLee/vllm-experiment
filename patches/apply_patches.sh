@@ -10,6 +10,13 @@
 set -e
 
 PYTHON=${PYTHON:-python3}
+
+# Verify vLLM is importable before proceeding
+if ! $PYTHON -c "import vllm" 2>/dev/null; then
+  echo "ERROR: vLLM not found in $($PYTHON -c 'import sys; print(sys.executable)')"
+  echo "       Activate your venv first: source .venv/bin/activate"
+  exit 1
+fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 APPLY_EVICTION=1
