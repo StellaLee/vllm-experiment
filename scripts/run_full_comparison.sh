@@ -5,7 +5,7 @@
 # reaches turn 4, giving a robust sample for tail metrics.
 set -e
 
-PYTHON=/root/miniconda3/bin/python3
+PYTHON=${PYTHON:-python3}
 MODEL=/model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct
 PORT=8000
 DATE=$(date +%Y-%m-%d)

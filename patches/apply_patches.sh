@@ -1,61 +1,80 @@
 #!/bin/bash
 # patches/apply_patches.sh
-# Apply pluggable KV-cache eviction policy patches to vLLM 0.23.0.
+# Apply vLLM 0.23.0 patches to the active vLLM installation.
 #
 # Usage:
-#   bash patches/apply_patches.sh [VLLM_SITE_DIR]
-#
-# VLLM_SITE_DIR is optional — defaults to the location Python reports for vllm.
-# Example:
-#   bash patches/apply_patches.sh
-#   bash patches/apply_patches.sh /opt/conda/lib/python3.10/site-packages/vllm
+#   bash patches/apply_patches.sh                # apply all
+#   bash patches/apply_patches.sh --eviction     # KV-cache eviction policy only
+#   bash patches/apply_patches.sh --chunk-size   # dynamic chunk size only
+#   bash patches/apply_patches.sh [VLLM_SITE]    # explicit install path
 set -e
 
 PYTHON=${PYTHON:-python3}
+
+# Verify vLLM is importable before proceeding
+if ! $PYTHON -c "import vllm" 2>/dev/null; then
+  echo "ERROR: vLLM not found in $($PYTHON -c 'import sys; print(sys.executable)')"
+  echo "       Activate your venv first: source .venv/bin/activate"
+  exit 1
+fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-if [ -n "$1" ]; then
-  VLLM_SITE="$1"
-else
+APPLY_EVICTION=1
+APPLY_CHUNK=1
+
+for arg in "$@"; do
+  case "$arg" in
+    --eviction)    APPLY_CHUNK=0 ;;
+    --chunk-size)  APPLY_EVICTION=0 ;;
+    /*)            VLLM_SITE="$arg" ;;
+  esac
+done
+
+if [ -z "${VLLM_SITE:-}" ]; then
   VLLM_SITE=$($PYTHON -c "import vllm, os; print(os.path.dirname(vllm.__file__))")
 fi
 
 VLLM_VERSION=$($PYTHON -c "import vllm; print(vllm.__version__)")
-echo "vLLM install : $VLLM_SITE"
-echo "vLLM version : $VLLM_VERSION"
-
-if [ "$VLLM_VERSION" != "0.23.0" ]; then
-  echo "WARNING: patches were written against vLLM 0.23.0; got $VLLM_VERSION."
-  echo "         Apply may still work but is not guaranteed."
-fi
-
-TARGET_DIR="$VLLM_SITE/v1/core"
-if [ ! -d "$TARGET_DIR" ]; then
-  echo "ERROR: $TARGET_DIR not found. Is vLLM installed correctly?"
-  exit 1
-fi
-
-if grep -q 'hit_count' "$TARGET_DIR/kv_cache_utils.py" 2>/dev/null; then
-  echo "Patches appear already applied (hit_count found in kv_cache_utils.py). Skipping."
-  exit 0
-fi
-
-# patch -p1 strips the leading a/ or b/ from paths, so run from site-packages parent
 PATCH_ROOT="$VLLM_SITE/.."
 
-echo "Applying kv_cache_utils.patch ..."
-patch -p1 -d "$PATCH_ROOT" < "$SCRIPT_DIR/kv_cache_utils.patch"
+echo "vLLM install : $VLLM_SITE"
+echo "vLLM version : $VLLM_VERSION"
+if [ "$VLLM_VERSION" != "0.23.0" ]; then
+  echo "WARNING: patches were written against vLLM 0.23.0; got $VLLM_VERSION."
+fi
 
-echo "Applying block_pool.patch ..."
-patch -p1 -d "$PATCH_ROOT" < "$SCRIPT_DIR/block_pool.patch"
+# ── eviction/ ─────────────────────────────────────────────────────────────────
+if [ "$APPLY_EVICTION" = "1" ]; then
+  if grep -q 'hit_count' "$VLLM_SITE/v1/core/kv_cache_utils.py" 2>/dev/null; then
+    echo "[eviction] Already applied — skipping."
+  else
+    echo "[eviction] Applying kv_cache_utils.patch ..."
+    patch -p1 -d "$PATCH_ROOT" < "$SCRIPT_DIR/eviction/kv_cache_utils.patch"
+    echo "[eviction] Applying block_pool.patch ..."
+    patch -p1 -d "$PATCH_ROOT" < "$SCRIPT_DIR/eviction/block_pool.patch"
+    echo "[eviction] Done. Use EVICTION_POLICY=cf|tdf|lru"
+  fi
+fi
+
+# ── chunk_size/ ───────────────────────────────────────────────────────────────
+if [ "$APPLY_CHUNK" = "1" ]; then
+  if grep -q 'ChunkSizeController' "$VLLM_SITE/v1/core/sched/scheduler.py" 2>/dev/null; then
+    echo "[chunk_size] Already applied — skipping."
+  else
+    echo "[chunk_size] Applying scheduler.patch ..."
+    patch -p1 -d "$PATCH_ROOT" < "$SCRIPT_DIR/chunk_size/scheduler.patch"
+    echo "[chunk_size] Done. Use DYNAMIC_CHUNK=1 to enable."
+  fi
+fi
 
 echo ""
-echo "Patches applied. Three eviction policies are now available via EVICTION_POLICY:"
+echo "Quick-start:"
+echo "  EVICTION_POLICY=cf python -m vllm.entrypoints.openai.api_server \\"
+echo "    --model <model> --enable-prefix-caching --port 8000"
 echo ""
-echo "  EVICTION_POLICY=lru   (default, vLLM built-in LRU — no change)"
-echo "  EVICTION_POLICY=cf    (Cascaded Frequency — recommended for multi-turn)"
-echo "  EVICTION_POLICY=tdf   (Time-Decayed Frequency; also set TDF_LAMBDA, default 0.1)"
+echo "  DYNAMIC_CHUNK=1 DYNAMIC_CHUNK_TARGET=8 \\"
+echo "  python -m vllm.entrypoints.openai.api_server --model <model> --port 8000"
 echo ""
-echo "Example:"
-echo "  EVICTION_POLICY=cf python -m vllm.entrypoints.api_server \\"
-echo "    --model <model> --enable-prefix-caching --gpu-memory-utilization 0.7"
+echo "  EVICTION_POLICY=cf DYNAMIC_CHUNK=1 \\"
+echo "  python -m vllm.entrypoints.openai.api_server \\"
+echo "    --model <model> --enable-prefix-caching --port 8000"

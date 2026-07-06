@@ -2,8 +2,8 @@
 set -e
 EXPERIMENT_DIR=/root/vllm-experiment
 BURSTGPT_DIR=$EXPERIMENT_DIR/BurstGPT
-PYTHON=/root/miniconda3/bin/python3
-PIP=/root/miniconda3/bin/pip
+PYTHON=${PYTHON:-python3}
+PIP=${PIP:-pip}
 
 echo "=== [1/5] Cloning BurstGPT ==="
 if [ ! -d "$BURSTGPT_DIR" ]; then

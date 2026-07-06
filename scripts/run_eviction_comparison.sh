@@ -5,7 +5,7 @@
 # Both runs: concurrency=20, 50 conversations, 4 turns max.
 set -e
 
-PYTHON=/root/miniconda3/bin/python3
+PYTHON=${PYTHON:-python3}
 MODEL=/model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct
 PORT=8000
 HOST=localhost

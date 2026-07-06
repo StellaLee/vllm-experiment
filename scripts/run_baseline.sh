@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
-PYTHON=/root/miniconda3/bin/python3
-BURSTGPT_BENCH=/root/miniconda3/bin/burstgpt-bench
+PYTHON=${PYTHON:-python3}
+BURSTGPT_BENCH=${BURSTGPT_BENCH:-burstgpt-bench}
 DATE=$(date +%Y-%m-%d)
 EXPERIMENT_DIR=/root/vllm-experiment
 BURSTGPT_DIR=$EXPERIMENT_DIR/BurstGPT
