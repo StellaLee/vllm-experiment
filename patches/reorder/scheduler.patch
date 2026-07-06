@@ -1,0 +1,29 @@
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -156,6 +156,10 @@
+             )
+         else:
+             self._chunk_ctrl = None
++        _prefix_reorder = os.getenv("PREFIX_REORDER", "0").strip() == "1"
++        self._prefix_reorder = _prefix_reorder
++        if _prefix_reorder:
++            logger.info("Prefix-aware request reordering enabled")
+         self.max_model_len = vllm_config.model_config.max_model_len
+         self.enable_kv_cache_events = (
+             self.kv_events_config is not None
+@@ -616,6 +620,15 @@
+         # Next, schedule the WAITING requests.
+         if not preempted_reqs and self._pause_state == PauseState.UNPAUSED:
+             step_skipped_waiting = create_request_queue(self.policy)
++            if self._prefix_reorder and self.waiting and hasattr(self.waiting, 'extendleft'):
++                def _cached_tokens(req):
++                    if req.num_computed_tokens > 0:
++                        return req.num_computed_tokens
++                    _, n = self.kv_cache_manager.get_computed_blocks(req)
++                    return n
++                _sorted = sorted(self.waiting, key=_cached_tokens, reverse=True)
++                self.waiting.clear()
++                self.waiting.extend(_sorted)
+ 
+             while (self.waiting or self.skipped_waiting) and token_budget > 0:
+                 if len(self.running) == self.max_num_running_reqs:
