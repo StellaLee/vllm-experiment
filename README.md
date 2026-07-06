@@ -60,6 +60,56 @@ vllm-experiment/
     └── 2026-07-03-full-eviction-comparison.md # 200-conv canonical run
 ```
 
+## Installation
+
+### Prerequisites
+
+- Linux with an NVIDIA GPU (experiments run on RTX 4090, 24 GB)
+- CUDA 12.x or 13.x
+- Python 3.10 (via conda or system)
+
+### 1. Install vLLM 0.23.0
+
+```bash
+pip install vllm==0.23.0
+```
+
+> **Note:** vLLM requires a CUDA-capable GPU. Install takes ~5 min including
+> torch and flash-attention wheels.
+
+### 2. Install experiment dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Apply vLLM patches
+
+The patches in `patches/` modify vLLM in-place to add pluggable eviction
+policies and a dynamic chunk size controller:
+
+```bash
+# Apply both patches (recommended)
+bash patches/apply_patches.sh
+
+# Or apply individually
+bash patches/apply_patches.sh --eviction     # KV-cache eviction policy only
+bash patches/apply_patches.sh --chunk-size   # dynamic chunk size only
+```
+
+The script auto-detects your vLLM install location and is idempotent —
+safe to run again if already applied.
+
+### 4. Fetch datasets
+
+```bash
+bash scripts/setup.sh
+```
+
+This clones BurstGPT and downloads `BurstGPT_1.csv` and `ShareGPT_v3.json`
+into the repo. Requires ~1 GB of disk space.
+
+
 ## Quick Start
 
 ```bash
