@@ -85,14 +85,14 @@ exceeds the decode-starvation problem it was solving.
 
 ## Raw results
 
-`findings/chunk_20260706_093754/`
+`logs/`
 
 | File | Contents |
 |------|----------|
-| `openai-infqps-*-094004.json` | baseline BurstGPT |
-| `openai-infqps-*-094046.json` | baseline ShareGPT |
-| `openai-infqps-*-094225.json` | dynamic BurstGPT |
-| `openai-infqps-*-094306.json` | dynamic ShareGPT |
+| `2026-07-06-chunk-baseline-burstgpt.json` | baseline BurstGPT |
+| `2026-07-06-chunk-baseline-sharegpt.json` | baseline ShareGPT |
+| `2026-07-06-chunk-dynamic-burstgpt.json` | dynamic BurstGPT |
+| `2026-07-06-chunk-dynamic-sharegpt.json` | dynamic ShareGPT |
 
 ## Reproduction
 
