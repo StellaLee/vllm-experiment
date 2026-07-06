@@ -1,27 +1,52 @@
 # vLLM 0.23.0 Patches
 
-Two independent sets of patches are provided. Each can be applied standalone.
+Two independent patch sets, one directory per feature.
+
+```
+patches/
+  eviction/       -- pluggable KV-cache eviction policy
+  chunk_size/     -- dynamic chunked-prefill token budget
+  apply_patches.sh
+  README.md
+```
+
+## Applying
+
+```bash
+bash patches/apply_patches.sh                # both
+bash patches/apply_patches.sh --eviction     # eviction only
+bash patches/apply_patches.sh --chunk-size   # chunk size only
+```
+
+## Reverting
+
+```bash
+VLLM_SITE=$(python3 -c "import vllm, os; print(os.path.dirname(vllm.__file__))")
+# eviction
+patch -R -p1 -d "$VLLM_SITE/.." < patches/eviction/kv_cache_utils.patch
+patch -R -p1 -d "$VLLM_SITE/.." < patches/eviction/block_pool.patch
+# chunk size
+patch -R -p1 -d "$VLLM_SITE/.." < patches/chunk_size/scheduler.patch
+```
 
 ---
 
-## 1. Pluggable KV-Cache Eviction Policy
-
-Adds CF (Cascaded Frequency) and TDF (Time-Decayed Frequency) eviction policies
-to vLLM's prefix-cache block pool, controllable via `EVICTION_POLICY`.
+## eviction/ — Pluggable KV-Cache Eviction Policy
 
 **Files patched:** `vllm/v1/core/kv_cache_utils.py`, `vllm/v1/core/block_pool.py`
 
-| Policy | `EVICTION_POLICY` | Score formula | Best for |
-|--------|-------------------|---------------|----------|
-| LRU | `lru` (default) | least-recently-used | general workloads |
+Adds CF (Cascaded Frequency) and TDF (Time-Decayed Frequency) eviction policies
+alongside vLLM's default LRU, selectable via `EVICTION_POLICY`.
+
+| Policy | `EVICTION_POLICY` | Score | Best for |
+|--------|-------------------|-------|----------|
+| LRU | `lru` (default) | least-recently-used | general |
 | Cascaded Frequency | `cf` | `(hit_count+1)/(prefix_depth+1)` | multi-turn chat |
 | Time-Decayed Frequency | `tdf` | `(hit_count+1)·exp(−λ·age)` | repeated single-turn |
 
 **Result:** CF outperformed LRU by 40–62% on P95 TTFT in ShareGPT multi-turn
-experiments (concurrency=20, Qwen2.5-Coder-7B, gpu-mem-util=0.7).
+experiments (concurrency=20, Qwen2.5-Coder-7B).
 See `findings/2026-07-03-eviction-comparison.md`.
-
-### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -30,19 +55,16 @@ See `findings/2026-07-03-eviction-comparison.md`.
 
 ---
 
-## 2. Dynamic Chunk Size Controller
-
-Adds a bang-bang feedback controller to vLLM's chunked-prefill scheduler.
-Instead of a fixed token budget per scheduling step, the budget shrinks when
-many decode-phase requests are queued and grows when the queue is shallow.
-This prevents **decode starvation** under mixed prefill/decode workloads.
+## chunk_size/ — Dynamic Chunked-Prefill Token Budget
 
 **File patched:** `vllm/v1/core/sched/scheduler.py`
 
-**Mechanism:**
-- Signal: count of `running` requests with `is_prefill_chunk=False` (decode depth)
-- High threshold `> target × 1.5` → halve chunk (floor: `DYNAMIC_CHUNK_MIN`)
-- Low threshold `< target × 0.5` → double chunk (ceiling: static `max_num_scheduled_tokens`)
+Adds `ChunkSizeController`, a bang-bang feedback loop that adjusts the
+per-step token budget based on decode-queue depth, preventing decode
+starvation under mixed prefill/decode workloads.
+
+- decode depth > `TARGET × 1.5` → halve budget (floor: `DYNAMIC_CHUNK_MIN`)
+- decode depth < `TARGET × 0.5` → double budget (ceiling: static max)
 
 **Result (Qwen2.5-Coder-7B, 150 prompts, rate=inf):**
 
@@ -52,35 +74,10 @@ This prevents **decode starvation** under mixed prefill/decode workloads.
 | ShareGPT dynamic  | 5633 ms | 12378 ms | 25.3 ms | 6.01 req/s |
 | Delta | **−20.5%** | **−13.7%** | **−14.2%** | **+7.2%** |
 
-BurstGPT (thundering-herd arrival) reduced TPOT p95 by 70% but increased
-E2EL tail due to the controller over-shrinking the chunk under pure burst load.
-
-### Environment variables
+See `findings/chunk_20260706_093754/`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DYNAMIC_CHUNK` | `0` | Set to `1` to enable |
 | `DYNAMIC_CHUNK_TARGET` | `8` | Target decode-queue depth |
 | `DYNAMIC_CHUNK_MIN` | `256` | Minimum token budget per step |
-
----
-
-## Applying patches
-
-```bash
-# Apply all patches at once
-bash patches/apply_patches.sh
-
-# Or apply individually
-bash patches/apply_patches.sh --eviction-only
-bash patches/apply_patches.sh --chunk-only
-```
-
-## Reverting
-
-```bash
-VLLM_SITE=$(python3 -c "import vllm, os; print(os.path.dirname(vllm.__file__))")
-patch -R -p1 -d "$VLLM_SITE/.." < patches/kv_cache_utils.patch
-patch -R -p1 -d "$VLLM_SITE/.." < patches/block_pool.patch
-patch -R -p1 -d "$VLLM_SITE/.." < patches/scheduler.patch
-```
