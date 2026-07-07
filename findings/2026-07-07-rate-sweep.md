@@ -132,3 +132,22 @@ framed. The paper should:
 The TPOT story is now the paper's strongest empirical claim. The workshop draft
 should be reframed around tail latency and TPOT protection, with the TTFT gain
 presented as a saturation-regime bonus rather than the headline.
+
+---
+
+## Repro
+
+```bash
+# on remote server (ssh -p 23 root@117.50.214.139)
+cd /root/vllm-experiment
+
+# run full sweep (baseline + combined at 1/2/4/8 req/s, BurstGPT + ShareGPT):
+bash scripts/run_rate_sweep.sh
+
+# analyze results:
+python3 src/analyze_rate_sweep.py --log-dir logs
+```
+
+Results are saved as JSON in `logs/` with embedded tags
+`base_r{rate}_{dataset}` / `comb_r{rate}_{dataset}`.
+The analyzer loads all JSON files in the log dir and matches by tag field.
