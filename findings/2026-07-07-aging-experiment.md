@@ -111,9 +111,9 @@ permanently overloaded and TTFT gains are achievable.
 
 ```bash
 # on remote server (ssh -p 23 root@117.50.214.139)
-
-# default (aging disabled, T=inf):
 cd /root/vllm-experiment
+
+# default (aging disabled, T=inf) — should match comb_r8_burstgpt:
 bash scripts/run_aging_bench.sh
 
 # with 2s aging threshold:
@@ -123,5 +123,18 @@ AGING_THRESHOLD_MS=2000 bash scripts/run_aging_bench.sh
 AGING_THRESHOLD_MS=5000 bash scripts/run_aging_bench.sh
 ```
 
-Compare against existing `base_r8_burstgpt` and `comb_r8_burstgpt` tags from
-`scripts/run_rate_sweep.sh`.
+To keep multiple threshold runs as distinct tags, set `RESULT_TAG` before running:
+
+```bash
+RESULT_TAG=aging_inf_r8_burstgpt  bash scripts/run_aging_bench.sh
+RESULT_TAG=aging_2s_r8_burstgpt   AGING_THRESHOLD_MS=2000 bash scripts/run_aging_bench.sh
+RESULT_TAG=aging_5s_r8_burstgpt   AGING_THRESHOLD_MS=5000 bash scripts/run_aging_bench.sh
+```
+
+Compare against existing `base_r8_burstgpt` and `comb_r8_burstgpt` tags
+(from `scripts/run_rate_sweep.sh`), then analyze:
+
+```bash
+# locally
+python3 src/analyze_aging.py --log-dir logs
+```
