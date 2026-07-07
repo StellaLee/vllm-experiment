@@ -17,6 +17,7 @@ Five experiments completed on a single RTX 4090 with Qwen2.5-Coder-7B-Instruct:
 | Prefix-aware request reordering | TTFT p50 −26% on ShareGPT at rate=inf; TPOT +35% (side effect) | `findings/2026-07-06-reorder-experiment.md` |
 | **Combined condition** | TTFT p50 −30.2%, TPOT p95 −11.6%, throughput +19.5% on ShareGPT at rate=inf | `findings/2026-07-06-combined-experiment.md` |
 | **Arrival rate sweep (Ablation A)** | TTFT gains do NOT hold at realistic rates; TPOT/E2EL tail robust across all rates | `findings/2026-07-07-rate-sweep.md` |
+| **Aging mechanism (Phase 1.2)** | Aging is a fairness bound, not a TTFT fix; T=2s gives E2EL p95 −31% vs baseline; TTFT is worse at any T on saturated system | `findings/2026-07-07-aging-experiment.md` |
 
 **Revised central hypothesis:** Prefix-aware request reordering induces decode starvation under high utilization, measurably degrading TPOT. A decode-queue-depth-driven chunk controller absorbs this penalty and provides robust TPOT and tail latency improvements across all arrival rates. Combined with prefix-aware scheduling, the system achieves super-additive TTFT gains specifically near saturation.
 
@@ -33,11 +34,13 @@ Five experiments completed on a single RTX 4090 with Qwen2.5-Coder-7B-Instruct:
 - Result: TTFT p50 −30.2%, TPOT p95 −11.6%, throughput +19.5% on ShareGPT; every metric improves
 - See `findings/2026-07-06-combined-experiment.md`
 
-### 1.2 Aging mechanism for reordering *(now mandatory)*
-- Add max-wait threshold: promote any request waiting >T ms regardless of prefix warmth
-- Without this, reordering degrades TTFT at high load (BurstGPT 8 req/s: +24%)
-- Measure: TTFT distribution for warm vs. cold requests; show starvation eliminated
-- Effort: ~2 hours of code + 1 hour benchmarking
+### 1.2 Aging mechanism for reordering ✓ DONE
+- Two-pass sort: aged bucket (FIFO by arrival time) prepended before fresh bucket (warm-first)
+- Default `AGING_THRESHOLD_MS=inf` (disabled); set via env var
+- **Key finding:** aging does not recover TTFT at 2× overload (8 req/s, throughput ≈ 4 req/s). Any ordering that promotes cold requests delays warm ones; p50 TTFT is worse at every threshold tested.
+- **Genuine benefit:** bounds cold-request max wait → E2EL p95 −31.1% at T=2s vs −17.8% without aging
+- **Correct framing:** aging is a fairness bound, not a TTFT optimization. Near-saturation (~80–90% utilization, Phase 1.3) is the correct regime for TTFT gains
+- See `findings/2026-07-07-aging-experiment.md`; repro: `scripts/run_aging_bench.sh`
 
 ### 1.3 Near-saturation experiment *(new, replaces rate=inf as headline)*
 - Run combined condition at arrival rates that bring system to ~80–95% utilization
@@ -46,7 +49,7 @@ Five experiments completed on a single RTX 4090 with Qwen2.5-Coder-7B-Instruct:
 - Effort: ~1 hour, zero new code
 
 ### 1.4 Ablation studies (see §Ablation Plan below for full detail)
-- Full 2×2×2 factorial: eviction × reordering × chunk (4 CF conditions missing)
+- Full 2×2 LRU factorial: reordering × chunk (4 conditions; ns_dyn and ns_reorder still needed)
 - Arrival rate sweep: ✓ DONE — see `findings/2026-07-07-rate-sweep.md`
 - Reordering mechanism: per-step re-sort vs. admission-time sort vs. none
 - KV cache hit rate logging per condition — validates the causal mechanism
@@ -79,22 +82,27 @@ Ablations are structured to address three reviewer attack vectors: (1) "PRISM/Ca
 - If gains disappear at ≤2 req/s the contribution is narrowly scoped to burst scenarios
 - Effort: ~1 hour, zero new code
 
-**B. Full 2×2×2 factorial** *(closes the super-additivity argument)*
+**B. 2×2 factorial: reordering × chunk control** *(closes the super-additivity argument)*
 
-All 8 cells of {eviction: LRU/CF} × {reordering: off/on} × {chunk: static/dynamic}:
+CF eviction is deferred: the current TDF policy uses `prefix_depth` as a proxy for block
+importance, but the correct metric is the sum of descendant access counts (subtree hit rate) —
+i.e. "how many future hits are lost if this block is evicted?". The proxy is insufficiently
+accurate to support a paper claim. CF eviction moves to Phase 2 / future work.
+
+The super-additivity argument is made on the two validated interventions:
+{reordering: off/on} × {chunk: static/dynamic}:
 
 | Eviction | Reorder | Chunk | Tag | Status |
 |----------|---------|-------|-----|--------|
-| LRU | off | static 2048 | baseline | ✓ done |
-| LRU | off | dynamic | dynamic_only | ✓ done |
-| LRU | on | static 2048 | reorder_only | ✓ done |
-| LRU | on | dynamic | combined | ✓ done |
-| CF | off | static 2048 | cf_baseline | ✗ needed |
-| CF | off | dynamic | cf_dynamic | ✗ needed |
-| CF | on | static 2048 | cf_reorder | ✗ needed |
-| CF | on | dynamic | cf_combined | ✗ needed |
+| LRU | off | static 2048 | ns_base | ✗ needed (Phase 1.3) |
+| LRU | off | dynamic | ns_dyn | ✗ needed (Phase 1.3) |
+| LRU | on | static 2048 | ns_reorder | ✗ needed (Phase 1.3) |
+| LRU | on | dynamic | ns_comb | ✗ needed (Phase 1.3) |
+| CF | — | — | cf_* | ✗ deferred — policy flaw (see Open Questions) |
 
-Four CF conditions are missing; adding them closes the factorial and measures whether CF eviction is itself super-additive with the scheduling interventions. Effort: ~40 min, one new script.
+Four LRU conditions at near-saturation rate cover the factorial; ns_base and ns_comb come from
+`run_near_sat_bench.sh`, ns_dyn and ns_reorder need one additional script.
+Effort: ~20 min additional beyond Phase 1.3.
 
 **C. Reordering mechanism comparison** *(addresses FEATHER "why not RL?" objection)*
 - Three variants: none / admission-time sort (once at arrival) / per-step re-sort (current)
@@ -135,14 +143,16 @@ Four CF conditions are missing; adding them closes the factorial and measures wh
 
 | Priority | Ablation | Effort | Blocks |
 |----------|----------|--------|--------|
-| 1 | Arrival rate sweep (1/2/4/8 req/s) | 1 hr | Workshop |
-| 2 | Full 2×2×2 factorial (4 CF conditions) | 40 min | Workshop |
-| 3 | Admission-time vs. per-step reorder | 30 min | FEATHER rebuttal |
-| 4 | KV hit rate logging per condition | 1 hr | Mechanism claim |
-| 5 | Sarathi-Serve baseline | 2 hr | Main track |
-| 6 | Chunk controller step size | 3 hr | Main track |
-| 7 | PRISM baseline | 1–2 wk | Main track |
-| 8 | Sensitivity sweeps (H/I/J) | 2 hr | Main track polish |
+| 1 | Arrival rate sweep (1/2/4/8 req/s) | 1 hr | Workshop | ✓ done |
+| 2 | Near-saturation experiment + aging (Phase 1.3) | ~20 min | Workshop |
+| 3 | 2×2 LRU factorial (ns_dyn + ns_reorder conditions) | ~20 min | Workshop |
+| 4 | Admission-time vs. per-step reorder | 30 min | FEATHER rebuttal |
+| 5 | KV hit rate logging per condition | included in 2–3 | Mechanism claim |
+| 6 | CF eviction redesign (subtree hit rate) | ~1 wk | Main track |
+| 7 | Sarathi-Serve baseline | 2 hr | Main track |
+| 8 | Chunk controller step size | 3 hr | Main track |
+| 9 | PRISM baseline | 1–2 wk | Main track |
+| 10 | Sensitivity sweeps (H/I/J) | 2 hr | Main track polish |
 
 ---
 
@@ -238,9 +248,9 @@ Four CF conditions are missing; adding them closes the factorial and measures wh
 | 4 | Chunk controller absorbs TPOT penalty from reordering | Combined experiment | ✓ done |
 | 5 | TPOT/tail improvements are robust across arrival rates | Rate sweep (ablation A) | ✓ done |
 | 6 | Reordering degrades TTFT at high load without aging | Rate sweep 8 req/s BurstGPT | ✓ done |
-| 7 | Aging mechanism eliminates starvation safely | Aging experiment (Phase 1.2) | ✗ needed |
+| 7 | Aging mechanism bounds cold-request wait; E2EL p95 −31% at T=2s; TTFT not recoverable at 2× overload — near-saturation is the correct regime | Aging experiment (Phase 1.2) | ✓ done (reframed) |
 | 8 | Near-saturation is the right operating regime for gains | Near-saturation experiment (Phase 1.3) | ✗ needed |
-| 9 | Three interventions are super-additive | Full 2×2×2 factorial (ablation B) | ✗ partial |
+| 9 | Reordering + chunk control are super-additive (2×2 factorial; CF eviction deferred — policy flaw) | 2×2 LRU factorial at near-saturation (ablation B) | ✗ needed |
 | 10 | Reordering benefit requires prefix caching | `--no-enable-prefix-caching` run | ✗ needed |
 | 11 | Per-step re-sort outperforms admission-time sort | Mechanism ablation (ablation C) | ✗ needed |
 | 12 | Coupling is mechanistic (via hit rate) | Hit rate logging per condition (ablation D) | ✗ needed |
@@ -277,7 +287,8 @@ Four CF conditions are missing; adding them closes the factorial and measures wh
 - **Gains at realistic load:** ✓ ANSWERED by rate sweep. TTFT gains don't persist below saturation; TPOT/tail gains do. Paper scope is now explicitly bounded to high-utilization regime.
 - **Starvation at high load:** ✓ CONFIRMED at 8 req/s BurstGPT (+24% TTFT). Aging mechanism required before submission.
 - **Near-saturation operating point:** What arrival rate brings each workload to 80–90% utilization? That is the regime where all three interventions contribute; it should be the paper's primary evaluation point.
-- **Aging threshold tuning:** what wait threshold T balances starvation prevention vs. TTFT gain? Too low T → no reordering benefit; too high T → starvation persists. Needs empirical sweep.
+- **Aging threshold tuning:** ✓ ANSWERED. At 2× overload (8 req/s), no T recovers TTFT — the queue grows unboundedly regardless of ordering. T is meaningful only for E2EL tail: T=2s gives −31% E2EL p95 vs −18% without aging. The correct lever is operating the system at near-saturation (Phase 1.3), not tuning T.
+- **CF eviction policy redesign:** the TDF policy uses `prefix_depth` as a proxy for block importance, but the correct metric is the sum of descendant access counts (subtree hit rate) — how many future cache hits are lost if this block is evicted. `prefix_depth` is a noisy proxy (a depth-3 leaf with no children scores equally to a depth-3 block with 50 popular descendants). Correct implementation: maintain a per-block access counter; on each cache hit propagate +1 up the ancestor chain; use cumulative subtree count as the eviction score (evict the block with the lowest score). Effort: ~1 week of engineering + re-run. Deferred to Phase 2.
 - **Disaggregation interaction:** does prefix reordering still help when prefill and decode are on separate nodes? If yes, strictly complementary; if no, scope of claim must be bounded.
 - **Controller step size:** bang-bang (×2/÷2) is too coarse; a ±25% additive step may be more stable. Ablation G answers it.
 - **PRISM overlap risk:** PRISM uses static chunk size and doesn't measure TPOT — our chunk controller is the differentiator. Confirmed by literature review. Must still run PRISM as a direct baseline for main track.
