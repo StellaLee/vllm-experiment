@@ -252,7 +252,7 @@ Four CF conditions are missing; adding them closes the factorial and measures wh
 
 ## Timeline
 
-**MLSys 2027 submission deadline: October 2026. All phases must complete by end of September.**
+**MLSys 2027 submission deadline: 2026-10-30. All phases must complete by mid-October.**
 
 | Phase | Target completion | Milestone |
 |-------|-------------------|-----------|
@@ -262,13 +262,13 @@ Four CF conditions are missing; adding them closes the factorial and measures wh
 | Workshop draft | 2026-07-28 | Claims 1–12 substantiated; reframed thesis |
 | MLSys 2026 workshop deadline | ~2026-08 | Submit workshop paper |
 | Tier 2 ablations (E–G) | 2026-08-31 | Sarathi + PRISM baselines in hand |
-| Phase 2 (scale + diversity) | 2026-09-10 | Multi-GPU results — **must overlap with writing** |
-| Phase 3 (remaining baselines) | 2026-09-20 | Disaggregation framing done |
-| Phase 4 (theory) | 2026-09-25 | Theory section drafted — can be lightweight for main track |
-| Phase 5 (writing) | 2026-10-01 | Full draft circulated for review |
-| **MLSys 2027 submission** | **2026-10** | **Submit main track paper** |
+| Phase 2 (scale + diversity) | 2026-09-15 | Multi-GPU results — must overlap with writing |
+| Phase 3 (remaining baselines) | 2026-09-30 | Disaggregation framing done |
+| Phase 4 (theory) | 2026-10-07 | Theory section drafted — lightweight analytical sketch |
+| Phase 5 (writing) | 2026-10-20 | Full draft circulated for internal review |
+| **MLSys 2027 submission** | **2026-10-30** | **Submit main track paper** |
 
-**Timeline risk:** Phases 2–5 compress into 6 weeks (mid-August to October). Multi-GPU experiments (Phase 2) require renting A100 nodes and take calendar time regardless of effort. If PRISM baseline (ablation F) is not public by end of August, it falls off the main track submission. Theory (Phase 4) should be scoped to a short analytical section rather than a full formal treatment to fit the timeline.
+**Timeline risk:** Phases 2–5 have ~10 weeks (mid-August to Oct 30). Multi-GPU experiments (Phase 2) require renting A100 nodes and take calendar time regardless of effort — must start by early September. PRISM baseline (ablation F) needs ~2 weeks to implement; if not started by mid-August it falls off the submission. Theory (Phase 4) should be scoped to a short analytical section rather than a full formal treatment.
 
 ---
 
