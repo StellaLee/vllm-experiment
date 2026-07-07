@@ -63,13 +63,13 @@ Arrival rate: 4 req/s · same config
 
 **Why ShareGPT behaves differently:**
 
-1. **Low prefix repetition.** ShareGPT is a conversational dataset with diverse, single-turn prompts. There is little shared prefix structure across requests, so warm-first reordering provides minimal cache benefit while still delaying cold requests. The TTFT penalty (+18%) has no offsetting cache win.
+1. **Cache locality lost to request interleaving.** ShareGPT IS a multi-turn conversation dataset — each successive turn includes the full prior history as a prefix, so the theoretical prefix repetition is high. However, the benchmark sends 150 requests with Poisson arrivals and randomized ordering. Turn N+1 of conversation A does not necessarily arrive before turn N's KV blocks have been evicted by intervening requests from other conversations. In practice, the inter-turn gap under random arrival ordering is long enough for the cache to have turned over. We cannot confirm this hypothesis directly because the KV hit rate metric is returning N/A for all runs (vLLM v0.23.0 metric name mismatch — see Open Items).
 
-2. **Decode-bound workload.** ShareGPT has short inputs and long outputs. The GPU spends most time in autoregressive decode (memory-bandwidth bound), not prefill (compute bound). As a result, `nvidia-smi` GPU utilization stays flat regardless of arrival rate — it actually *decreases* from 75% at 4 req/s to 68% at 5 req/s, because higher rates cause more batching during decode which doesn't register as higher compute utilization. GPU util is not a reliable near-saturation signal for decode-heavy workloads.
+2. **Decode-bound workload.** ShareGPT has short inputs and long outputs. The GPU spends most time in autoregressive decode (memory-bandwidth bound), not prefill (compute bound). As a result, `nvidia-smi` GPU utilization stays flat regardless of arrival rate — it actually *decreases* from 75% at 4 req/s to 68% at 5 req/s, because batched decode does not saturate compute. GPU util is not a reliable near-saturation signal for decode-heavy workloads.
 
-3. **Not actually near-saturation.** At 4 req/s, ShareGPT achieves 3.43 req/s throughput — the system is keeping up without a persistent queue. Without a queue, there is no scheduling opportunity: all requests start immediately and warm-first reordering has no effect. The mechanism only activates when `self.waiting` is non-empty.
+3. **Not actually near-saturation.** At 4 req/s, ShareGPT achieves 3.43 req/s throughput — the system is keeping up without a persistent queue. Without a queue, there is no scheduling opportunity: requests start immediately and warm-first reordering has nothing to reorder. The mechanism only activates when `self.waiting` is non-empty.
 
-**Takeaway for paper:** Our mechanism is designed for prefill-heavy, prefix-rich workloads where (a) a waiting queue exists and (b) warm requests provide measurable cache benefit. BurstGPT (code completions with shared function signatures and context) matches this profile. ShareGPT does not. This scopes the claim correctly: the paper should position the contribution for code LLM serving and similar prefix-sharing workloads, not general-purpose chat.
+**Takeaway for paper:** The ShareGPT result is inconclusive, not a negative result. The most likely explanation is that random request ordering destroys the inter-turn cache locality that makes ShareGPT theoretically prefix-rich. Fixing the KV hit rate metric is the critical next step — if ShareGPT shows low hit rates despite high theoretical sharing, it confirms the ordering hypothesis and motivates conversation-aware request scheduling as future work. If hit rates are high but the mechanism still hurts, it points to decode-bound dynamics as the cause.
 
 ---
 
@@ -97,7 +97,7 @@ Aging recovers the p99 regression that combined alone introduces. The two-pass s
 
 ## 6. Open Items
 
-- **KV hit rate:** Prometheus metric names differ in vLLM v0.23.0; all runs show N/A. Need to discover the correct metric name on the remote to quantify cache hit improvement directly.
+- **KV hit rate (critical):** Prometheus metric names differ in vLLM v0.23.0; all runs show N/A. This is the single most important open item — without it we cannot explain the ShareGPT result (low hit rate → ordering hypothesis confirmed; high hit rate → decode-bound hypothesis). Need to grep the vLLM metrics endpoint on the remote to find the correct counter name.
 - **LRU factorial (Ablation B):** `ns_dyn` and `ns_reorder` conditions for the 2×2 factorial still need to be run (`scripts/run_lru_factorial.sh`).
 - **ShareGPT near-saturation:** No viable operating point found where ShareGPT is both queue-saturated and showing reordering benefit. Recommend treating ShareGPT as a "low-sharing" contrast case rather than a second positive result.
 - **Aging T sweep:** T=2 s was inherited from the saturation experiment. A short sweep (T=1, 2, 5 s) at 3 req/s would confirm this is near-optimal.
