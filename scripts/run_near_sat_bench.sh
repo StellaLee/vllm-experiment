@@ -35,6 +35,9 @@ NUM_PROMPTS=${NUM_PROMPTS:-150}
 RATE_BURSTGPT=${RATE_BURSTGPT:-4}
 RATE_SHAREGPT=${RATE_SHAREGPT:-4}
 AGING_THRESHOLD_MS=${AGING_THRESHOLD_MS:-2000}   # T=2s gave best E2EL at saturation
+# Rate suffix for tags: dots replaced with 'p' (e.g. 2.5 -> r2p5, 3 -> r3)
+RTAG_B="r$(echo "$RATE_BURSTGPT" | tr '.' 'p')"
+RTAG_S="r$(echo "$RATE_SHAREGPT" | tr '.' 'p')"
 
 BURSTGPT=BurstGPT/data/BurstGPT_1.csv
 SHAREGPT=data/sharegpt_v3.json
@@ -97,19 +100,25 @@ scrape_counter() {
 
 run_bench() {
     local dataset=$1 datapath=$2 tag=$3 rate=$4
+    local gpu_csv="/tmp/gpu_mon_${tag}.csv"
 
     echo ""
     echo "--- Benchmarking: tag=${tag}  rate=${rate} req/s ---"
 
-    # snapshot hit/query counters before run (server accumulates across runs)
+    # snapshot KV hit/query counters before run
     local hit_before query_before
     hit_before=$(scrape_counter "vllm:gpu_prefix_cache_hit_count_total")
     query_before=$(scrape_counter "vllm:gpu_prefix_cache_query_count_total")
-    # fallback metric names (older vLLM versions)
     if [ "${hit_before}" = "0" ] && [ "${query_before}" = "0" ]; then
         hit_before=$(scrape_counter "vllm:gpu_prefix_cache_hits_total")
         query_before=$(scrape_counter "vllm:gpu_prefix_cache_queries_total")
     fi
+
+    # start GPU utilization monitor (1 sample/sec)
+    nvidia-smi --query-gpu=utilization.gpu,utilization.memory \
+        --format=csv,noheader,nounits --loop=1 \
+        > "$gpu_csv" 2>/dev/null &
+    local gpu_mon_pid=$!
 
     $PYTHON -m vllm.entrypoints.cli.main bench serve \
         --host localhost --port "$PORT" \
@@ -125,7 +134,12 @@ run_bench() {
         --metadata "tag=${tag}" \
         2>&1 | tee "$LOG_DIR/${DATE}-bench-${tag}.log"
 
-    # snapshot after and write hit rate into result JSON
+    # stop GPU monitor
+    kill "$gpu_mon_pid" 2>/dev/null || true
+    wait "$gpu_mon_pid" 2>/dev/null || true
+    $PYTHON src/augment_gpu_util.py "$tag" "$LOG_DIR" "$gpu_csv"
+
+    # snapshot KV counters after and augment result JSON
     local hit_after query_after
     hit_after=$(scrape_counter "vllm:gpu_prefix_cache_hit_count_total")
     query_after=$(scrape_counter "vllm:gpu_prefix_cache_query_count_total")
@@ -133,7 +147,6 @@ run_bench() {
         hit_after=$(scrape_counter "vllm:gpu_prefix_cache_hits_total")
         query_after=$(scrape_counter "vllm:gpu_prefix_cache_queries_total")
     fi
-
     $PYTHON src/augment_hit_rate.py \
         "$tag" "$LOG_DIR" \
         "$hit_before" "$query_before" \
@@ -145,26 +158,24 @@ trap stop_server EXIT
 # ── Condition 1: baseline (LRU | no reorder | static chunk) ───────────────────
 start_server "baseline" env PREFIX_REORDER=0 DYNAMIC_CHUNK=0
 
-run_bench burstgpt "$BURSTGPT" "ns_base_burstgpt" "$RATE_BURSTGPT"
-run_bench sharegpt "$SHAREGPT"  "ns_base_sharegpt"  "$RATE_SHAREGPT"
+run_bench burstgpt "$BURSTGPT" "ns_base_${RTAG_B}_burstgpt" "$RATE_BURSTGPT"
+run_bench sharegpt "$SHAREGPT"  "ns_base_${RTAG_S}_sharegpt"  "$RATE_SHAREGPT"
 
 stop_server
 
 # ── Condition 2: combined (LRU | reorder | dynamic chunk) ─────────────────────
 start_server "combined" env PREFIX_REORDER=1 DYNAMIC_CHUNK=1
 
-run_bench burstgpt "$BURSTGPT" "ns_comb_burstgpt" "$RATE_BURSTGPT"
-run_bench sharegpt "$SHAREGPT"  "ns_comb_sharegpt"  "$RATE_SHAREGPT"
+run_bench burstgpt "$BURSTGPT" "ns_comb_${RTAG_B}_burstgpt" "$RATE_BURSTGPT"
+run_bench sharegpt "$SHAREGPT"  "ns_comb_${RTAG_S}_sharegpt"  "$RATE_SHAREGPT"
 
 stop_server
 
 # ── Condition 3: combined + aging (LRU | reorder | dynamic chunk | aging T) ───
-# At near-saturation (not 2x overload), aging may improve TTFT for cold requests
-# without unbounded queue growth.  T=2s was best for E2EL at 8 req/s saturation.
 start_server "aging" env PREFIX_REORDER=1 DYNAMIC_CHUNK=1 AGING_THRESHOLD_MS="${AGING_THRESHOLD_MS}"
 
-run_bench burstgpt "$BURSTGPT" "ns_aging_burstgpt" "$RATE_BURSTGPT"
-run_bench sharegpt "$SHAREGPT"  "ns_aging_sharegpt"  "$RATE_SHAREGPT"
+run_bench burstgpt "$BURSTGPT" "ns_aging_${RTAG_B}_burstgpt" "$RATE_BURSTGPT"
+run_bench sharegpt "$SHAREGPT"  "ns_aging_${RTAG_S}_sharegpt"  "$RATE_SHAREGPT"
 
 stop_server
 

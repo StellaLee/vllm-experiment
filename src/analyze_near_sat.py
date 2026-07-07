@@ -23,6 +23,7 @@ METRICS = [
     ("TPOT p95 (ms)",      "p95_tpot_ms",        True),
     ("E2EL p95 (ms)",      "p95_e2el_ms",        True),
     ("Throughput (req/s)", "request_throughput",  False),
+    ("GPU util (%)",       "gpu_util_pct",        False),
     ("KV hit rate",        "kv_hit_rate",         False),
 ]
 
@@ -55,21 +56,30 @@ def delta_str(bv, v, lower_better):
     return f"{pct:+.1f}% {arrow}"
 
 
+def find_tag(logs, prefix, ds):
+    """Return the most-recently-loaded tag matching ns_{prefix}_*_{ds} or ns_{prefix}_{ds}."""
+    suffixed = [k for k in logs if k.startswith(f"ns_{prefix}_") and k.endswith(f"_{ds}")]
+    if suffixed:
+        return suffixed[-1]
+    direct = f"ns_{prefix}_{ds}"
+    return direct if direct in logs else None
+
+
 def report_dataset(ds, logs):
-    base_tag  = f"ns_base_{ds}"
-    comb_tag  = f"ns_comb_{ds}"
-    aging_tag = f"ns_aging_{ds}"
-    base  = logs.get(base_tag)
-    comb  = logs.get(comb_tag)
-    aging = logs.get(aging_tag)
+    base_tag  = find_tag(logs, "base",  ds)
+    comb_tag  = find_tag(logs, "comb",  ds)
+    aging_tag = find_tag(logs, "aging", ds)
+    base  = logs.get(base_tag)  if base_tag  else None
+    comb  = logs.get(comb_tag)  if comb_tag  else None
+    aging = logs.get(aging_tag) if aging_tag else None
 
     print(f"\n{'='*80}")
     print(f"  {ds.upper()}  —  combined / aging vs baseline at near-saturation")
     print(f"{'='*80}")
 
     for tag, name in [(base_tag, "baseline"), (comb_tag, "combined"), (aging_tag, "aging")]:
-        if not logs.get(tag):
-            print(f"  [WARNING] Missing {tag} — run scripts/run_near_sat_bench.sh")
+        if tag is None or not logs.get(tag):
+            print(f"  [WARNING] Missing ns_{name}_{ds} (resolved: {tag}) — run scripts/run_near_sat_bench.sh")
 
     if not base:
         return
@@ -85,16 +95,20 @@ def report_dataset(ds, logs):
 
     for label, key, lower_better in METRICS:
         is_pct = key == "kv_hit_rate"
+        is_gpu = key == "gpu_util_pct"
         is_tp = "Throughput" in label
-        p = 2 if is_tp else 1
+        p = 2 if is_tp else (1 if not is_gpu else 0)
         bv = base.get(key)
         row = f"  {label:<24}"
         for i, (name, d) in enumerate(conditions):
             v = d.get(key) if d else None
             if i == 0:
-                cell = fmt(bv, p, pct=is_pct)
+                cell = (fmt(bv, p, pct=is_pct) if not is_gpu
+                        else (f"{bv:.0f}%" if bv is not None else "N/A"))
             else:
-                if is_pct:
+                if is_gpu:
+                    cell = (f"{v:.0f}%" if v is not None else "N/A")
+                elif is_pct:
                     cell = (f"{(v - bv)*100:+.1f}pp"
                             if bv is not None and v is not None else "N/A")
                 else:
