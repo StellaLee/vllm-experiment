@@ -1,25 +1,26 @@
 # MLSys Paper Submission Plan
 
-**Working title:** Cache-Aware Scheduling for LLM Serving: Eviction, Ordering, and Chunk Control as a Unified Hierarchy  
+**Working title:** Decode-Starvation-Aware Chunk Control for Prefix-Cached LLM Serving  
 **Target venue:** MLSys 2027 (main track); MLSys 2026 workshop as interim milestone  
 **Repo:** StellaLee/vllm-experiment  
 
 ---
 
-## Current Status (as of 2026-07-06)
+## Current Status (as of 2026-07-07)
 
-Four experiments completed on a single RTX 4090 with Qwen2.5-Coder-7B-Instruct:
+Five experiments completed on a single RTX 4090 with Qwen2.5-Coder-7B-Instruct:
 
 | Experiment | Key result | Findings file |
 |-----------|-----------|---------------|
 | CF eviction policy | CF > LRU on hit rate under pressure | `findings/2026-07-03-full-eviction-comparison.md` |
 | Static chunk sweep + dynamic controller | 2048 default is a saddle point; dynamic controller closes gap | `findings/2026-07-06-chunk-sweep.md` |
-| Prefix-aware request reordering | TTFT p50 −26% on ShareGPT; TPOT +35% (side effect) | `findings/2026-07-06-reorder-experiment.md` |
-| **Combined condition** | TTFT p50 −30.2%, TPOT p95 −11.6%, throughput +19.5% on ShareGPT | `findings/2026-07-06-combined-experiment.md` |
+| Prefix-aware request reordering | TTFT p50 −26% on ShareGPT at rate=inf; TPOT +35% (side effect) | `findings/2026-07-06-reorder-experiment.md` |
+| **Combined condition** | TTFT p50 −30.2%, TPOT p95 −11.6%, throughput +19.5% on ShareGPT at rate=inf | `findings/2026-07-06-combined-experiment.md` |
+| **Arrival rate sweep (Ablation A)** | TTFT gains do NOT hold at realistic rates; TPOT/E2EL tail robust across all rates | `findings/2026-07-07-rate-sweep.md` |
 
-Central hypothesis: the three interventions are complementary and super-additive — CF eviction retains the right blocks, reordering schedules cache-warm requests first, and the dynamic chunk controller prevents decode starvation when prefill surges.
+**Revised central hypothesis:** Prefix-aware request reordering induces decode starvation under high utilization, measurably degrading TPOT. A decode-queue-depth-driven chunk controller absorbs this penalty and provides robust TPOT and tail latency improvements across all arrival rates. Combined with prefix-aware scheduling, the system achieves super-additive TTFT gains specifically near saturation.
 
-**Important caveat:** all 0706 results use `rate=inf` (thundering-herd, 150 requests simultaneous). Gains are amplified by queuing pressure and must be validated under realistic Poisson arrival rates before submission.
+**Key scope revision from rate sweep:** TTFT gains (−30.2%) were a `rate=inf` queuing artifact. At sub-saturation Poisson rates (1–4 req/s), TTFT delta is near zero. TPOT and E2EL tail improvements are genuine and rate-robust. The paper's primary claim must shift to **TPOT/tail latency protection**, with TTFT improvement framed as a saturation-regime bonus. Starvation at 8 req/s BurstGPT (+24% TTFT) confirms an aging mechanism is required before submission.
 
 ---
 
@@ -32,21 +33,33 @@ Central hypothesis: the three interventions are complementary and super-additive
 - Result: TTFT p50 −30.2%, TPOT p95 −11.6%, throughput +19.5% on ShareGPT; every metric improves
 - See `findings/2026-07-06-combined-experiment.md`
 
-### 1.2 Ablation studies (see §Ablation Plan below for full detail)
+### 1.2 Aging mechanism for reordering *(now mandatory)*
+- Add max-wait threshold: promote any request waiting >T ms regardless of prefix warmth
+- Without this, reordering degrades TTFT at high load (BurstGPT 8 req/s: +24%)
+- Measure: TTFT distribution for warm vs. cold requests; show starvation eliminated
+- Effort: ~2 hours of code + 1 hour benchmarking
+
+### 1.3 Near-saturation experiment *(new, replaces rate=inf as headline)*
+- Run combined condition at arrival rates that bring system to ~80–95% utilization
+- ShareGPT saturation ≈ 5 req/s → test at 4–5 req/s; BurstGPT ≈ 4 req/s → test at 3–4 req/s
+- This is the regime where gains are real and meaningful; should be the paper's primary figure
+- Effort: ~1 hour, zero new code
+
+### 1.4 Ablation studies (see §Ablation Plan below for full detail)
 - Full 2×2×2 factorial: eviction × reordering × chunk (4 CF conditions missing)
-- Arrival rate sweep: Poisson 1/2/4/8 req/s — validates gains outside `rate=inf`
+- Arrival rate sweep: ✓ DONE — see `findings/2026-07-07-rate-sweep.md`
 - Reordering mechanism: per-step re-sort vs. admission-time sort vs. none
 - KV cache hit rate logging per condition — validates the causal mechanism
 
-### 1.3 Prefix caching control
+### 1.5 Prefix caching control
 - Run with `--no-enable-prefix-caching`; shows reordering gives zero benefit without prefix cache
 - Zero new code, one flag
 
-### 1.4 Overhead measurement
+### 1.6 Overhead measurement
 - Profile per-step cost of: prefix hash tree lookup (reordering), decode queue check (chunk controller)
 - Must be negligible (<1% scheduling overhead) to survive reviewer scrutiny
 
-### 1.5 Clean implementation
+### 1.7 Clean implementation
 - Replace patch scripts with a proper fork/branch of vLLM
 - Write unit tests for the scheduler modifications
 - Paper cannot describe "monkey-patching"; needs to present as a clean design
@@ -221,16 +234,19 @@ Four CF conditions are missing; adding them closes the factorial and measures wh
 |---|-------|----------------|--------|
 | 1 | 2048 is a workload-dependent saddle point | Static chunk sweep | ✓ done |
 | 2 | CF eviction improves hit rate under pressure | Eviction comparison | ✓ done |
-| 3 | Reordering reduces TTFT on prefix-heavy workloads | Reorder experiment | ✓ done |
+| 3 | Reordering reduces TTFT **at high utilization** | Reorder + rate sweep | ✓ done (scoped) |
 | 4 | Chunk controller absorbs TPOT penalty from reordering | Combined experiment | ✓ done |
-| 5 | Three interventions are super-additive | Full 2×2×2 factorial (ablation B) | ✗ partial |
-| 6 | Gains persist under realistic arrival rates | Poisson rate sweep (ablation A) | ✗ needed |
-| 7 | Reordering benefit requires prefix caching | `--no-enable-prefix-caching` run | ✗ needed |
-| 8 | Per-step re-sort outperforms admission-time sort | Mechanism ablation (ablation C) | ✗ needed |
-| 9 | Coupling is mechanistic (via hit rate) | Hit rate logging per condition (ablation D) | ✗ needed |
-| 10 | Gains exceed Sarathi-Serve tuned static chunk | Sarathi baseline (ablation E) | ✗ needed |
-| 11 | Results hold at 32B/70B scale | Multi-GPU experiments (Phase 2.1) | ✗ needed |
-| 12 | System outperforms or matches PRISM | PRISM baseline (ablation F) | ✗ needed |
+| 5 | TPOT/tail improvements are robust across arrival rates | Rate sweep (ablation A) | ✓ done |
+| 6 | Reordering degrades TTFT at high load without aging | Rate sweep 8 req/s BurstGPT | ✓ done |
+| 7 | Aging mechanism eliminates starvation safely | Aging experiment (Phase 1.2) | ✗ needed |
+| 8 | Near-saturation is the right operating regime for gains | Near-saturation experiment (Phase 1.3) | ✗ needed |
+| 9 | Three interventions are super-additive | Full 2×2×2 factorial (ablation B) | ✗ partial |
+| 10 | Reordering benefit requires prefix caching | `--no-enable-prefix-caching` run | ✗ needed |
+| 11 | Per-step re-sort outperforms admission-time sort | Mechanism ablation (ablation C) | ✗ needed |
+| 12 | Coupling is mechanistic (via hit rate) | Hit rate logging per condition (ablation D) | ✗ needed |
+| 13 | Gains exceed Sarathi-Serve tuned static chunk | Sarathi baseline (ablation E) | ✗ needed |
+| 14 | Results hold at 32B/70B scale | Multi-GPU experiments (Phase 2.1) | ✗ needed |
+| 15 | System outperforms or matches PRISM | PRISM baseline (ablation F) | ✗ needed |
 
 ---
 
@@ -238,9 +254,10 @@ Four CF conditions are missing; adding them closes the factorial and measures wh
 
 | Phase | Target completion | Milestone |
 |-------|-------------------|-----------|
-| Tier 1 ablations (A–D) | 2026-07-13 | ~3 hrs compute; closes workshop argument |
-| Phase 1 complete | 2026-07-20 | Clean implementation + overhead measurement |
-| Workshop draft | 2026-07-27 | Claims 1–9 substantiated |
+| Aging mechanism + near-saturation experiment | 2026-07-10 | Starvation fixed; new headline figure |
+| Tier 1 ablations (B–D) | 2026-07-14 | 2×2×2 factorial + hit rate logging |
+| Phase 1 complete | 2026-07-21 | Clean implementation + overhead |
+| Workshop draft | 2026-07-28 | Claims 1–12 substantiated; reframed thesis |
 | MLSys 2026 workshop deadline | ~2026-08 | Submit workshop paper |
 | Tier 2 ablations (E–G) | 2026-09-15 | Sarathi + PRISM baselines in hand |
 | Phase 2 (scale + diversity) | 2026-09-30 | Multi-GPU results |
@@ -253,10 +270,12 @@ Four CF conditions are missing; adding them closes the factorial and measures wh
 
 ## Open Questions
 
-- **Gains at realistic load:** `rate=inf` amplifies queuing effects; gains may shrink substantially under Poisson arrivals. This is the single biggest risk to the paper's practical claim. Ablation A answers it.
+- **Gains at realistic load:** ✓ ANSWERED by rate sweep. TTFT gains don't persist below saturation; TPOT/tail gains do. Paper scope is now explicitly bounded to high-utilization regime.
+- **Starvation at high load:** ✓ CONFIRMED at 8 req/s BurstGPT (+24% TTFT). Aging mechanism required before submission.
+- **Near-saturation operating point:** What arrival rate brings each workload to 80–90% utilization? That is the regime where all three interventions contribute; it should be the paper's primary evaluation point.
+- **Aging threshold tuning:** what wait threshold T balances starvation prevention vs. TTFT gain? Too low T → no reordering benefit; too high T → starvation persists. Needs empirical sweep.
 - **Disaggregation interaction:** does prefix reordering still help when prefill and decode are on separate nodes? If yes, strictly complementary; if no, scope of claim must be bounded.
-- **Controller step size:** bang-bang (×2/÷2) is too coarse for ShareGPT; a ±25% additive step or moving-average filter may reach the static optimum more consistently. Ablation G answers it.
-- **Eviction + reordering coupling mechanism:** CF retains blocks that reordering will prioritise — does the combination achieve higher effective hit rate than either alone? Ablation D (hit rate logging) quantifies this.
-- **PRISM overlap risk:** PRISM (arXiv:2605.08581) co-designs scheduling + eviction and reports similar TTFT gains. If their system also naturally suppresses TPOT degradation, our third layer (chunk control) loses novelty. Must run PRISM as a direct baseline.
-- **Prefix hash tree overhead at scale:** lookup is O(prefix_depth); at 32K-token prompts under TP=4, overhead needs measurement.
-- **Statistical validity:** all experiments use 150 prompts at `rate=inf`. Small sample size inflates variance. The +19.5% throughput on ShareGPT in particular warrants a repeat run to confirm.
+- **Controller step size:** bang-bang (×2/÷2) is too coarse; a ±25% additive step may be more stable. Ablation G answers it.
+- **PRISM overlap risk:** PRISM uses static chunk size and doesn't measure TPOT — our chunk controller is the differentiator. Confirmed by literature review. Must still run PRISM as a direct baseline for main track.
+- **Prefix hash tree overhead at scale:** lookup is O(prefix_depth); at 32K-token prompts under TP=4, needs measurement.
+- **Statistical validity:** 150 prompts per run; near-saturation results may have higher variance. Repeat runs needed for the primary near-saturation figure.
