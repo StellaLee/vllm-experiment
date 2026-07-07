@@ -88,8 +88,9 @@ stop_server() {
 }
 
 # Sum a Prometheus counter across all label combos; always exits 0.
+# Each stage is wrapped in || true so pipefail never triggers.
 scrape_counter() {
-    curl -s "http://localhost:${PORT}/metrics" 2>/dev/null \
+    (curl -s "http://localhost:${PORT}/metrics" 2>/dev/null || true) \
         | (grep -E "^${1}(\{|[[:space:]])" || true) \
         | awk '{s += $NF} END {print s+0}'
 }
