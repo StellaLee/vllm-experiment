@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
-Replay ShareGPT multi-turn conversations against vLLM /generate (streaming).
+Replay ShareGPT multi-turn conversations against vLLM OpenAI-compatible server.
 Sends each turn with accumulated conversation history as prefix so vLLM's
 KV cache sees the shared prefix across turns.
 
 With --concurrency N, N conversations run in parallel (turns within each
 conversation remain sequential so accumulated prefixes stay consistent).
+
+Uses /v1/completions with a flat text prompt built from conversation history.
+This guarantees the same token prefix is presented on each successive turn,
+which is what makes prefix caching effective for multi-turn workloads.
 
 Output: JSONL with one record per request, including conv_id, turn number,
 prompt length, TTFT, and total latency.
@@ -14,16 +18,17 @@ import argparse, json, os, time, urllib.request, urllib.error, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def stream_request(host, port, prompt, max_tokens):
-    """POST to /generate with stream=True. Returns (ttft_s, total_s, output_tokens).
+def stream_request(host, port, prompt, max_tokens, model):
+    """POST to /v1/completions with stream=True. Returns (ttft_s, total_s, output_tokens).
 
-    vLLM native API server streams raw JSONL (no SSE prefix):
-      {"text": ["prompt + generated tokens so far"]}
-    TTFT = time until the first chunk whose text is longer than the prompt.
+    OpenAI SSE format:
+      data: {"choices": [{"text": "..."}]}
+    TTFT = time until first non-empty text chunk arrives.
     output_tokens = word count of generated text (proxy; ~0.75 words/token).
     """
-    url = f"http://{host}:{port}/generate"
+    url = f"http://{host}:{port}/v1/completions"
     payload = json.dumps({
+        "model": model,
         "prompt": prompt,
         "max_tokens": max_tokens,
         "temperature": 0.0,
@@ -33,27 +38,31 @@ def stream_request(host, port, prompt, max_tokens):
         url, data=payload, headers={"Content-Type": "application/json"})
     t0 = time.monotonic()
     ttft = None
-    last_full_text = prompt
+    output_parts = []
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line:
+                if not line or line == "data: [DONE]":
                     continue
+                if line.startswith("data: "):
+                    line = line[6:]
                 try:
                     obj = json.loads(line)
-                    texts = obj.get("text", [])
-                    full_text = texts[0] if isinstance(texts, list) and texts else (texts or "")
-                    if full_text:
-                        last_full_text = full_text
-                    if ttft is None and len(full_text) > len(prompt):
-                        ttft = time.monotonic() - t0
+                    text = ""
+                    choices = obj.get("choices", [])
+                    if choices:
+                        text = choices[0].get("text", "") or ""
+                    if text:
+                        if ttft is None:
+                            ttft = time.monotonic() - t0
+                        output_parts.append(text)
                 except json.JSONDecodeError:
                     pass
         total = time.monotonic() - t0
     except urllib.error.URLError as e:
         raise RuntimeError(f"Request failed: {e}")
-    output_text = last_full_text[len(prompt):]
+    output_text = "".join(output_parts)
     output_tokens = max(1, len(output_text.split()))
     return ttft, total, output_tokens
 
@@ -83,7 +92,7 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
         prompt = build_prompt(history, human_msg)
 
         try:
-            ttft, total, output_tokens = stream_request(args.host, args.port, prompt, args.max_tokens)
+            ttft, total, output_tokens = stream_request(args.host, args.port, prompt, args.max_tokens, args.model)
             gpt_placeholder = f"[turn {turn_num+1} response]"
             if i + 1 < len(turns) and turns[i + 1].get("from") == "gpt":
                 gpt_placeholder = turns[i + 1]["value"].strip()[:256]
@@ -123,6 +132,8 @@ def main():
     ap = argparse.ArgumentParser(description="Replay ShareGPT conversations against vLLM")
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--model", default="/model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct",
+                    help="Model name as registered with the server")
     ap.add_argument("--dataset", required=True, help="ShareGPT JSON file (list of conversations)")
     ap.add_argument("--num-convs", type=int, default=50, help="Conversations to replay")
     ap.add_argument("--max-turns", type=int, default=4, help="Max turns per conversation")
