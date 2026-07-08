@@ -15,12 +15,14 @@ import sys
 
 # vLLM has used several metric names across versions; try all of them.
 HIT_NAMES = [
-    "vllm:gpu_prefix_cache_hit_count_total",
+    "vllm:prefix_cache_hits_total",           # current (no gpu_ prefix)
+    "vllm:gpu_prefix_cache_hit_count_total",  # older
     "vllm:gpu_prefix_cache_hits_total",
     "vllm:gpu_cache_hit_count_total",
 ]
 QUERY_NAMES = [
-    "vllm:gpu_prefix_cache_query_count_total",
+    "vllm:prefix_cache_queries_total",          # current (no gpu_ prefix)
+    "vllm:gpu_prefix_cache_query_count_total",  # older
     "vllm:gpu_prefix_cache_queries_total",
     "vllm:gpu_cache_query_count_total",
 ]

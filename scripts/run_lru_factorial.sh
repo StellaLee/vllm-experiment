@@ -96,14 +96,6 @@ run_bench() {
     echo ""
     echo "--- Benchmarking: tag=${tag}  rate=${RATE} req/s ---"
 
-    local hit_before query_before
-    hit_before=$(scrape_counter "vllm:gpu_prefix_cache_hit_count_total")
-    query_before=$(scrape_counter "vllm:gpu_prefix_cache_query_count_total")
-    if [ "${hit_before}" = "0" ] && [ "${query_before}" = "0" ]; then
-        hit_before=$(scrape_counter "vllm:gpu_prefix_cache_hits_total")
-        query_before=$(scrape_counter "vllm:gpu_prefix_cache_queries_total")
-    fi
-
     $PYTHON -m vllm.entrypoints.cli.main bench serve \
         --host localhost --port "$PORT" \
         --model "$MODEL" \
@@ -118,18 +110,7 @@ run_bench() {
         --metadata "tag=${tag}" \
         2>&1 | tee "$LOG_DIR/${DATE}-bench-${tag}.log"
 
-    local hit_after query_after
-    hit_after=$(scrape_counter "vllm:gpu_prefix_cache_hit_count_total")
-    query_after=$(scrape_counter "vllm:gpu_prefix_cache_query_count_total")
-    if [ "${hit_after}" = "0" ] && [ "${query_after}" = "0" ]; then
-        hit_after=$(scrape_counter "vllm:gpu_prefix_cache_hits_total")
-        query_after=$(scrape_counter "vllm:gpu_prefix_cache_queries_total")
-    fi
-
-    $PYTHON src/augment_hit_rate.py \
-        "$tag" "$LOG_DIR" \
-        "$hit_before" "$query_before" \
-        "$hit_after" "$query_after"
+    $PYTHON src/augment_hit_rate.py "$tag" "$LOG_DIR" "$PORT"
 }
 
 trap stop_server EXIT

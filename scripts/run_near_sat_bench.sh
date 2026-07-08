@@ -105,15 +105,6 @@ run_bench() {
     echo ""
     echo "--- Benchmarking: tag=${tag}  rate=${rate} req/s ---"
 
-    # snapshot KV hit/query counters before run
-    local hit_before query_before
-    hit_before=$(scrape_counter "vllm:gpu_prefix_cache_hit_count_total")
-    query_before=$(scrape_counter "vllm:gpu_prefix_cache_query_count_total")
-    if [ "${hit_before}" = "0" ] && [ "${query_before}" = "0" ]; then
-        hit_before=$(scrape_counter "vllm:gpu_prefix_cache_hits_total")
-        query_before=$(scrape_counter "vllm:gpu_prefix_cache_queries_total")
-    fi
-
     # start GPU utilization monitor (1 sample/sec)
     nvidia-smi --query-gpu=utilization.gpu,utilization.memory \
         --format=csv,noheader,nounits --loop=1 \
@@ -139,18 +130,8 @@ run_bench() {
     wait "$gpu_mon_pid" 2>/dev/null || true
     $PYTHON src/augment_gpu_util.py "$tag" "$LOG_DIR" "$gpu_csv"
 
-    # snapshot KV counters after and augment result JSON
-    local hit_after query_after
-    hit_after=$(scrape_counter "vllm:gpu_prefix_cache_hit_count_total")
-    query_after=$(scrape_counter "vllm:gpu_prefix_cache_query_count_total")
-    if [ "${hit_after}" = "0" ] && [ "${query_after}" = "0" ]; then
-        hit_after=$(scrape_counter "vllm:gpu_prefix_cache_hits_total")
-        query_after=$(scrape_counter "vllm:gpu_prefix_cache_queries_total")
-    fi
-    $PYTHON src/augment_hit_rate.py \
-        "$tag" "$LOG_DIR" \
-        "$hit_before" "$query_before" \
-        "$hit_after" "$query_after"
+    # scrape KV hit rate from live /metrics endpoint (Python, no curl needed)
+    $PYTHON src/augment_hit_rate.py "$tag" "$LOG_DIR" "$PORT"
 }
 
 trap stop_server EXIT
