@@ -123,18 +123,22 @@ REORDER_BLOCK = """            if self._prefix_reorder and self.waiting and hasa
                 import time as _time
                 _now = _time.time()
                 _thresh_s = self._aging_threshold_ms / 1000.0
-                def _cached_tokens(req):
+                def _hit_ratio(req):
+                    total = req.num_prompt_tokens
+                    if total == 0:
+                        return 0.0
                     if req.num_computed_tokens > 0:
-                        return req.num_computed_tokens
-                    _, n = self.kv_cache_manager.get_computed_blocks(req)
-                    return n
+                        cached = req.num_computed_tokens
+                    else:
+                        _, cached = self.kv_cache_manager.get_computed_blocks(req)
+                    return cached / total
                 _aged = sorted(
                     [r for r in self.waiting if (_now - r.arrival_time) >= _thresh_s],
                     key=lambda r: r.arrival_time,
                 )
                 _fresh = sorted(
                     [r for r in self.waiting if (_now - r.arrival_time) < _thresh_s],
-                    key=_cached_tokens, reverse=True,
+                    key=_hit_ratio, reverse=True,
                 )
                 self.waiting.clear()
                 self.waiting.extend(_aged + _fresh)
