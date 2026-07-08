@@ -57,10 +57,12 @@ def delta_str(bv, v, lower_better):
 
 
 def find_tag(logs, prefix, ds):
-    """Return the most-recently-loaded tag matching ns_{prefix}_*_{ds} or ns_{prefix}_{ds}."""
-    suffixed = [k for k in logs if k.startswith(f"ns_{prefix}_") and k.endswith(f"_{ds}")]
-    if suffixed:
-        return suffixed[-1]
+    """Return the most-recently-loaded tag matching ns_{prefix}_r*_{ds} or ns_{prefix}_{ds}."""
+    import re
+    rate_re = re.compile(rf"^ns_{re.escape(prefix)}_r[\dp]+_{re.escape(ds)}$")
+    rate_tags = [k for k in logs if rate_re.match(k)]
+    if rate_tags:
+        return rate_tags[-1]
     direct = f"ns_{prefix}_{ds}"
     return direct if direct in logs else None
 
