@@ -326,3 +326,30 @@ All experiments are consistent with a single mechanism story:
    makes reordering more effective. The three mechanisms compose: higher hit rate
    (CF) → more warm requests available → reordering has more to select from →
    chunking prevents stalls when cold requests do get scheduled.
+
+---
+
+## Exp 8b — Multi-Turn Replay at Concurrency=15 (2026-07-08)
+
+Replication of Exp 8 at concurrency=15 (down from 20) to target ~85% GPU util.
+Result: GPU util remains 95.5% — lower concurrency does not reduce load because
+accumulated prompts grow longer each turn, generating heavier compute per turn.
+See `findings/2026-07-08-multiturn.md` for full detail.
+
+### Per-turn TTFT p95 (concurrency=15, 200 convs × 4 turns)
+
+| Turn | Baseline p95 | Combined Δ  | Aging Δ     |
+|------|-------------|-------------|-------------|
+| 1    | 234.6 ms    | −6.6%       | −4.0%       |
+| 2    | 125.0 ms    | −13.5%      | −20.9%      |
+| 3    | 147.8 ms    | **−40.6%**  | **−43.3%**  |
+| 4    | 154.5 ms    | **−47.2%**  | **−47.8%**  |
+
+Median TTFT: ~54ms flat across all conditions. KV hit rate: 56.3% (invariant).
+
+Compared to concurrency=20 (Exp 8), the improvement at turn 4 is larger
+(47% vs 25–27%) and the per-turn pattern is monotonically increasing —
+each additional turn adds more shared prefix and the mechanism exploits it more.
+The concurrency=15 data is the cleaner result to present in the paper.
+
+**Update to claims:** Tail TTFT p95 improvement at turn 4 is −47%, not −27%.
