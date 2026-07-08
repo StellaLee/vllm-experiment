@@ -2,21 +2,24 @@
 # run_near_sat_bench.sh
 # Phase 1.3: near-saturation headline experiment with KV cache hit rate logging.
 #
-# Runs baseline (LRU|off|static) and combined (LRU|on|dynamic) at near-saturation
-# arrival rates (~80-90% utilization) on both BurstGPT and ShareGPT.  This is the
-# paper's primary evaluation point (rate=inf was a thundering-herd artifact).
+# Runs baseline / combined / aging at near-saturation arrival rates (~85% GPU util)
+# on BurstGPT only. ShareGPT is excluded: the vLLM bench client randomly shuffles
+# conversations, destroying prefix locality and making the dataset useless for
+# testing prefix-aware scheduling. Use run_multiturn_bench.sh for ShareGPT.
 #
 # KV prefix-cache hit rate is scraped from the /metrics endpoint after each run
 # and stored in the result JSON alongside the latency numbers.
 #
 # Tags produced:
-#   ns_base_burstgpt,  ns_comb_burstgpt,  ns_aging_burstgpt
-#   ns_base_sharegpt,  ns_comb_sharegpt,  ns_aging_sharegpt
+#   ns_base_r<N>[_t<T>]_burstgpt
+#   ns_comb_r<N>[_t<T>]_burstgpt
+#   ns_aging_r<N>[_t<T>]_burstgpt
 #
 # Usage:
-#   bash scripts/run_near_sat_bench.sh
-#   RATE_BURSTGPT=3 RATE_SHAREGPT=5 bash scripts/run_near_sat_bench.sh
-#   AGING_THRESHOLD_MS=5000 bash scripts/run_near_sat_bench.sh  # change aging T
+#   env RATE_BURSTGPT=3 bash scripts/run_near_sat_bench.sh
+#   env RATE_BURSTGPT=3 TRIAL=1 bash scripts/run_near_sat_bench.sh  # repeated trial
+#   env RATE_BURSTGPT=3 NUM_PROMPTS=500 bash scripts/run_near_sat_bench.sh
+#   env AGING_THRESHOLD_MS=5000 bash scripts/run_near_sat_bench.sh
 #
 # Analyze with: python3 src/analyze_near_sat.py
 #
@@ -32,15 +35,13 @@ MODEL=${MODEL:-/model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct}
 PORT=${PORT:-8000}
 MAX_SEQS=${MAX_SEQS:-32}
 NUM_PROMPTS=${NUM_PROMPTS:-150}
-RATE_BURSTGPT=${RATE_BURSTGPT:-4}
-RATE_SHAREGPT=${RATE_SHAREGPT:-4}
+RATE_BURSTGPT=${RATE_BURSTGPT:-3}
 AGING_THRESHOLD_MS=${AGING_THRESHOLD_MS:-2000}   # T=2s gave best E2EL at saturation
 # Rate suffix for tags: dots replaced with 'p' (e.g. 2.5 -> r2p5, 3 -> r3)
-RTAG_B="r$(echo "$RATE_BURSTGPT" | tr '.' 'p')"
-RTAG_S="r$(echo "$RATE_SHAREGPT" | tr '.' 'p')"
+# Optional TRIAL env var appends _t<N> for repeated trials (e.g. TRIAL=1 -> r3_t1)
+RTAG_B="r$(echo "$RATE_BURSTGPT" | tr '.' 'p')${TRIAL:+_t${TRIAL}}"
 
 BURSTGPT=BurstGPT/data/BurstGPT_1.csv
-SHAREGPT=data/sharegpt_v3.json
 LOG_DIR=logs
 DATE=$(date +%Y-%m-%d)
 PID_FILE=/tmp/vllm_nearsat_pid
@@ -49,7 +50,7 @@ mkdir -p "$LOG_DIR"
 
 echo "======================================================="
 echo "  Phase 1.3: Near-Saturation Headline Experiment"
-echo "  BurstGPT: ${RATE_BURSTGPT} req/s  |  ShareGPT: ${RATE_SHAREGPT} req/s"
+echo "  BurstGPT: ${RATE_BURSTGPT} req/s  |  trial: ${TRIAL:-<none>}"
 echo "  Prompts : ${NUM_PROMPTS}  |  max-seqs: ${MAX_SEQS}  |  aging T=${AGING_THRESHOLD_MS}ms"
 echo "======================================================="
 
@@ -140,7 +141,6 @@ trap stop_server EXIT
 start_server "baseline" env PREFIX_REORDER=0 DYNAMIC_CHUNK=0
 
 run_bench burstgpt "$BURSTGPT" "ns_base_${RTAG_B}_burstgpt" "$RATE_BURSTGPT"
-run_bench sharegpt "$SHAREGPT"  "ns_base_${RTAG_S}_sharegpt"  "$RATE_SHAREGPT"
 
 stop_server
 
@@ -148,7 +148,6 @@ stop_server
 start_server "combined" env PREFIX_REORDER=1 DYNAMIC_CHUNK=1
 
 run_bench burstgpt "$BURSTGPT" "ns_comb_${RTAG_B}_burstgpt" "$RATE_BURSTGPT"
-run_bench sharegpt "$SHAREGPT"  "ns_comb_${RTAG_S}_sharegpt"  "$RATE_SHAREGPT"
 
 stop_server
 
@@ -156,11 +155,10 @@ stop_server
 start_server "aging" env PREFIX_REORDER=1 DYNAMIC_CHUNK=1 AGING_THRESHOLD_MS="${AGING_THRESHOLD_MS}"
 
 run_bench burstgpt "$BURSTGPT" "ns_aging_${RTAG_B}_burstgpt" "$RATE_BURSTGPT"
-run_bench sharegpt "$SHAREGPT"  "ns_aging_${RTAG_S}_sharegpt"  "$RATE_SHAREGPT"
 
 stop_server
 
 echo ""
 echo "=== Near-saturation experiment done. ==="
 echo "    Analyze with: python3 src/analyze_near_sat.py"
-echo "    Expected runtime: ~18-22 min (3 server starts + 6 bench runs)"
+echo "    Expected runtime: ~10-12 min (3 server starts + 3 bench runs)"
