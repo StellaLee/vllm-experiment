@@ -229,3 +229,18 @@ Uses the pre-hysteresis scheduler. Archived log:
 |-----|------|
 | hyst\_t1 | `logs/2026-07-09-mt-mt_chunk_hyst_c15_t1.jsonl` |
 | hyst\_t2 | `logs/2026-07-09-mt-mt_chunk_hyst_c15_t2.jsonl` |
+
+
+---
+
+## Analysis
+
+```bash
+python3 src/analyze_ablation.py --avg-pairs \
+  "baseline:logs/2026-07-08-mt-mt_base_c15.jsonl" \
+  "chunk_t1:logs/2026-07-08-mt-mt_chunk_c15.jsonl" \
+  "chunk_t2:logs/2026-07-08-mt-mt_chunk_c15_t2.jsonl" \
+  "hyst_t1:logs/2026-07-09-mt-mt_chunk_hyst_c15_t1.jsonl" \
+  "hyst_t2:logs/2026-07-09-mt-mt_chunk_hyst_c15_t2.jsonl" \
+  "combined:logs/2026-07-08-mt-mt_comb_c15.jsonl"
+```

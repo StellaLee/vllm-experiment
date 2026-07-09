@@ -251,3 +251,18 @@ longer read by the reorder block.
 |-----|------|
 | soft\_t1 | `logs/2026-07-09-mt-mt_soft_aging_c15_t1.jsonl` |
 | soft\_t2 | `logs/2026-07-09-mt-mt_soft_aging_c15_t2.jsonl` |
+
+
+---
+
+## Analysis
+
+```bash
+python3 src/analyze_ablation.py --avg-pairs \
+  "baseline:logs/2026-07-08-mt-mt_base_c15.jsonl" \
+  "ratio_t1:logs/2026-07-08-mt-mt_ratio_reorder_c15_t1.jsonl" \
+  "ratio_t2:logs/2026-07-08-mt-mt_ratio_reorder_c15_t2.jsonl" \
+  "soft_t1:logs/2026-07-09-mt-mt_soft_aging_c15_t1.jsonl" \
+  "soft_t2:logs/2026-07-09-mt-mt_soft_aging_c15_t2.jsonl" \
+  "combined:logs/2026-07-08-mt-mt_comb_c15.jsonl"
+```
