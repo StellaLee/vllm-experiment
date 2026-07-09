@@ -3,13 +3,14 @@
 vLLM v1 scheduler. Safe to re-run — skips hunks that are already present.
 
 Env vars:
-  PREFIX_REORDER=1        enable warm-first soft-aging reorder
-  DYNAMIC_CHUNK=1         enable bang-bang chunk size controller
-  AGING_ALPHA=0.3         soft-aging coefficient (default 0.3)
-                          score = hit_ratio + AGING_ALPHA * log(1 + wait_s)
-  AGING_THRESHOLD_MS=inf  (legacy, no longer used by reorder block)
-  DYNAMIC_CHUNK_TARGET=8  decode queue depth target
-  DYNAMIC_CHUNK_MIN=256   minimum chunk size (tokens)
+  PREFIX_REORDER=1         enable warm-first soft-aging reorder
+  DYNAMIC_CHUNK=1          enable bang-bang chunk size controller with hysteresis
+  AGING_ALPHA=0.3          soft-aging coefficient (default 0.3)
+                           score = hit_ratio + AGING_ALPHA * log(1 + wait_s)
+  AGING_THRESHOLD_MS=inf   (legacy, no longer used by reorder block)
+  DYNAMIC_CHUNK_TARGET=8   decode queue depth target
+  DYNAMIC_CHUNK_MIN=256    minimum chunk size (tokens)
+  DYNAMIC_CHUNK_HOLD=3     consecutive steps above/below threshold before resize
 """
 
 import sys
@@ -26,46 +27,66 @@ changed = False
 # ── Patch 1: ChunkSizeController class (insert before class Scheduler) ──────
 CHUNK_CLASS = '''
 class ChunkSizeController:
-    """Bang-bang controller for dynamic chunked-prefill token budget.
+    """Bang-bang controller with hysteresis for dynamic chunked-prefill.
 
-    Shrinks chunk size when decode queue is deep, grows it when shallow.
-    Prevents decode starvation under mixed prefill/decode workloads.
+    Shrinks chunk when decode queue stays deep for HOLD consecutive steps.
+    Grows when decode queue stays shallow for HOLD consecutive steps.
+    Holding prevents rapid chunk oscillation at the boundary.
 
     Enable: DYNAMIC_CHUNK=1
     Tune:   DYNAMIC_CHUNK_TARGET (int, default 8)
             DYNAMIC_CHUNK_MIN    (int, default 256)
+            DYNAMIC_CHUNK_HOLD   (int, default 3)
     """
 
-    def __init__(self, min_tokens: int, max_tokens: int, target: int) -> None:
+    def __init__(self, min_tokens: int, max_tokens: int, target: int,
+                 hold: int = 3) -> None:
         self.chunk = max_tokens
         self.min = min_tokens
         self.max = max_tokens
         self.target = target
+        self.hold = hold
         self._step_count = 0
+        self._shrink_count = 0
+        self._grow_count = 0
 
     def step(self, decode_depth: int) -> int:
         self._step_count += 1
         if decode_depth > self.target * 1.5:
-            self.chunk = max(self.min, self.chunk // 2)
+            self._shrink_count += 1
+            self._grow_count = 0
         elif decode_depth < self.target * 0.5:
+            self._grow_count += 1
+            self._shrink_count = 0
+        else:
+            self._shrink_count = 0
+            self._grow_count = 0
+
+        if self._shrink_count >= self.hold:
+            self.chunk = max(self.min, self.chunk // 2)
+            self._shrink_count = 0
+        elif self._grow_count >= self.hold:
             self.chunk = min(self.max, self.chunk * 2)
+            self._grow_count = 0
+
         if self._step_count % 50 == 0:
             import logging
             logging.getLogger(__name__).debug(
-                "ChunkSizeController step=%d decode_depth=%d chunk=%d",
+                "ChunkSizeController step=%d depth=%d chunk=%d shrink=%d grow=%d",
                 self._step_count, decode_depth, self.chunk,
+                self._shrink_count, self._grow_count,
             )
         return self.chunk
 
 '''
 
-if "class ChunkSizeController" not in src:
+if "_shrink_count" not in src:
     src = src.replace(
         "class Scheduler(SchedulerInterface):",
         CHUNK_CLASS + "class Scheduler(SchedulerInterface):",
     )
     changed = True
-    print("Patch 1 applied: ChunkSizeController class")
+    print("Patch 1 applied: ChunkSizeController class with hysteresis")
 else:
     print("Patch 1 already present: ChunkSizeController class")
 
@@ -76,14 +97,16 @@ INIT_PATCH = """
         if _dynamic_chunk:
             _target = int(os.getenv("DYNAMIC_CHUNK_TARGET", "8"))
             _min = int(os.getenv("DYNAMIC_CHUNK_MIN", "256"))
+            _hold = int(os.getenv("DYNAMIC_CHUNK_HOLD", "3"))
             self._chunk_ctrl: ChunkSizeController | None = ChunkSizeController(
                 min_tokens=_min,
                 max_tokens=self.max_num_scheduled_tokens,
                 target=_target,
+                hold=_hold,
             )
             logger.info(
-                "Dynamic chunk size enabled: min=%d max=%d target=%d",
-                _min, self.max_num_scheduled_tokens, _target,
+                "Dynamic chunk size enabled: min=%d max=%d target=%d hold=%d",
+                _min, self.max_num_scheduled_tokens, _target, _hold,
             )
         else:
             self._chunk_ctrl = None
@@ -122,6 +145,38 @@ if "_aging_alpha" not in src:
     print("Patch 2b applied: _aging_alpha")
 else:
     print("Patch 2b already present: _aging_alpha")
+
+# ── Patch 2c: _hold in __init__ (upgrade from pre-hysteresis) ────────────────
+_OLD_MIN_LINE = '            _min = int(os.getenv("DYNAMIC_CHUNK_MIN", "256"))'
+_HOLD_LINES = (
+    '            _hold = int(os.getenv("DYNAMIC_CHUNK_HOLD", "3"))'
+)
+_OLD_CTRL_CALL = (
+    '            self._chunk_ctrl: ChunkSizeController | None = ChunkSizeController(\n'
+    '                min_tokens=_min,\n'
+    '                max_tokens=self.max_num_scheduled_tokens,\n'
+    '                target=_target,\n'
+    '            )'
+)
+_NEW_CTRL_CALL = (
+    '            _hold = int(os.getenv("DYNAMIC_CHUNK_HOLD", "3"))\n'
+    '            self._chunk_ctrl: ChunkSizeController | None = ChunkSizeController(\n'
+    '                min_tokens=_min,\n'
+    '                max_tokens=self.max_num_scheduled_tokens,\n'
+    '                target=_target,\n'
+    '                hold=_hold,\n'
+    '            )'
+)
+
+if "DYNAMIC_CHUNK_HOLD" not in src:
+    if _OLD_CTRL_CALL not in src:
+        print("ERROR: Patch 2c anchor not found", file=sys.stderr)
+        sys.exit(1)
+    src = src.replace(_OLD_CTRL_CALL, _NEW_CTRL_CALL)
+    changed = True
+    print("Patch 2c applied: _hold / DYNAMIC_CHUNK_HOLD")
+else:
+    print("Patch 2c already present: DYNAMIC_CHUNK_HOLD")
 
 # ── Patch 3a: chunk controller step in schedule() ────────────────────────────
 CHUNK_STEP = """
