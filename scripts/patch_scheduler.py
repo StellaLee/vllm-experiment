@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
-"""Apply PREFIX_REORDER / DYNAMIC_CHUNK / AGING_THRESHOLD_MS patches to the
-vLLM v1 scheduler. Safe to re-run — skips hunks that are already present."""
+"""Apply PREFIX_REORDER / DYNAMIC_CHUNK / AGING_ALPHA patches to the
+vLLM v1 scheduler. Safe to re-run — skips hunks that are already present.
+
+Env vars:
+  PREFIX_REORDER=1        enable warm-first soft-aging reorder
+  DYNAMIC_CHUNK=1         enable bang-bang chunk size controller
+  AGING_ALPHA=0.3         soft-aging coefficient (default 0.3)
+                          score = hit_ratio + AGING_ALPHA * log(1 + wait_s)
+  AGING_THRESHOLD_MS=inf  (legacy, no longer used by reorder block)
+  DYNAMIC_CHUNK_TARGET=8  decode queue depth target
+  DYNAMIC_CHUNK_MIN=256   minimum chunk size (tokens)
+"""
 
 import sys
 from pathlib import Path
@@ -80,10 +90,11 @@ INIT_PATCH = """
         _prefix_reorder = os.getenv("PREFIX_REORDER", "0").strip() == "1"
         self._prefix_reorder = _prefix_reorder
         self._aging_threshold_ms = float(os.getenv("AGING_THRESHOLD_MS", "inf"))
+        self._aging_alpha = float(os.getenv("AGING_ALPHA", "0.3"))
         if _prefix_reorder:
             logger.info(
-                "Prefix-aware request reordering enabled (aging %.0f ms)",
-                self._aging_threshold_ms,
+                "Prefix-aware request reordering enabled (alpha=%.2f)",
+                self._aging_alpha,
             )
 """
 
@@ -97,6 +108,20 @@ if "_dynamic_chunk = os.getenv" not in src:
     print("Patch 2 applied: __init__ wiring")
 else:
     print("Patch 2 already present: __init__ wiring")
+
+# ── Patch 2b: _aging_alpha in __init__ (upgrade from pre-soft-aging) ─────────
+_OLD_THRESH = '        self._aging_threshold_ms = float(os.getenv("AGING_THRESHOLD_MS", "inf"))'
+_ALPHA_LINE = '        self._aging_alpha = float(os.getenv("AGING_ALPHA", "0.3"))'
+
+if "_aging_alpha" not in src:
+    if _OLD_THRESH not in src:
+        print("ERROR: Patch 2b anchor not found", file=sys.stderr)
+        sys.exit(1)
+    src = src.replace(_OLD_THRESH, _OLD_THRESH + "\n" + _ALPHA_LINE)
+    changed = True
+    print("Patch 2b applied: _aging_alpha")
+else:
+    print("Patch 2b already present: _aging_alpha")
 
 # ── Patch 3a: chunk controller step in schedule() ────────────────────────────
 CHUNK_STEP = """
@@ -118,42 +143,38 @@ if "self._chunk_ctrl is not None" not in src:
 else:
     print("Patch 3a already present: chunk controller step")
 
-# ── Patch 3b: warm-first reorder block in schedule() ─────────────────────────
+# ── Patch 3b: warm-first soft-aging reorder block in schedule() ──────────────
 REORDER_BLOCK = """            if self._prefix_reorder and self.waiting and hasattr(self.waiting, 'extendleft'):
                 import time as _time
+                import math as _math
                 _now = _time.time()
-                _thresh_s = self._aging_threshold_ms / 1000.0
-                def _hit_ratio(req):
+                _alpha = self._aging_alpha
+                def _soft_priority(req):
                     total = req.num_prompt_tokens
                     if total == 0:
-                        return 0.0
-                    if req.num_computed_tokens > 0:
-                        cached = req.num_computed_tokens
+                        hit_ratio = 0.0
+                    elif req.num_computed_tokens > 0:
+                        hit_ratio = req.num_computed_tokens / total
                     else:
                         _, cached = self.kv_cache_manager.get_computed_blocks(req)
-                    return cached / total
-                _aged = sorted(
-                    [r for r in self.waiting if (_now - r.arrival_time) >= _thresh_s],
-                    key=lambda r: r.arrival_time,
-                )
-                _fresh = sorted(
-                    [r for r in self.waiting if (_now - r.arrival_time) < _thresh_s],
-                    key=_hit_ratio, reverse=True,
-                )
+                        hit_ratio = cached / total
+                    wait_s = _now - req.arrival_time
+                    return hit_ratio + _alpha * _math.log1p(wait_s)
+                _sorted = sorted(self.waiting, key=_soft_priority, reverse=True)
                 self.waiting.clear()
-                self.waiting.extend(_aged + _fresh)
+                self.waiting.extend(_sorted)
 """
 
-if "self._prefix_reorder and self.waiting" not in src:
+if "_soft_priority" not in src:
     anchor_reorder = "            step_skipped_waiting = create_request_queue(self.policy)\n"
     if anchor_reorder not in src:
         print("ERROR: Patch 3b anchor not found", file=sys.stderr)
         sys.exit(1)
     src = src.replace(anchor_reorder, anchor_reorder + REORDER_BLOCK)
     changed = True
-    print("Patch 3b applied: warm-first reorder block in schedule()")
+    print("Patch 3b applied: soft-aging reorder block in schedule()")
 else:
-    print("Patch 3b already present: warm-first reorder block")
+    print("Patch 3b already present: soft-aging reorder block")
 
 if changed:
     SCHED.write_text(src)
