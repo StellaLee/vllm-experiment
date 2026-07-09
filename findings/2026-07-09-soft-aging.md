@@ -1,6 +1,6 @@
 # Soft Aging Reordering — 2026-07-09
 
-Replace the hard aging cliff with a continuous soft-priority score that
+Replace the hit-ratio-only sort key with a continuous soft-priority score that
 blends cache hit ratio and wait time into a single sort key.
 
 **Model:** Qwen2.5-Coder-7B-Instruct  
@@ -12,20 +12,46 @@ concurrency=15, min-turns=4
 
 ---
 
+## Patch Configuration
+
+All conditions use the patched scheduler (`scripts/patch_scheduler.py` applied
+once). The reordering sort key changed between the ratio and soft conditions;
+the sort key active at log-collection time is noted below.
+
+| Condition | PREFIX\_REORDER | DYNAMIC\_CHUNK | AGING\_ALPHA | Sort key active | Scheduler version |
+|-----------|:--------------:|:-------------:|:------------:|-----------------|-------------------|
+| baseline | 0 | 0 | — | FCFS (no reorder) | any |
+| ratio\_t1/t2 | 1 | 0 | — (unused) | `cached/total` only, no wait-time boost | pre-soft-aging; commit `5dcf9f3`; collected 2026-07-08 |
+| **soft\_t1/t2** | **1** | **0** | **0.3** | `cached/total + 0.3·log(1+wait_s)` | current; commit `7b2bbca`+; collected 2026-07-09 |
+| combined (ref) | 1 | 1 | — (unused) | ratio sort key + dynamic chunk (no hysteresis) | pre-soft-aging; collected 2026-07-08 |
+
+Note: `AGING_THRESHOLD_MS` is present in all patched schedulers as a legacy
+field but is **not used** by either the ratio or soft sort keys (both were
+collected with `AGING_THRESHOLD_MS=inf`, the default).
+
+---
+
 ## Motivation
 
-The ratio-based hard-cliff strategy (2026-07-08) partitioned the waiting queue
-into two separate buckets: requests aged past AGING_THRESHOLD_MS were promoted
-en masse to the front (FCFS within that bucket), while fresher requests were
-sorted by hit ratio. This creates a cliff-edge discontinuity: at the threshold
-moment, a T1 request with 0% hit ratio jumps ahead of T3 requests with 30%
-hit ratio, regardless of the relative priority each deserves.
+The ratio-based sort key (2026-07-08) ordered the waiting queue by
+`cached_tokens / total_tokens` descending, with no consideration of how long
+a request has been waiting:
 
-The T3 regression observed with ratio-based reordering (+4-5% vs baseline) is
-consistent with this mechanism: aged T1 requests promoted in bulk displace T3
-requests that would benefit more from early scheduling.
+```python
+# Old sort key (ratio-only, no aging)
+def _hit_ratio(req):
+    total = req.num_prompt_tokens
+    if req.num_computed_tokens > 0:
+        return req.num_computed_tokens / total
+    _, cached = self.kv_cache_manager.get_computed_blocks(req)
+    return cached / total
+```
 
-**Fix:** replace the two-bucket scheme with a single unified sort key:
+This causes a T3 regression (+4–5% vs baseline): T4 requests with higher hit
+ratios permanently displace T3 requests regardless of how long T3 has been
+waiting. There is no mechanism to prevent indefinite demotion of any request.
+
+**Fix:** blend hit ratio with a logarithmic wait-time boost into a single score:
 
 ```
 score(req) = hit_ratio(req) + α · log(1 + wait_seconds(req))
@@ -61,8 +87,8 @@ def _soft_priority(req):
 
 ### Per-trial
 
-| Turn | baseline | ratio_t1 | ratio_t2 | soft_t1 | soft_t2 |
-|------|----------|----------|----------|---------|---------|
+| Turn | baseline | ratio\_t1 | ratio\_t2 | soft\_t1 | soft\_t2 |
+|------|----------|-----------|-----------|---------|---------|
 | T1 | 234.6ms | 231.5ms (−1%) | 224.0ms (−5%) | 316.9ms (+35%) | 224.4ms (−4%) |
 | T2 | 125.0ms | 135.2ms (+8%) | 133.1ms (+6%) | 132.5ms (+6%) | 131.2ms (+5%) |
 | T3 | 147.8ms | 155.1ms (+5%) | 151.4ms (+2%) | 122.2ms (−17%) | 141.1ms (−5%) |
@@ -70,7 +96,7 @@ def _soft_priority(req):
 
 ### 2-trial averages vs combined
 
-| Turn | baseline | ratio_avg | soft_avg | combined |
+| Turn | baseline | ratio\_avg | soft\_avg | combined |
 |------|----------|-----------|----------|----------|
 | T1 | 234.6ms | 227.8ms (−3%) | 270.6ms (+15%) | 219.1ms (−7%) |
 | T2 | 125.0ms | 134.1ms (+7%) | 131.9ms (+5%) | 108.1ms (−14%) |
@@ -86,11 +112,11 @@ def _soft_priority(req):
 Both soft aging trials show T3 improvement vs baseline (−17%, −5%), while both
 ratio trials show T3 degradation (+5%, +2%). The directional difference is
 consistent across trials: soft aging eliminates the T3 regression induced by
-the hard aging cliff.
+ratio-only ordering.
 
-The mechanism: aged T1 requests (0% hit ratio) are no longer promoted en masse
-ahead of T3 requests (30–40% hit ratio). Instead they must wait until their
-accumulated wait-time boost exceeds the hit-ratio advantage of the T3 cohort.
+The mechanism: T4 requests with higher hit ratios no longer permanently
+displace T3 requests. The wait-time boost ensures T3 eventually overtakes T4
+when the scheduling gap has grown large enough.
 
 ### 2. T4 unchanged
 
@@ -99,52 +125,29 @@ at T4 relative to ratio-based ordering.
 
 ### 3. T2 regression marginally improved (5% vs 7%)
 
-The structural warm-first cost to T2 is reduced slightly (from +7% average
-to +5% average). The T2 regression is inherent to any warm-first scheme and
-is not resolved by this change.
+The structural warm-first cost to T2 is reduced slightly. The T2 regression is
+inherent to any warm-first scheme and is not resolved by this change.
 
 ### 4. T1 high variance persists
 
-Soft_t1 shows +35% T1 regression; soft_t2 shows −4%. This is the same
-two-run T1 instability observed with chunk_only in the 2026-07-08 decomp
-experiment. Likely causes: GPU cold-start effects for the very first batch,
-or scheduling noise in the first slot when the waiting queue is cold. T1 TTFT
-under reorder-only conditions cannot be reliably characterised from two trials.
+Soft\_t1 shows +35% T1 regression; soft\_t2 shows −4%. This is the same
+cold-start instability observed with chunk\_only in the 2026-07-08 decomp
+experiment. T1 TTFT under reorder-only conditions cannot be reliably
+characterised from two trials.
 
 ### 5. Combined still dominates at T3
 
 Soft aging reorder-only reaches −11% at T3; combined (chunk + reorder) reaches
-−41%. Dynamic chunking remains the primary driver at T3/T4. Soft aging
-improves over ratio-based at T3 but still substantially trails combined.
-
----
-
-## Mechanism Analysis
-
-The hard-cliff aging creates a priority inversion: once a T1 request crosses
-the age threshold, it jumps to the front of the queue regardless of its 0%
-hit ratio. At concurrency=15 with 200 conversations cycling, many T1 requests
-age past the threshold while waiting, displacing mid-turn requests with
-meaningful cache warmth.
-
-Soft aging avoids this inversion by scaling the wait-time boost continuously:
-a cold request accumulates priority gradually, overtaking warm requests only
-after the wait time is long enough to justify it.
-
-At AGING_ALPHA=0.3:
-- To overtake a 100% hit-ratio request: wait ~27 seconds
-- To overtake a 35% hit-ratio request: wait ~7 seconds
-
-This is more principled than an arbitrary threshold.
+−41%. Dynamic chunking remains the primary driver at T3/T4.
 
 ---
 
 ## Conclusion
 
-Soft aging is a strictly better aging mechanism than the hard cliff for
-multi-turn workloads. It eliminates the T3 regression (−11% vs +4%), keeps
-T4 identical, and marginally improves T2. The patch is adopted as the default
-reordering implementation.
+Soft aging is a strictly better sort key than ratio-only for multi-turn
+workloads. It eliminates the T3 regression (−11% vs +4%), keeps T4 identical,
+and marginally improves T2. The patch is adopted as the default reordering
+implementation.
 
 The T2 regression (+5%) remains a known limitation of any warm-first scheme.
 Resolving it would require a fundamentally different approach (e.g., PRISM-style
@@ -152,28 +155,99 @@ reserved cold-lane slots).
 
 ---
 
+## Reproduction
+
+### Prerequisites
+
+```bash
+# Apply all scheduler patches (idempotent, safe to re-run)
+python3 scripts/patch_scheduler.py
+```
+
+### baseline
+
+```bash
+env PREFIX_REORDER=0 DYNAMIC_CHUNK=0 \
+  python -m vllm.entrypoints.openai.api_server \
+  --model /model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct \
+  --port 8000 --max-num-seqs 32
+
+python src/replay_sharegpt.py \
+  --host localhost --port 8000 \
+  --model /model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct \
+  --dataset data/sharegpt_v3.json \
+  --num-convs 200 --max-turns 4 --min-turns 4 \
+  --max-tokens 128 --concurrency 15 \
+  --output logs/mt_base_c15.jsonl
+```
+
+### ratio-only sort key (archived, collected 2026-07-08)
+
+Requires the pre-soft-aging scheduler (git commit `5dcf9f3` or earlier).
+The `_hit_ratio`-only REORDER\_BLOCK was replaced in commit `7b2bbca`.
+Archived logs: `logs/2026-07-08-mt-mt_ratio_reorder_c15_t1.jsonl`,
+`logs/2026-07-08-mt-mt_ratio_reorder_c15_t2.jsonl`
+
+To re-run on a fresh server at the old commit:
+```bash
+git checkout 5dcf9f3 -- scripts/patch_scheduler.py
+python3 scripts/patch_scheduler.py
+
+env PREFIX_REORDER=1 DYNAMIC_CHUNK=0 \
+  python -m vllm.entrypoints.openai.api_server ...
+```
+
+### soft aging (this experiment, current default)
+
+```bash
+# Uses bundled 2-trial script:
+bash scripts/run_soft_aging.sh
+
+# Or manually (AGING_ALPHA=0.3 is the default, explicit here for clarity):
+env PREFIX_REORDER=1 DYNAMIC_CHUNK=0 AGING_ALPHA=0.3 \
+  python -m vllm.entrypoints.openai.api_server \
+  --model /model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct \
+  --port 8000 --max-num-seqs 32
+
+python src/replay_sharegpt.py \
+  --host localhost --port 8000 \
+  --model /model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct \
+  --dataset data/sharegpt_v3.json \
+  --num-convs 200 --max-turns 4 --min-turns 4 \
+  --max-tokens 128 --concurrency 15 \
+  --output logs/mt_soft_aging_c15_t1.jsonl
+```
+
+### combined reference (archived, collected 2026-07-08)
+
+Uses the pre-soft-aging, pre-hysteresis scheduler. Archived log:
+`logs/2026-07-08-mt-mt_comb_c15.jsonl`
+
+---
+
 ## Implementation
 
-**New env vars:**
+**New env var:**
 
 | Var | Default | Description |
 |-----|---------|-------------|
 | `AGING_ALPHA` | `0.3` | Continuous aging coefficient |
 
-`AGING_THRESHOLD_MS` is retained but unused by the reorder block (legacy).
+`AGING_THRESHOLD_MS` is retained in `__init__` as a legacy field but is no
+longer read by the reorder block.
 
 **Files changed:**
 
 | File | Change |
 |------|--------|
-| `scripts/patch_scheduler.py` | REORDER_BLOCK → soft_priority; Patch 2b adds _aging_alpha |
-| `scripts/hotpatch_soft_aging.py` | One-shot upgrade for already-patched schedulers |
+| `scripts/patch_scheduler.py` | Patch 3b REORDER\_BLOCK → soft\_priority; Patch 2b adds `_aging_alpha` |
+| `scripts/hotpatch_soft_aging.py` | One-shot upgrade for already-patched servers |
 | `scripts/run_soft_aging.sh` | 2-trial experiment runner |
-| live scheduler | Patched via hotpatch_soft_aging.py on 2026-07-09 |
+| live scheduler | Patched via hotpatch\_soft\_aging.py on 2026-07-09 |
 
 **Log files:**
 
 | Tag | File |
 |-----|------|
-| soft_t1 | `logs/2026-07-09-mt-mt_soft_aging_c15_t1.jsonl` |
-| soft_t2 | `logs/2026-07-09-mt-mt_soft_aging_c15_t2.jsonl` |
+| soft\_t1 | `logs/2026-07-09-mt-mt_soft_aging_c15_t1.jsonl` |
+| soft\_t2 | `logs/2026-07-09-mt-mt_soft_aging_c15_t2.jsonl` |

@@ -14,6 +14,24 @@ concurrency=15, min-turns=4
 
 ---
 
+## Patch Configuration
+
+Each condition is fully defined by the env vars passed to the vLLM server.
+All conditions in this experiment use the patched scheduler
+(`scripts/patch_scheduler.py` applied once on the server).
+
+| Condition | PREFIX_REORDER | DYNAMIC_CHUNK | DYNAMIC_CHUNK_HOLD | AGING_ALPHA | Scheduler patch |
+|-----------|:--------------:|:-------------:|:------------------:|:-----------:|-----------------|
+| baseline | 0 | 0 | — | — | `patch_scheduler.py` (all patches applied, but all disabled) |
+| chunk\_t1/t2 | 0 | 1 | 1 (implicit, pre-hysteresis) | — | old `patch_scheduler.py` before Patch 1 hysteresis upgrade; collected 2026-07-08 |
+| **hyst\_t1/t2** | **0** | **1** | **3** | **—** | current `patch_scheduler.py` with Patch 1 hysteresis |
+| combined (ref) | 1 | 1 | 1 (implicit) | — | old `patch_scheduler.py`; collected 2026-07-08 |
+
+`chunk_t1/t2` and `combined` were collected before the hysteresis upgrade. The
+old ChunkSizeController had no hold counters, equivalent to HOLD=1.
+
+---
+
 ## Motivation
 
 The original bang-bang controller fires on every scheduling step:
@@ -57,8 +75,8 @@ required before the chunk size changes.
 
 ### Per-trial
 
-| Turn | baseline | chunk_t1 | chunk_t2 | hyst_t1 | hyst_t2 |
-|------|----------|----------|----------|---------|---------|
+| Turn | baseline | chunk\_t1 | chunk\_t2 | hyst\_t1 | hyst\_t2 |
+|------|----------|-----------|-----------|---------|---------|
 | T1 | 234.6ms | 324.3ms (+38%) | 218.4ms (−7%) | 246.0ms (+5%) | 229.6ms (−2%) |
 | T2 | 125.0ms | 115.9ms (−7%) | 97.6ms (−22%) | 106.1ms (−15%) | 98.7ms (−21%) |
 | T3 | 147.8ms | 88.3ms (−40%) | 84.5ms (−43%) | 79.6ms (−46%) | 79.1ms (−46%) |
@@ -66,7 +84,7 @@ required before the chunk size changes.
 
 ### 2-trial averages vs combined
 
-| Turn | baseline | chunk_avg | hyst_avg | combined |
+| Turn | baseline | chunk\_avg | hyst\_avg | combined |
 |------|----------|-----------|----------|----------|
 | T1 | 234.6ms | 271.3ms (+16%) | 237.8ms (+1%) | 219.1ms (−7%) |
 | T2 | 125.0ms | 106.8ms (−15%) | 102.4ms (−18%) | 108.1ms (−14%) |
@@ -100,7 +118,7 @@ but directionally positive.
 
 ### 4. Hysteresis matches combined at T3/T4
 
-Hyst_avg T3 (−46%) ties combined (−41%), and T4 (−46%) ties combined (−47%).
+Hyst\_avg T3 (−46%) ties combined (−41%), and T4 (−46%) ties combined (−47%).
 This is notable: chunk-only with hysteresis now matches or slightly exceeds
 combined (chunk + reorder) at later turns.
 
@@ -108,7 +126,7 @@ combined (chunk + reorder) at later turns.
 
 ## Conclusion
 
-Hysteresis (DYNAMIC_CHUNK_HOLD=3) is a strictly better controller than the
+Hysteresis (DYNAMIC\_CHUNK\_HOLD=3) is a strictly better controller than the
 original bang-bang with no hold:
 
 - Reduces T1 trial-to-trial spread by 6× (106ms → 17ms)
@@ -118,6 +136,73 @@ original bang-bang with no hold:
 It is adopted as the default (HOLD=3). The improved T3 stability means
 hysteresis chunk-only now matches combined in the near-saturation multi-turn
 regime.
+
+---
+
+## Reproduction
+
+### Prerequisites
+
+```bash
+# Apply all scheduler patches (idempotent, safe to re-run)
+python3 scripts/patch_scheduler.py
+```
+
+### baseline
+
+```bash
+env PREFIX_REORDER=0 DYNAMIC_CHUNK=0 \
+  python -m vllm.entrypoints.openai.api_server \
+  --model /model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct \
+  --port 8000 --max-num-seqs 32
+
+python src/replay_sharegpt.py \
+  --host localhost --port 8000 \
+  --model /model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct \
+  --dataset data/sharegpt_v3.json \
+  --num-convs 200 --max-turns 4 --min-turns 4 \
+  --max-tokens 128 --concurrency 15 \
+  --output logs/mt_base_c15.jsonl
+```
+
+### chunk-only without hysteresis (HOLD=1, old behavior, archived)
+
+Requires the pre-hysteresis scheduler (git commit `5dcf9f3` or earlier).
+Archived logs: `logs/2026-07-08-mt-mt_chunk_c15.jsonl`,
+`logs/2026-07-08-mt-mt_chunk_c15_t2.jsonl`
+
+To re-run on a fresh server:
+```bash
+# Roll back Patch 1 to non-hysteresis version, then:
+env PREFIX_REORDER=0 DYNAMIC_CHUNK=1 DYNAMIC_CHUNK_HOLD=1 \
+  python -m vllm.entrypoints.openai.api_server ...
+```
+
+### chunk-only with hysteresis (HOLD=3, this experiment)
+
+```bash
+# Uses bundled 2-trial script:
+bash scripts/run_chunk_hyst.sh
+
+# Or manually:
+env PREFIX_REORDER=0 DYNAMIC_CHUNK=1 DYNAMIC_CHUNK_HOLD=3 \
+  python -m vllm.entrypoints.openai.api_server \
+  --model /model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct \
+  --port 8000 --max-num-seqs 32
+
+python src/replay_sharegpt.py \
+  --host localhost --port 8000 \
+  --model /model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct \
+  --dataset data/sharegpt_v3.json \
+  --num-convs 200 --max-turns 4 --min-turns 4 \
+  --max-tokens 128 --concurrency 15 \
+  --output logs/mt_chunk_hyst_c15_t1.jsonl
+```
+
+### combined reference (archived, collected 2026-07-08)
+
+Uses the pre-hysteresis scheduler. Archived log:
+`logs/2026-07-08-mt-mt_comb_c15.jsonl`
 
 ---
 
@@ -133,8 +218,8 @@ regime.
 
 | File | Change |
 |------|--------|
-| `scripts/patch_scheduler.py` | Patch 1 (class) + Patch 2c (_hold wiring) |
-| `scripts/hotpatch_chunk_hysteresis.py` | One-shot upgrade for deployed servers |
+| `scripts/patch_scheduler.py` | Patch 1 (class with hysteresis) + Patch 2c (_hold wiring) |
+| `scripts/hotpatch_chunk_hysteresis.py` | One-shot upgrade for already-patched servers |
 | `scripts/run_chunk_hyst.sh` | 2-trial experiment runner |
 | live scheduler | Patched via hotpatch on 2026-07-09 |
 
@@ -142,5 +227,5 @@ regime.
 
 | Tag | File |
 |-----|------|
-| hyst_t1 | `logs/2026-07-09-mt-mt_chunk_hyst_c15_t1.jsonl` |
-| hyst_t2 | `logs/2026-07-09-mt-mt_chunk_hyst_c15_t2.jsonl` |
+| hyst\_t1 | `logs/2026-07-09-mt-mt_chunk_hyst_c15_t1.jsonl` |
+| hyst\_t2 | `logs/2026-07-09-mt-mt_chunk_hyst_c15_t2.jsonl` |
