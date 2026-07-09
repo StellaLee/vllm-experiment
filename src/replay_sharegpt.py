@@ -28,7 +28,8 @@ def stream_request(host, port, prompt, max_tokens, model):
     OpenAI SSE format:
       data: {"choices": [{"text": "..."}]}
     TTFT = time until first non-empty text chunk arrives.
-    output_tokens = word count of generated text (proxy; ~0.75 words/token).
+    output_tokens = real completion_tokens from the server usage chunk
+    (stream_options.include_usage); falls back to a word-count proxy if absent.
     """
     url = f"http://{host}:{port}/v1/completions"
     payload = json.dumps({
@@ -37,12 +38,16 @@ def stream_request(host, port, prompt, max_tokens, model):
         "max_tokens": max_tokens,
         "temperature": 0.0,
         "stream": True,
+        # Ask the server to append a final usage chunk with real token counts,
+        # so TPOT uses actual completion_tokens, not a word-count proxy.
+        "stream_options": {"include_usage": True},
     }).encode()
     req = urllib.request.Request(
         url, data=payload, headers={"Content-Type": "application/json"})
     t0 = time.monotonic()
     ttft = None
     output_parts = []
+    completion_tokens = None
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -53,6 +58,9 @@ def stream_request(host, port, prompt, max_tokens, model):
                     line = line[6:]
                 try:
                     obj = json.loads(line)
+                    usage = obj.get("usage")
+                    if usage and usage.get("completion_tokens") is not None:
+                        completion_tokens = usage["completion_tokens"]
                     text = ""
                     choices = obj.get("choices", [])
                     if choices:
@@ -67,8 +75,12 @@ def stream_request(host, port, prompt, max_tokens, model):
     except urllib.error.URLError as e:
         raise RuntimeError(f"Request failed: {e}")
     output_text = "".join(output_parts)
-    output_tokens = max(1, len(output_text.split()))
-    return ttft, total, output_tokens
+    # Prefer the server's real token count; fall back to a word-count proxy
+    # only if the usage chunk was absent.
+    word_tokens = max(1, len(output_text.split()))
+    tokens_exact = completion_tokens is not None and completion_tokens > 0
+    output_tokens = completion_tokens if tokens_exact else word_tokens
+    return ttft, total, output_tokens, tokens_exact
 
 
 def build_prompt(history, new_human):
@@ -96,7 +108,7 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
         prompt = build_prompt(history, human_msg)
 
         try:
-            ttft, total, output_tokens = stream_request(args.host, args.port, prompt, args.max_tokens, args.model)
+            ttft, total, output_tokens, tokens_exact = stream_request(args.host, args.port, prompt, args.max_tokens, args.model)
             gpt_placeholder = f"[turn {turn_num+1} response]"
             if i + 1 < len(turns) and turns[i + 1].get("from") == "gpt":
                 gpt_placeholder = turns[i + 1]["value"].strip()[:256]
@@ -110,6 +122,7 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
                 "history_turns": len(history),
                 "prompt_tokens_approx": len(prompt.split()),
                 "output_tokens": output_tokens,
+                "tokens_exact": tokens_exact,
                 "ttft": round(ttft, 4) if ttft is not None else None,
                 "tpot": tpot,
                 "latency": round(total, 4),

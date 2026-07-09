@@ -45,7 +45,11 @@ TPOT p95 (ms)         ~39–42 FLAT across every rate, trial, and policy
    +40%/+58%, mean **+15% worse**. It was arrival-jitter noise.
 
 2. **Mechanistic why: decode never stalls in open-loop.** TPOT p95 is flat at
-   ~41 ms across all rates/trials/policies (±0.9 ms). Chunking exists to protect
+   ~41 ms across all rates/trials/policies (±0.9 ms). NOTE: these ~41 ms figures
+   use a word-count token proxy; real per-token latency is ~20 ms (server
+   `inter_token_latency`, see 2026-07-09-measurement-validation.md). The absolute
+   value is off but the *flatness* — the actual claim — holds either way, and is
+   server-confirmed via `request_decode_time`. Chunking exists to protect
    decode from prefill stalls; with no stall, it has no lever. Under overload the
    tail is dominated by *queueing*, which is highly sensitive to arrival jitter —
    hence the large trial variance and the noisy sign flips.
