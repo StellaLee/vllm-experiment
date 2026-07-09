@@ -7,6 +7,10 @@ KV cache sees the shared prefix across turns.
 With --concurrency N, N conversations run in parallel (turns within each
 conversation remain sequential so accumulated prefixes stay consistent).
 
+With --rate R, conversations are submitted as a Poisson process at R conv/s
+(open-loop). --concurrency is ignored when --rate is set. This models
+realistic arrival patterns rather than closed-loop thundering-herd.
+
 Uses /v1/completions with a flat text prompt built from conversation history.
 This guarantees the same token prefix is presented on each successive turn,
 which is what makes prefix caching effective for multi-turn workloads.
@@ -14,7 +18,7 @@ which is what makes prefix caching effective for multi-turn workloads.
 Output: JSONL with one record per request, including conv_id, turn number,
 prompt length, TTFT, and total latency.
 """
-import argparse, json, os, time, urllib.request, urllib.error, threading
+import argparse, json, os, random, time, urllib.request, urllib.error, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -139,8 +143,11 @@ def main():
     ap.add_argument("--max-turns", type=int, default=4, help="Max turns per conversation")
     ap.add_argument("--max-tokens", type=int, default=128)
     ap.add_argument("--concurrency", type=int, default=1,
-                    help="Parallel conversations (default 1 = sequential). "
-                         "Higher values create KV cache pressure for eviction studies.")
+                    help="Parallel conversations (closed-loop). Ignored when --rate is set.")
+    ap.add_argument("--rate", type=float, default=None,
+                    help="Conversation arrival rate in conv/s (open-loop Poisson). "
+                         "When set, conversations are submitted at Poisson-distributed "
+                         "inter-arrival times instead of closed-loop concurrency.")
     ap.add_argument("--min-turns", type=int, default=1,
                     help="Only include conversations with at least this many human turns. "
                          "Use --min-turns 4 to guarantee all conversations reach turn 4.")
@@ -168,25 +175,50 @@ def main():
 
     convs = convs[:args.num_convs]
     print(f"[replay] filtered to {len(convs)} conversations (min_turns={args.min_turns})")
-    print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "
-          f"max_tokens={args.max_tokens} | concurrency={args.concurrency}")
+
+    if args.rate:
+        print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "
+              f"max_tokens={args.max_tokens} | rate={args.rate} conv/s (open-loop Poisson)")
+    else:
+        print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "
+              f"max_tokens={args.max_tokens} | concurrency={args.concurrency} (closed-loop)")
 
     records = []
     records_lock = threading.Lock()
     print_lock = threading.Lock()
 
-    with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-        futures = {
-            executor.submit(replay_conversation, ci, conv, args, records, records_lock, print_lock): ci
-            for ci, conv in enumerate(convs)
-        }
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                ci = futures[future]
-                with print_lock:
-                    print(f"  [conv {ci+1}] ERROR: {e}")
+    if args.rate:
+        # Open-loop Poisson arrival: spawn each conversation thread after an
+        # exponentially-distributed inter-arrival delay. Max workers is capped
+        # high (num_convs) so no conversation is ever blocked waiting for a slot.
+        threads = []
+        for ci, conv in enumerate(convs):
+            t = threading.Thread(
+                target=replay_conversation,
+                args=(ci, conv, args, records, records_lock, print_lock),
+                daemon=True,
+            )
+            threads.append(t)
+            t.start()
+            if ci < len(convs) - 1:
+                # Exponential inter-arrival time; mean = 1/rate
+                time.sleep(random.expovariate(args.rate))
+        for t in threads:
+            t.join()
+    else:
+        # Closed-loop: fixed concurrency via ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+            futures = {
+                executor.submit(replay_conversation, ci, conv, args, records, records_lock, print_lock): ci
+                for ci, conv in enumerate(convs)
+            }
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    ci = futures[future]
+                    with print_lock:
+                        print(f"  [conv {ci+1}] ERROR: {e}")
 
     records.sort(key=lambda r: (str(r["conv_id"]), r["turn"]))
 
