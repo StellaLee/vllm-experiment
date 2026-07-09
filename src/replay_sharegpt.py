@@ -161,6 +161,11 @@ def main():
                     help="Conversation arrival rate in conv/s (open-loop Poisson). "
                          "When set, conversations are submitted at Poisson-distributed "
                          "inter-arrival times instead of closed-loop concurrency.")
+    ap.add_argument("--stagger-window", type=float, default=None,
+                    help="Staggered closed-loop: with --concurrency N, spread the "
+                         "initial N worker starts over this many seconds instead of "
+                         "all at t=0, then maintain concurrency N. Removes the t=0 "
+                         "thundering herd. Ignored when --rate is set.")
     ap.add_argument("--min-turns", type=int, default=1,
                     help="Only include conversations with at least this many human turns. "
                          "Use --min-turns 4 to guarantee all conversations reach turn 4.")
@@ -192,9 +197,13 @@ def main():
     if args.rate:
         print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "
               f"max_tokens={args.max_tokens} | rate={args.rate} conv/s (open-loop Poisson)")
+    elif args.stagger_window is not None:
+        print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "
+              f"max_tokens={args.max_tokens} | concurrency={args.concurrency} "
+              f"(staggered closed-loop, window={args.stagger_window}s)")
     else:
         print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "
-              f"max_tokens={args.max_tokens} | concurrency={args.concurrency} (closed-loop)")
+              f"max_tokens={args.max_tokens} | concurrency={args.concurrency} (closed-loop, herd)")
 
     records = []
     records_lock = threading.Lock()
@@ -216,6 +225,32 @@ def main():
             if ci < len(convs) - 1:
                 # Exponential inter-arrival time; mean = 1/rate
                 time.sleep(random.expovariate(args.rate))
+        for t in threads:
+            t.join()
+    elif args.stagger_window is not None:
+        # Staggered closed-loop: N worker threads pull conversations from a shared
+        # queue (maintaining concurrency N), but their initial starts are spread
+        # over the window instead of all firing at t=0 -- removes the thundering
+        # herd while preserving the steady-state c=N population.
+        from queue import Queue, Empty
+        work = Queue()
+        for ci, conv in enumerate(convs):
+            work.put((ci, conv))
+        offset = args.stagger_window / max(1, args.concurrency)
+
+        def _worker(widx):
+            time.sleep(widx * offset)
+            while True:
+                try:
+                    ci, conv = work.get_nowait()
+                except Empty:
+                    return
+                replay_conversation(ci, conv, args, records, records_lock, print_lock)
+
+        threads = [threading.Thread(target=_worker, args=(w,), daemon=True)
+                   for w in range(args.concurrency)]
+        for t in threads:
+            t.start()
         for t in threads:
             t.join()
     else:
