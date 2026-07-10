@@ -106,6 +106,12 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
 
         human_msg = turns[i]["value"].strip()
         prompt = build_prompt(history, human_msg)
+        if getattr(args, "pad_chars", 0) > 0:
+            # Unique filler -> un-cacheable large prefill (sensitive-regime probe).
+            uniq = f"[req {ci}.{turn_num}.{random.random()}] "
+            unit = uniq + "The quick brown fox jumps over the lazy dog. "
+            pad = (unit * (args.pad_chars // len(unit) + 1))[:args.pad_chars]
+            prompt = pad + "\n\n" + prompt
 
         try:
             ttft, total, output_tokens, tokens_exact = stream_request(args.host, args.port, prompt, args.max_tokens, args.model)
@@ -170,6 +176,9 @@ def main():
                     help="Only include conversations with at least this many human turns. "
                          "Use --min-turns 4 to guarantee all conversations reach turn 4.")
     ap.add_argument("--output", required=True, help="JSONL output path for per-request records")
+    ap.add_argument("--pad-chars", type=int, default=0,
+                    help="Prepend N chars of UNIQUE filler to each prompt to force a "
+                         "large, un-cacheable prefill (sensitive-regime probe). 0=off.")
     args = ap.parse_args()
 
     with open(args.dataset) as f:
