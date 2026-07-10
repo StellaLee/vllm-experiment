@@ -12,3 +12,6 @@ __pycache__/
 # Large dataset files (downloaded by setup.sh)
 data/sharegpt_v3.json
 .venv/
+
+# Paper
+paper/
