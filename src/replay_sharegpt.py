@@ -18,8 +18,35 @@ which is what makes prefix caching effective for multi-turn workloads.
 Output: JSONL with one record per request, including conv_id, turn number,
 prompt length, TTFT, and total latency.
 """
-import argparse, json, os, random, time, urllib.request, urllib.error, threading
+import argparse, json, math, os, random, time, urllib.request, urllib.error, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def sample_pad_len(ci, turn_num, args):
+    """Per-request pad length (chars). Deterministic in (pad_seed, ci, turn_num) so
+    the SAME length sequence is replayed against every policy arm (paired comparison).
+
+    Two modes:
+      * fixed  (--pad-chars N)                 -> uniform, Cs^2 = 0  (legacy)
+      * varied (--pad-mean-chars M --pad-cv2 C)-> lognormal with mean M and squared
+                                                  coefficient of variation C, so we can
+                                                  sweep prefill-size dispersion directly.
+    Lognormal: sigma^2 = ln(1+C), mu = ln(M) - sigma^2/2  => E[L]=M, Var/E^2 = C.
+    C=0 collapses to the constant M. Draw is clamped to [pad_min, pad_max]; clamping
+    slightly reduces the achieved Cs^2 at large C, so we log the realized pad_chars and
+    recompute Cs^2 empirically in analysis rather than trusting the nominal value.
+    """
+    if args.pad_mean_chars and args.pad_mean_chars > 0:
+        rng = random.Random(f"{args.pad_seed}-{ci}-{turn_num}")
+        m, c = float(args.pad_mean_chars), float(args.pad_cv2)
+        if c <= 0:
+            L = m
+        else:
+            s2 = math.log(1.0 + c)
+            mu = math.log(m) - 0.5 * s2
+            L = math.exp(rng.gauss(mu, math.sqrt(s2)))
+        return int(max(args.pad_min, min(args.pad_max, L)))
+    return int(getattr(args, "pad_chars", 0) or 0)
 
 
 def stream_request(host, port, prompt, max_tokens, model):
@@ -106,11 +133,14 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
 
         human_msg = turns[i]["value"].strip()
         prompt = build_prompt(history, human_msg)
-        if getattr(args, "pad_chars", 0) > 0:
-            # Unique filler -> un-cacheable large prefill (sensitive-regime probe).
-            uniq = f"[req {ci}.{turn_num}.{random.random()}] "
+        pad_len = sample_pad_len(ci, turn_num, args)
+        if pad_len > 0:
+            # Unique filler -> un-cacheable large prefill. Tag is deterministic and
+            # unique per (conv,turn): identical across arms (paired), distinct across
+            # requests (no cross-request prefix sharing).
+            uniq = f"[req {ci}.{turn_num}] "
             unit = uniq + "The quick brown fox jumps over the lazy dog. "
-            pad = (unit * (args.pad_chars // len(unit) + 1))[:args.pad_chars]
+            pad = (unit * (pad_len // len(unit) + 1))[:pad_len]
             prompt = pad + "\n\n" + prompt
 
         try:
@@ -127,6 +157,7 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
                 "turn": turn_num + 1,
                 "history_turns": len(history),
                 "prompt_tokens_approx": len(prompt.split()),
+                "pad_chars": pad_len,
                 "output_tokens": output_tokens,
                 "tokens_exact": tokens_exact,
                 "ttft": round(ttft, 4) if ttft is not None else None,
@@ -178,7 +209,21 @@ def main():
     ap.add_argument("--output", required=True, help="JSONL output path for per-request records")
     ap.add_argument("--pad-chars", type=int, default=0,
                     help="Prepend N chars of UNIQUE filler to each prompt to force a "
-                         "large, un-cacheable prefill (sensitive-regime probe). 0=off.")
+                         "large, un-cacheable prefill (fixed => Cs^2=0). 0=off.")
+    ap.add_argument("--pad-mean-chars", type=int, default=0,
+                    help="Variable-padding mode: target MEAN pad chars. When set, "
+                         "per-request pad length is lognormal(mean, cv2), overriding "
+                         "--pad-chars. Lets us sweep prefill-size dispersion (Cs^2).")
+    ap.add_argument("--pad-cv2", type=float, default=0.0,
+                    help="Target squared coefficient of variation of pad length "
+                         "(0=uniform; >1=heavy-tailed). Used with --pad-mean-chars.")
+    ap.add_argument("--pad-seed", type=int, default=12345,
+                    help="Seed for the deterministic per-request pad-length draw "
+                         "(same lengths across policy arms for a paired comparison).")
+    ap.add_argument("--pad-min", type=int, default=200,
+                    help="Clamp floor for variable pad length (chars).")
+    ap.add_argument("--pad-max", type=int, default=40000,
+                    help="Clamp ceiling for variable pad length (chars).")
     args = ap.parse_args()
 
     with open(args.dataset) as f:
