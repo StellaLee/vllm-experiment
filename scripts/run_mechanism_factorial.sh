@@ -72,7 +72,7 @@ run_arm() {   # arm_label  stagger_seconds  env...
     stop_server
 }
 
-for STAG in 0 30; do
+for STAG in ${STAGS:-0 30}; do
     run_arm baseline "$STAG" PREFIX_REORDER=0 DYNAMIC_CHUNK=0
     run_arm reorder  "$STAG" PREFIX_REORDER=1 DYNAMIC_CHUNK=0 AGING_ALPHA=0.3
     run_arm chunk    "$STAG" PREFIX_REORDER=0 DYNAMIC_CHUNK=1 DYNAMIC_CHUNK_HOLD=3
