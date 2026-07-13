@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Add CHUNK_MODE=slotail: drive the chunk budget off a windowed high PERCENTILE of
+per-step latency instead of its EMA/mean (CHUNK_MODE=slo). The mean signal is blind in the
+sensitive regime -- frequent cheap decode-only steps dominate the average and wash out the
+rare expensive prefill steps, so the controller never engages (pins at ceiling). Keying off
+the tail (p99 by default) makes a prefill stall visible, so the controller can react.
+
+Replaces the whole ChunkSizeController class, keeping depth + slo (mean) + slotail (tail)
+so all three can be compared in one experiment. Run patch_scheduler.py FIRST. Re-runnable.
+
+New env (slotail only):
+  CHUNK_MODE=slotail
+  DYNAMIC_CHUNK_PCTL     percentile of the step-latency window (default 99)
+  DYNAMIC_CHUNK_WINDOW   window size in steps (default 128)
+  DYNAMIC_CHUNK_WINMIN   min samples before acting (default 20)
+  (reuses DYNAMIC_CHUNK_SLO_MS, DYNAMIC_CHUNK_STEP, DYNAMIC_CHUNK_MIN)
+"""
+import re, sys
+from pathlib import Path
+
+SCHED = Path("/root/miniconda3/lib/python3.10/site-packages/vllm/v1/core/sched/scheduler.py")
+if not SCHED.exists():
+    print(f"ERROR: {SCHED} not found", file=sys.stderr); sys.exit(1)
+src = SCHED.read_text()
+
+if "_step_slotail" in src:
+    print("slotail controller already present — no changes."); sys.exit(0)
+
+NEW_CLASS = '''class ChunkSizeController:
+    """Chunk-prefill token-budget controller. Modes: depth | slo (EMA/mean) |
+    slotail (windowed percentile). Enable with DYNAMIC_CHUNK=1, pick via CHUNK_MODE."""
+
+    def __init__(self, min_tokens: int, max_tokens: int, target: int,
+                 hold: int = 3) -> None:
+        import os
+        from collections import deque
+        self.chunk = max_tokens
+        self.min = min_tokens
+        self.max = max_tokens
+        self.target = target
+        self.hold = hold
+        self._step_count = 0
+        self._shrink_count = 0
+        self._grow_count = 0
+        self.mode = os.getenv("CHUNK_MODE", "depth").strip().lower()
+        self.slo = float(os.getenv("DYNAMIC_CHUNK_SLO_MS", "50")) / 1000.0
+        self.aimd_step = int(os.getenv("DYNAMIC_CHUNK_STEP", str(max(1, min_tokens))))
+        self.ema = float(os.getenv("DYNAMIC_CHUNK_EMA", "0.3"))
+        self._last_t = None
+        self._lat = None
+        # slotail config
+        self._pctl = float(os.getenv("DYNAMIC_CHUNK_PCTL", "99"))
+        self._win = deque(maxlen=int(os.getenv("DYNAMIC_CHUNK_WINDOW", "128")))
+        self._win_min = int(os.getenv("DYNAMIC_CHUNK_WINMIN", "20"))
+        import logging
+        logging.getLogger(__name__).info(
+            "ChunkSizeController mode=%s min=%d max=%d slo_ms=%.1f pctl=%.0f",
+            self.mode, self.min, self.max, self.slo * 1000.0, self._pctl)
+
+    def step(self, decode_depth: int) -> int:
+        self._step_count += 1
+        if self.mode == "slotail":
+            return self._step_slotail(decode_depth)
+        if self.mode == "slo":
+            return self._step_slo(decode_depth)
+        return self._step_depth(decode_depth)
+
+    def _step_depth(self, decode_depth: int) -> int:
+        if decode_depth > self.target * 1.5:
+            self._shrink_count += 1; self._grow_count = 0
+        elif decode_depth < self.target * 0.5:
+            self._grow_count += 1; self._shrink_count = 0
+        else:
+            self._shrink_count = 0; self._grow_count = 0
+        if self._shrink_count >= self.hold:
+            self.chunk = max(self.min, self.chunk // 2); self._shrink_count = 0
+        elif self._grow_count >= self.hold:
+            self.chunk = min(self.max, self.chunk * 2); self._grow_count = 0
+        return self.chunk
+
+    def _measure(self, decode_depth):
+        import time
+        now = time.monotonic(); dt = None
+        if self._last_t is not None:
+            d = now - self._last_t
+            if decode_depth > 0 and d < 0.5:
+                dt = d
+        self._last_t = now
+        return dt
+
+    def _step_slo(self, decode_depth: int) -> int:
+        dt = self._measure(decode_depth)
+        if dt is not None:
+            self._lat = dt if self._lat is None else (
+                self.ema * dt + (1.0 - self.ema) * self._lat)
+        if self._lat is not None:
+            if self._lat > self.slo:
+                self.chunk = max(self.min, self.chunk // 2)
+            elif self._lat < self.slo * 0.75:
+                self.chunk = min(self.max, self.chunk + self.aimd_step)
+        if self._step_count % 50 == 0:
+            import logging
+            logging.getLogger(__name__).info(
+                "ChunkCtrl[slo] step=%d depth=%d ema_ms=%.1f chunk=%d",
+                self._step_count, decode_depth, (self._lat or 0.0) * 1000.0, self.chunk)
+        return self.chunk
+
+    def _step_slotail(self, decode_depth: int) -> int:
+        dt = self._measure(decode_depth)
+        if dt is not None:
+            self._win.append(dt)
+        if len(self._win) >= self._win_min:
+            xs = sorted(self._win)
+            k = min(len(xs) - 1, int(self._pctl / 100.0 * len(xs)))
+            signal = xs[k]  # windowed tail-percentile step latency
+            if signal > self.slo:
+                self.chunk = max(self.min, self.chunk // 2)
+            elif signal < self.slo * 0.75:
+                self.chunk = min(self.max, self.chunk + self.aimd_step)
+        if self._step_count % 50 == 0:
+            import logging
+            sig = (sorted(self._win)[min(len(self._win)-1, int(self._pctl/100.0*len(self._win)))]
+                   if self._win else 0.0)
+            logging.getLogger(__name__).info(
+                "ChunkCtrl[slotail] step=%d depth=%d p%.0f_ms=%.1f chunk=%d",
+                self._step_count, decode_depth, self._pctl, sig * 1000.0, self.chunk)
+        return self.chunk
+
+'''
+
+pattern = re.compile(
+    r"class ChunkSizeController:.*?\n\n(?=class Scheduler\(SchedulerInterface\):)",
+    re.DOTALL)
+if not pattern.search(src):
+    print("ERROR: ChunkSizeController class not found. Run patch_scheduler.py first.",
+          file=sys.stderr); sys.exit(1)
+src = pattern.sub(NEW_CLASS, src, count=1)
+SCHED.write_text(src)
+print(f"slotail controller installed in {SCHED}")
+print("Enable with: DYNAMIC_CHUNK=1 CHUNK_MODE=slotail DYNAMIC_CHUNK_MIN=512 "
+      "DYNAMIC_CHUNK_SLO_MS=50 DYNAMIC_CHUNK_PCTL=99")
