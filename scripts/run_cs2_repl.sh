@@ -21,7 +21,7 @@ LOG_DIR=logs; DATE=$(date +%Y-%m-%d); PID_FILE=/tmp/vllm_cs2repl_pid
 mkdir -p "$LOG_DIR"
 
 echo "==== Cs^2 REPLICATION | mono($MONO_BUDGET) vs chunk($CHUNK_BUDGET) | grid:${CV2_GRID} | trials:${TRIALS} | rate=$RATE n=$NUM_CONVS ===="
-$PYTHON scripts/patch_scheduler.py
+PYTHON="$PYTHON" bash scripts/apply_patches.sh
 
 start_server() { local label=$1 budget=$2
   echo ""; echo "=== server: ${label} (budget=${budget}) ==="

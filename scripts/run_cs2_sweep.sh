@@ -44,8 +44,8 @@ mkdir -p "$LOG_DIR"
 echo "==== Cs^2 genuine-term sweep | open-loop rate=${RATE} conv/s | pad_mean=${PAD_MEAN}c out=${MAX_TOKENS} ===="
 echo "  arms: mono(${MONO_BUDGET}) vs chunk(${CHUNK_BUDGET}) | reorder OFF dynamic OFF | Cs2 grid: ${CV2_GRID}"
 
-echo "=== patch (idempotent; flags OFF => native static behavior) ==="
-$PYTHON scripts/patch_scheduler.py
+echo "=== patch vLLM (canonical apply_patches.sh; flags OFF => native static) ==="
+PYTHON="$PYTHON" bash scripts/apply_patches.sh
 
 start_server() {
     local label=$1; local budget=$2

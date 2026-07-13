@@ -34,8 +34,7 @@ LOG_DIR=logs; DATE=$(date +%Y-%m-%d); PID_FILE=/tmp/vllm_cs2ours_pid
 mkdir -p "$LOG_DIR"
 
 echo "==== Cs^2 THIRD ARM: ours (adaptive chunk slo ${FLOOR}..${CEIL}, ${SLO_MS}ms, reorder OFF) rate=${RATE} ===="
-$PYTHON scripts/patch_scheduler.py
-$PYTHON scripts/hotpatch_slo_chunk.py
+PYTHON="$PYTHON" bash scripts/apply_patches.sh
 
 echo "=== server: ours (adaptive chunk controller, reorder off) ==="
 env PREFIX_REORDER=0 DYNAMIC_CHUNK=1 CHUNK_MODE=slo \

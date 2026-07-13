@@ -22,8 +22,7 @@ PREFIX=sp99; LOG_DIR=logs; DATE=$(date +%Y-%m-%d); PID_FILE=/tmp/vllm_sp99_pid
 mkdir -p "$LOG_DIR"
 
 echo "==== sensitive p99 controller | staggered ${STAGGER}s c=${CONC} pad=${PAD_CHARS} out=${MAX_TOKENS} | pctl=${PCTL} ===="
-$PYTHON scripts/patch_scheduler.py
-$PYTHON scripts/hotpatch_slo_tail.py
+PYTHON="$PYTHON" bash scripts/apply_patches.sh
 
 start_server() { local label=$1 budget=$2; shift 2
   echo ""; echo "=== server: ${label} (budget=${budget}) ==="

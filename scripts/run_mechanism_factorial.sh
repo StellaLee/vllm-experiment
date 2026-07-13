@@ -31,8 +31,8 @@ mkdir -p "$LOG_DIR"
 
 echo "==== Mechanism factorial | c=${CONC} convs=${NUM_CONVS} turns=${MAX_TURNS} budget=${MAX_BUDGET} (real sharing, no pad) ===="
 
-echo "=== patches (idempotent) ==="
-$PYTHON scripts/patch_scheduler.py
+echo "=== patch vLLM (canonical apply_patches.sh) ==="
+PYTHON="$PYTHON" bash scripts/apply_patches.sh
 
 start_server() {
     local label=$1; shift
