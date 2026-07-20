@@ -14,6 +14,7 @@ Env vars:
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -34,6 +35,22 @@ if not SCHED.exists():
 
 src = SCHED.read_text()
 changed = False
+
+# ── Patch 0: ensure module-level `import os` ─────────────────────────────────
+# The __init__ / reorder wiring below calls os.getenv() at Scheduler scope.
+# vLLM 0.23.0's scheduler.py imports itertools/time but NOT os at module level
+# (older versions did), so without this the Scheduler raises NameError on init.
+if not re.search(r"(?m)^import os(?:\s|$)", src):
+    anchor0 = "import itertools\n"
+    if anchor0 not in src:
+        print("ERROR: Patch 0 anchor 'import itertools' not found — check scheduler version",
+              file=sys.stderr)
+        sys.exit(1)
+    src = src.replace(anchor0, anchor0 + "import os\n", 1)
+    changed = True
+    print("Patch 0 applied: module-level import os")
+else:
+    print("Patch 0 already present: import os")
 
 # ── Patch 1: ChunkSizeController class (insert before class Scheduler) ──────
 CHUNK_CLASS = '''

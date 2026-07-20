@@ -32,10 +32,29 @@ fi
 
 source "$VLLM_VENV/bin/activate"
 
+# ── CUDA toolchain for runtime JIT (FlashInfer / torch.compile inductor) ─────
+# torch here is cu130 (CUDA 13). The system nvcc is 12.9 (mismatch) and its
+# headers aren't on the default include path, so JIT fails with
+# "cuda_runtime.h: No such file". The venv bundles a matching CUDA 13 toolkit
+# via the nvidia-* pip packages -- point CUDA_HOME at it so nvcc + headers agree.
+_CU13="$VIRTUAL_ENV/lib/python3.10/site-packages/nvidia/cu13"
+if [ -x "$_CU13/bin/nvcc" ]; then
+    export CUDA_HOME="$_CU13"
+    export PATH="$CUDA_HOME/bin:$PATH"
+fi
+unset _CU13
+# FlashInfer 0.6.12's bundled cccl headers reject nvcc 13.2 ("CUDA compiler and
+# toolkit headers are incompatible"). We don't need its sampler (attention uses
+# FLASH_ATTN), so use the native torch sampler and skip the FlashInfer JIT.
+# Override with VLLM_USE_FLASHINFER_SAMPLER=1 if you ever want it back.
+: "${VLLM_USE_FLASHINFER_SAMPLER:=0}"
+export VLLM_USE_FLASHINFER_SAMPLER
+
 # ── summary ──────────────────────────────────────────────────────────────────
 echo "venv   : $VIRTUAL_ENV"
 echo "repo   : $REPO_ROOT"
 echo "vllm   : $(python -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo 'NOT IMPORTABLE')"
+echo "cuda   : ${CUDA_HOME:-<system>} | flashinfer_sampler=$VLLM_USE_FLASHINFER_SAMPLER"
 
 # ── optional deeper check (slow: imports torch) ──────────────────────────────
 if [ "${1:-}" = "--check" ]; then
