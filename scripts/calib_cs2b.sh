@@ -8,6 +8,7 @@ cd "$(dirname "$0")/.."
 PYTHON=${PYTHON:-/root/miniconda3/bin/python3}
 MODEL=${MODEL:-/model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct}
 PORT=${PORT:-8000}; MAXLEN=16384; BUDGET=16384
+TP=${TP:-1}   # set TP=2 on the 2x4090 box (CUDA_VISIBLE_DEVICES to a same-switch pair)
 NUM=${NUM:-140}
 LOG=logs; DATE=$(date +%Y-%m-%d); mkdir -p "$LOG"; PID=/tmp/vllm_calibb_pid
 
@@ -16,6 +17,7 @@ echo "=== starting mono server ==="
 env PREFIX_REORDER=0 DYNAMIC_CHUNK=0 $PYTHON -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" --port "$PORT" --max-num-seqs 32 \
     --max-num-batched-tokens "$BUDGET" --max-model-len "$MAXLEN" \
+    --tensor-parallel-size "$TP" \
     --gpu-memory-utilization 0.90 > "$LOG/${DATE}-calibb-server.log" 2>&1 &
 echo $! > "$PID"
 trap 'kill "$(cat $PID)" 2>/dev/null || true' EXIT
