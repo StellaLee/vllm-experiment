@@ -23,32 +23,64 @@ compare chunk Δ%. See `docs/2026-07-20-tp-nccl-comms-caveat.md`, memory `projec
 (not 0.8×knee) put SINGLE at rate 2.5 ≈ ρ0.9 (near-saturation, ±58–82 noise) and TP2 at a
 lower ρ — a ρ mismatch. The matched-ρ redo below fixes it.
 
-## Result (matched ρ≈0.8; NEG = chunk wins; NCCL effect = TP2 − SINGLE)
-| metric | Cs² | SINGLE Δ% | TP2 Δ% | NCCL effect |
+## Result — same-arm sharding (primary framing)
+The cleanest isolation: take the **same arm** (same chunk size, scheduler, rate) and compare
+it on **1 chip vs 2 chips**. Both arms get the 2-GPU compute speedup, so that cancels; any
+residual is the NCCL cost specific to chunk's extra steps.
+**NCCL-tax-on-chunk = chunk_sharding_effect − mono_sharding_effect** (pos ⇒ sharding
+penalizes chunk more than mono). Same rate 2.0, pooled 3 trials (NEG sharding = TP=2 faster):
+
+| metric | Cs² | mono single→TP2 | chunk single→TP2 | NCCL-tax-on-chunk |
 |---|---|---|---|---|
-| mean | 0 | +11.0±18.2 | +9.1±8.4 | **−1.9** |
-|      | 2 | +47.9±58.4 | −7.9±15.8 | −55.7 |
-|      | 4 | +58.6±60.7 | +6.6±6.4 | −52.0 |
-| p50  | 0 | +16.4±17.5 | +12.8±9.0 | **−3.6** |
-|      | 2 | +91.4±109.4 | −0.8±1.7 | −92.2 |
-|      | 4 | +112.6±151.4 | +3.4±3.9 | −109.2 |
-| p95  | 0 | +6.6±26.9 | +6.6±11.5 | **+0.0** |
-|      | 2 | +20.6±43.4 | −17.0±23.1 | −37.6 |
-|      | 4 | +58.8±56.2 | +11.0±8.0 | −47.8 |
+| mean | 0 | 464→230 (−50.3%) | 507→255 (−49.7%) | **+0.7 pts** |
+|      | 2 | 595→207 (−65.2%) | 858→181 (−79.0%) | −13.7 |
+|      | 4 | 691→64 (−90.7%) | 1210→68 (−94.4%) | −3.6 |
+| p50  | 0 | 353→224 (−36.6%) | 408→242 (−40.7%) | **−4.0 pts** |
+|      | 2 | 337→59 (−82.6%) | 544→58 (−89.4%) | −6.8 |
+|      | 4 | 324→47 (−85.5%) | 438→49 (−88.8%) | −3.3 |
+| p95  | 0 | 929→511 (−44.9%) | 968→585 (−39.5%) | **+5.4 pts** |
+|      | 2 | 1885→874 (−53.7%) | 2601→889 (−65.8%) | −12.2 |
+|      | 4 | 2643→161 (−93.9%) | 5681→174 (−96.9%) | −3.0 |
+
+- **Both arms get much faster under TP=2** (all sharding effects strongly negative) — the
+  2-GPU compute speedup dominates the host-staged NCCL overhead even for a small model.
+- **NCCL-tax-on-chunk ≈ 0 at the clean Cs²=0 point** (+0.7 / −4.0 / +5.4 across mean/p50/p95,
+  straddling zero). Sharding does NOT penalize chunk more than mono.
+- Only faintly positive: **p95 @ Cs²=0 = +5.4 pts** — a hint that chunk's *tail* benefits
+  slightly less from sharding (chunk issues more all-reduces), but tiny and within noise;
+  mean/p50 go the other way.
 
 Saturation sanity (cv0 mono, first50→last50): SINGLE 324→370 (1.1×), TP2 271→200 (0.7×) —
-**both sub-saturation, ρ matched.**
+both sub-saturation, ρ matched (both rate 2.0).
 
-Raw per-step overhead (cv0, pooled): SINGLE mono p50=353 / chunk p50=408 (**+55 ms**) |
-TP2 mono p50=224 / chunk p50=242 (**+18 ms**).
+### Cross-check — chunk-vs-mono Δ% per config (indirect framing, same conclusion)
+Difference of chunk-vs-mono deltas, NCCL effect = TP2 − SINGLE (pos ⇒ NCCL taxes chunk):
+
+| metric | Cs²=0 SINGLE Δ% | Cs²=0 TP2 Δ% | NCCL effect |
+|---|---|---|---|
+| mean | +11.0±18.2 | +9.1±8.4 | −1.9 |
+| p50 | +16.4±17.5 | +12.8±9.0 | −3.6 |
+| p95 | +6.6±26.9 | +6.6±11.5 | +0.0 |
+
+(Cs²=2/4 rows omitted — the single-GPU chunk-vs-mono deltas there are dominated by whale
+noise, ±100+, so the large negative "NCCL effect" values are an artifact of that noise, not
+a real chunk benefit. Same-arm framing above is cleaner because it sidesteps those deltas.)
 
 ## Conclusion — NCCL is not the villain
-- **NCCL effect is never meaningfully positive** (the hypothesized "NCCL taxes chunk"
-  direction). At the **cleanest point (Cs²=0, no whale noise) it is ≈0** on every metric
-  (mean −1.9 / p50 −3.6 / p95 +0.0) — SINGLE and TP2 chunk-Δ% are essentially identical.
-- **Raw overhead confirms it:** chunk's per-request overhead is *smaller* under TP=2
-  (+18 ms) than single-GPU (+55 ms). If NCCL penalized chunk's extra steps, TP2's chunk
-  overhead would be *larger*. It isn't.
+- **NCCL-tax-on-chunk ≈ 0** at the clean Cs²=0 point (same-arm: +0.7 / −4.0 / +5.4 pts across
+  mean/p50/p95, straddling zero). Sharding the model across 2 chips does NOT penalize chunk
+  more than mono.
+- **Both arms benefit from sharding** (TP=2 ~40–50% faster at cv0) — the 2-GPU compute
+  speedup beats the host-staged NCCL overhead. The indirect cross-check (chunk-vs-mono NCCL
+  effect ≈ 0 at cv0) agrees.
+- **This does NOT mean comms overhead is negligible — it's large, just paid equally by both
+  arms.** Evidence it's large: TP=2 barely raised *throughput capacity* over single-GPU
+  (both knees ≈2.5) and only improved *latency* ~40%, not the ~2× a free second GPU would
+  give — comms ate roughly half the potential speedup. Why chunk isn't taxed *more*:
+  host-staged NCCL over PCIe is **bandwidth-dominated** (cost ∝ activation data volume, not
+  per-call latency), and both arms prefill the **same total tokens** → same total all-reduce
+  data → chunk's extra (but smaller) steps add little. So comms is costly but **arm-neutral**,
+  which is exactly why it doesn't distort the mono-vs-chunk comparison.
 - **Generalizes to 14B:** on a bigger model the all-reduce is a *smaller* fraction of each
   step (compute ~hidden², comms ~hidden), so NCCL taxes chunk even *less* on 14B.
 
