@@ -6,7 +6,8 @@
 # See docs/patching.md for the env-var matrix.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PYTHON=${PYTHON:-/root/miniconda3/bin/python3}
+# Default to the active interpreter (venv-aware); override with PYTHON=... if needed.
+PYTHON=${PYTHON:-$(command -v python3)}
 
 echo "[1/2] base scheduler patch (ChunkSizeController depth + reorder/aging wiring)"
 $PYTHON scripts/patch_scheduler.py

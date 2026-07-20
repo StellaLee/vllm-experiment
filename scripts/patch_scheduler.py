@@ -13,10 +13,21 @@ Env vars:
   DYNAMIC_CHUNK_HOLD=3     consecutive steps above/below threshold before resize
 """
 
+import os
 import sys
 from pathlib import Path
 
-SCHED = Path("/root/miniconda3/lib/python3.10/site-packages/vllm/v1/core/sched/scheduler.py")
+
+def _find_sched() -> Path:
+    """Locate scheduler.py in the *active* vLLM install (env override wins)."""
+    override = os.environ.get("VLLM_SCHED_PATH")
+    if override:
+        return Path(override)
+    import vllm  # noqa: PLC0415 -- resolved against the running interpreter
+    return Path(vllm.__file__).parent / "v1" / "core" / "sched" / "scheduler.py"
+
+
+SCHED = _find_sched()
 if not SCHED.exists():
     print(f"ERROR: {SCHED} not found", file=sys.stderr)
     sys.exit(1)
