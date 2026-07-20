@@ -73,19 +73,32 @@ a real chunk benefit. Same-arm framing above is cleaner because it sidesteps tho
 - **Both arms benefit from sharding** (TP=2 ~40–50% faster at cv0) — the 2-GPU compute
   speedup beats the host-staged NCCL overhead. The indirect cross-check (chunk-vs-mono NCCL
   effect ≈ 0 at cv0) agrees.
-- **This does NOT mean comms overhead is negligible — it's large, just paid equally by both
-  arms.** Evidence it's large: TP=2 barely raised *throughput capacity* over single-GPU
-  (both knees ≈2.5) and only improved *latency* ~40%, not the ~2× a free second GPU would
-  give — comms ate roughly half the potential speedup. Why chunk isn't taxed *more*:
-  host-staged NCCL over PCIe is **bandwidth-dominated** (cost ∝ activation data volume, not
-  per-call latency), and both arms prefill the **same total tokens** → same total all-reduce
-  data → chunk's extra (but smaller) steps add little. So comms is costly but **arm-neutral**,
-  which is exactly why it doesn't distort the mono-vs-chunk comparison.
+- **Comms overhead itself is large — but arm-neutral** (see the note below); the control
+  rules out *distortion of the comparison*, not the existence of comms cost.
 - **Generalizes to 14B:** on a bigger model the all-reduce is a *smaller* fraction of each
   step (compute ~hidden², comms ~hidden), so NCCL taxes chunk even *less* on 14B.
 
 **→ The 14B mono-vs-chunk null is a real result, not a host-staged-NCCL artifact.** This
 resolves the threat-to-validity and strengthens the multi-chip scope claim.
+
+## Is the comms overhead itself negligible? No — large but arm-neutral
+Two separate quantities must not be conflated:
+- **Absolute comms cost — substantial.** TP=2 barely raised *throughput capacity* over
+  single-GPU (both knees ≈2.5) and improved *latency* only ~40%, not the ~2× a free second
+  GPU would give. Host-staged NCCL over PCIe ate roughly **half** the potential 2-GPU speedup.
+- **Differential cost on chunk vs mono — ≈0** (the NCCL-tax-on-chunk above).
+
+**Reconciliation (why both hold):** host-staged NCCL over PCIe is **bandwidth-dominated** —
+cost ∝ activation *data volume*, not per-call latency. Both arms prefill the **same total
+tokens**, so both move the **same total all-reduce data**; chunk merely splits it into more,
+smaller transfers. Hence chunk's extra all-reduces add little.
+
+**Diagnostic corollary:** if NCCL were instead *latency*-dominated (a fixed cost per call),
+chunk's extra calls *would* cost more and the tax would be **positive**. The observed
+near-zero tax is itself evidence the regime is **bandwidth-bound**. So comms is costly but
+**arm-neutral** — it shifts both arms' absolute latency together and does **not** distort the
+mono-vs-chunk comparison. (Concluding "comms is negligible" from this result would be the
+easy mistake; the correct statement is "comms is real but does not bias the comparison.")
 
 ## Caveats
 - The large −55/−92/−109 "NCCL effect" values at Cs²=2/4 are **inflated by SINGLE-side
