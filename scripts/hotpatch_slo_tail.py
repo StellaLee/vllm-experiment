@@ -13,7 +13,9 @@ New env (slotail only):
   DYNAMIC_CHUNK_PCTL     percentile of the step-latency window (default 99)
   DYNAMIC_CHUNK_WINDOW   window size in steps (default 128)
   DYNAMIC_CHUNK_WINMIN   min samples before acting (default 20)
-  (reuses DYNAMIC_CHUNK_SLO_MS, DYNAMIC_CHUNK_STEP, DYNAMIC_CHUNK_MIN)
+  CHUNK_MODE=slocvar       tail-MEAN (CVaR) variant of slotail (steadier than a p99 point)
+  DYNAMIC_CHUNK_CVAR_PCTL  slocvar tail cutoff; signal = mean of worst (100-p)% (default 90)
+  (reuses DYNAMIC_CHUNK_SLO_MS, DYNAMIC_CHUNK_STEP, DYNAMIC_CHUNK_MIN, DYNAMIC_CHUNK_WINDOW)
 """
 import os, re, sys
 from pathlib import Path
@@ -33,12 +35,13 @@ if not SCHED.exists():
     print(f"ERROR: {SCHED} not found", file=sys.stderr); sys.exit(1)
 src = SCHED.read_text()
 
-if "_step_slotail" in src:
-    print("slotail controller already present — no changes."); sys.exit(0)
+if "_step_slocvar" in src:
+    print("slocvar controller already present — no changes."); sys.exit(0)
 
 NEW_CLASS = '''class ChunkSizeController:
     """Chunk-prefill token-budget controller. Modes: depth | slo (EMA/mean) |
-    slotail (windowed percentile). Enable with DYNAMIC_CHUNK=1, pick via CHUNK_MODE."""
+    slotail (windowed p-percentile) | slocvar (windowed tail-mean / CVaR).
+    Enable with DYNAMIC_CHUNK=1, pick via CHUNK_MODE."""
 
     def __init__(self, min_tokens: int, max_tokens: int, target: int,
                  hold: int = 3) -> None:
@@ -62,6 +65,9 @@ NEW_CLASS = '''class ChunkSizeController:
         self._pctl = float(os.getenv("DYNAMIC_CHUNK_PCTL", "99"))
         self._win = deque(maxlen=int(os.getenv("DYNAMIC_CHUNK_WINDOW", "128")))
         self._win_min = int(os.getenv("DYNAMIC_CHUNK_WINMIN", "20"))
+        # slocvar: CVaR/expected-shortfall cutoff. signal = MEAN of the worst
+        # (100 - cvar_pctl)% of the window -> lower variance than a single percentile.
+        self._cvar_pctl = float(os.getenv("DYNAMIC_CHUNK_CVAR_PCTL", "90"))
         import logging
         logging.getLogger(__name__).info(
             "ChunkSizeController mode=%s min=%d max=%d slo_ms=%.1f pctl=%.0f",
@@ -69,6 +75,8 @@ NEW_CLASS = '''class ChunkSizeController:
 
     def step(self, decode_depth: int) -> int:
         self._step_count += 1
+        if self.mode == "slocvar":
+            return self._step_slocvar(decode_depth)
         if self.mode == "slotail":
             return self._step_slotail(decode_depth)
         if self.mode == "slo":
@@ -136,6 +144,35 @@ NEW_CLASS = '''class ChunkSizeController:
                 self._step_count, decode_depth, self._pctl, sig * 1000.0, self.chunk)
         return self.chunk
 
+    def _step_slocvar(self, decode_depth: int) -> int:
+        # CVaR / expected-shortfall control: signal = MEAN of the window tail at/above
+        # cvar_pctl (default = worst 10%). Averaging the tail is a far lower-variance
+        # estimator than slotail's single p99 order statistic -> steadier control.
+        dt = self._measure(decode_depth)
+        if dt is not None:
+            self._win.append(dt)
+        if len(self._win) >= self._win_min:
+            xs = sorted(self._win)
+            k = min(len(xs) - 1, int(self._cvar_pctl / 100.0 * len(xs)))
+            tail = xs[k:]
+            signal = sum(tail) / len(tail)  # windowed tail-mean (CVaR)
+            if signal > self.slo:
+                self.chunk = max(self.min, self.chunk // 2)
+            elif signal < self.slo * 0.75:
+                self.chunk = min(self.max, self.chunk + self.aimd_step)
+        if self._step_count % 50 == 0:
+            import logging
+            if self._win:
+                xs = sorted(self._win)
+                k = min(len(xs) - 1, int(self._cvar_pctl / 100.0 * len(xs)))
+                sig = sum(xs[k:]) / len(xs[k:])
+            else:
+                sig = 0.0
+            logging.getLogger(__name__).info(
+                "ChunkCtrl[slocvar] step=%d depth=%d cvar%.0f_ms=%.1f chunk=%d",
+                self._step_count, decode_depth, self._cvar_pctl, sig * 1000.0, self.chunk)
+        return self.chunk
+
 '''
 
 pattern = re.compile(
@@ -146,6 +183,8 @@ if not pattern.search(src):
           file=sys.stderr); sys.exit(1)
 src = pattern.sub(NEW_CLASS, src, count=1)
 SCHED.write_text(src)
-print(f"slotail controller installed in {SCHED}")
-print("Enable with: DYNAMIC_CHUNK=1 CHUNK_MODE=slotail DYNAMIC_CHUNK_MIN=512 "
+print(f"slotail+slocvar controller installed in {SCHED}")
+print("Enable slotail: DYNAMIC_CHUNK=1 CHUNK_MODE=slotail DYNAMIC_CHUNK_MIN=512 "
       "DYNAMIC_CHUNK_SLO_MS=50 DYNAMIC_CHUNK_PCTL=99")
+print("Enable slocvar: DYNAMIC_CHUNK=1 CHUNK_MODE=slocvar DYNAMIC_CHUNK_MIN=512 "
+      "DYNAMIC_CHUNK_SLO_MS=50 DYNAMIC_CHUNK_CVAR_PCTL=90")
