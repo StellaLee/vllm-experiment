@@ -90,8 +90,37 @@ python scripts/analyze_cs2_repl.py            # canonical repo analyzer
 Raw logs (remote): `logs/2026-07-20-cs2repl-{mono,chunk}-cv{0,1,2,4}-t{1,2,3}.jsonl`,
 server logs `logs/2026-07-20-cs2repl-{mono,chunk}-server.log`.
 
+## Addendum (2026-07-20) — per-metric re-analysis: it's a tail-vs-throughput tradeoff, not a mean crossover
+The mean null hides the real effect. Breaking chunk Δ% out by metric (paired, ±std/3 trials):
+
+| Cs² | mean | p50 | p95 |
+|---|---|---|---|
+| ~0 | −10.6±11.7 | +13.6±12.4 | **−31.2±9.0** |
+| ~1 | +34.5±49.4 | +49.3±55.6 | +43.7±56.2 |
+| ~2 | −9.2±10.4 | +29.7±31.5 | **−32.5±3.4** |
+| ~4 | +55.1±63.1 | +25.0±20.2 | +61.0±68.8 |
+
+**Robust signals (tight CI):** chunk **cuts p95 by ~30% at Cs²=0 and Cs²=2** (−31±9, −32±3.4),
+while **losing on p50/median everywhere** (+14…+49%). So chunk **bounds the tail at the cost
+of median throughput** — a tail-vs-throughput tradeoff, not a mean win. The mean is a muddle
+of the two → the non-monotonic noise above.
+
+Minnow/whale split (pad below/above median): at Cs²=2 chunk helps both tails (minnow p95
+−24±26, whale p95 −25±8) but hurts medians (throughput); at **Cs²=4 whale p50 = +25.9±7.6
+(tight)** — chunk chops giant whales into ~20 interleaved steps and inflates their *own*
+latency, which is why the mean/tail flip at extreme skew.
+
+**Reframe:** the effect is driven by prefill **size (E[S])**, not variance — chunk's p95 win
+appears even at Cs²=0, because mono batches large prefills into long steps and chunk caps
+step latency at 512 tokens. The `(Cs²−1)` "crossover" is a *mean* prediction; the mean is the
+wrong lens for what chunk actually does (bound the head-of-line tail). This is itself a
+metric-choice point that fits the paper's thesis. NB: subset percentiles are underpowered
+(n≈75/subset); the reliable claim is the **aggregate p95** win at cv0/cv2.
+
 ## Next
-1. **7B single-GPU vs 7B TP=2 NCCL control** (the fork — interprets this null).
-2. Dynamic controller (`run_cs2_ours.sh`) only if a stall-bound lever is confirmed.
-3. If the null survives the control: it strengthens the paper's artifact thesis (even
-   large-model multi-chip can't manufacture a robust chunking win). If not: need NVLink.
+1. ~~7B single-GPU vs TP=2 NCCL control~~ **DONE** (`2026-07-20-nccl-control-7b.md`): NCCL
+   does NOT tax chunk → **this null is real, not a comms artifact.** Caveat resolved.
+2. Firm up the **p95 tail-vs-throughput** result (more trials → tighter CIs) — it's the
+   actual positive finding.
+3. Dynamic controller (`run_cs2_ours.sh`, now with `CHUNK_MODE=slocvar`) only if we want to
+   test whether "dynamic buys nothing" holds on multi-chip — the null suggests little lever.
