@@ -15,6 +15,8 @@ New env (slotail only):
   DYNAMIC_CHUNK_WINMIN   min samples before acting (default 20)
   CHUNK_MODE=slocvar       tail-MEAN (CVaR) variant of slotail (steadier than a p99 point)
   DYNAMIC_CHUNK_CVAR_PCTL  slocvar tail cutoff; signal = mean of worst (100-p)% (default 90)
+  DYNAMIC_CHUNK_TRACE      path to a per-step csv (step,wall_s,depth,signal_ms,chunk) so the
+                           budget trajectory over time is recorded; unset = no trace (all modes)
   (reuses DYNAMIC_CHUNK_SLO_MS, DYNAMIC_CHUNK_STEP, DYNAMIC_CHUNK_MIN, DYNAMIC_CHUNK_WINDOW)
 """
 import os, re, sys
@@ -35,8 +37,8 @@ if not SCHED.exists():
     print(f"ERROR: {SCHED} not found", file=sys.stderr); sys.exit(1)
 src = SCHED.read_text()
 
-if "_step_slocvar" in src:
-    print("slocvar controller already present — no changes."); sys.exit(0)
+if "DYNAMIC_CHUNK_TRACE" in src:
+    print("slocvar+trace controller already present — no changes."); sys.exit(0)
 
 NEW_CLASS = '''class ChunkSizeController:
     """Chunk-prefill token-budget controller. Modes: depth | slo (EMA/mean) |
@@ -68,6 +70,17 @@ NEW_CLASS = '''class ChunkSizeController:
         # slocvar: CVaR/expected-shortfall cutoff. signal = MEAN of the worst
         # (100 - cvar_pctl)% of the window -> lower variance than a single percentile.
         self._cvar_pctl = float(os.getenv("DYNAMIC_CHUNK_CVAR_PCTL", "90"))
+        # Per-step budget trace (DYNAMIC_CHUNK_TRACE=path). Line-buffered so a
+        # SIGTERM'd server still leaves a complete csv; one short write / ~30ms
+        # decode step is negligible vs the step itself.
+        self._trace_fh = None
+        _tp = os.getenv("DYNAMIC_CHUNK_TRACE", "").strip()
+        if _tp:
+            try:
+                self._trace_fh = open(_tp, "w", buffering=1)
+                self._trace_fh.write("step,wall_s,depth,signal_ms,chunk\\n")
+            except Exception:
+                self._trace_fh = None
         import logging
         logging.getLogger(__name__).info(
             "ChunkSizeController mode=%s min=%d max=%d slo_ms=%.1f pctl=%.0f",
@@ -83,6 +96,13 @@ NEW_CLASS = '''class ChunkSizeController:
             return self._step_slo(decode_depth)
         return self._step_depth(decode_depth)
 
+    def _trace(self, decode_depth: int, signal_ms: float) -> None:
+        if self._trace_fh is not None:
+            import time
+            self._trace_fh.write(
+                "%d,%.3f,%d,%.2f,%d\\n" % (
+                    self._step_count, time.time(), decode_depth, signal_ms, self.chunk))
+
     def _step_depth(self, decode_depth: int) -> int:
         if decode_depth > self.target * 1.5:
             self._shrink_count += 1; self._grow_count = 0
@@ -94,6 +114,7 @@ NEW_CLASS = '''class ChunkSizeController:
             self.chunk = max(self.min, self.chunk // 2); self._shrink_count = 0
         elif self._grow_count >= self.hold:
             self.chunk = min(self.max, self.chunk * 2); self._grow_count = 0
+        self._trace(decode_depth, float(decode_depth))
         return self.chunk
 
     def _measure(self, decode_depth):
@@ -116,6 +137,7 @@ NEW_CLASS = '''class ChunkSizeController:
                 self.chunk = max(self.min, self.chunk // 2)
             elif self._lat < self.slo * 0.75:
                 self.chunk = min(self.max, self.chunk + self.aimd_step)
+        self._trace(decode_depth, (self._lat or 0.0) * 1000.0)
         if self._step_count % 50 == 0:
             import logging
             logging.getLogger(__name__).info(
@@ -127,18 +149,18 @@ NEW_CLASS = '''class ChunkSizeController:
         dt = self._measure(decode_depth)
         if dt is not None:
             self._win.append(dt)
+        sig = 0.0
         if len(self._win) >= self._win_min:
             xs = sorted(self._win)
             k = min(len(xs) - 1, int(self._pctl / 100.0 * len(xs)))
-            signal = xs[k]  # windowed tail-percentile step latency
-            if signal > self.slo:
+            sig = xs[k]  # windowed tail-percentile step latency
+            if sig > self.slo:
                 self.chunk = max(self.min, self.chunk // 2)
-            elif signal < self.slo * 0.75:
+            elif sig < self.slo * 0.75:
                 self.chunk = min(self.max, self.chunk + self.aimd_step)
+        self._trace(decode_depth, sig * 1000.0)
         if self._step_count % 50 == 0:
             import logging
-            sig = (sorted(self._win)[min(len(self._win)-1, int(self._pctl/100.0*len(self._win)))]
-                   if self._win else 0.0)
             logging.getLogger(__name__).info(
                 "ChunkCtrl[slotail] step=%d depth=%d p%.0f_ms=%.1f chunk=%d",
                 self._step_count, decode_depth, self._pctl, sig * 1000.0, self.chunk)
@@ -151,23 +173,19 @@ NEW_CLASS = '''class ChunkSizeController:
         dt = self._measure(decode_depth)
         if dt is not None:
             self._win.append(dt)
+        sig = 0.0
         if len(self._win) >= self._win_min:
             xs = sorted(self._win)
             k = min(len(xs) - 1, int(self._cvar_pctl / 100.0 * len(xs)))
             tail = xs[k:]
-            signal = sum(tail) / len(tail)  # windowed tail-mean (CVaR)
-            if signal > self.slo:
+            sig = sum(tail) / len(tail)  # windowed tail-mean (CVaR)
+            if sig > self.slo:
                 self.chunk = max(self.min, self.chunk // 2)
-            elif signal < self.slo * 0.75:
+            elif sig < self.slo * 0.75:
                 self.chunk = min(self.max, self.chunk + self.aimd_step)
+        self._trace(decode_depth, sig * 1000.0)
         if self._step_count % 50 == 0:
             import logging
-            if self._win:
-                xs = sorted(self._win)
-                k = min(len(xs) - 1, int(self._cvar_pctl / 100.0 * len(xs)))
-                sig = sum(xs[k:]) / len(xs[k:])
-            else:
-                sig = 0.0
             logging.getLogger(__name__).info(
                 "ChunkCtrl[slocvar] step=%d depth=%d cvar%.0f_ms=%.1f chunk=%d",
                 self._step_count, decode_depth, self._cvar_pctl, sig * 1000.0, self.chunk)
