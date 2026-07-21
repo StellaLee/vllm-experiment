@@ -17,6 +17,8 @@ New env (slotail only):
   DYNAMIC_CHUNK_CVAR_PCTL  slocvar tail cutoff; signal = mean of worst (100-p)% (default 90)
   DYNAMIC_CHUNK_TRACE      path to a per-step csv (step,wall_s,depth,signal_ms,chunk) so the
                            budget trajectory over time is recorded; unset = no trace (all modes)
+  DYNAMIC_CHUNK_START      initial chunk budget (default = min/floor). Start at the deployed
+                           chunked-prefill point and grow up, NOT at the mono ceiling (all modes)
   (reuses DYNAMIC_CHUNK_SLO_MS, DYNAMIC_CHUNK_STEP, DYNAMIC_CHUNK_MIN, DYNAMIC_CHUNK_WINDOW)
 """
 import os, re, sys
@@ -37,8 +39,8 @@ if not SCHED.exists():
     print(f"ERROR: {SCHED} not found", file=sys.stderr); sys.exit(1)
 src = SCHED.read_text()
 
-if "DYNAMIC_CHUNK_TRACE" in src:
-    print("slocvar+trace controller already present — no changes."); sys.exit(0)
+if "DYNAMIC_CHUNK_START" in src:
+    print("slocvar+trace+start controller already present — no changes."); sys.exit(0)
 
 NEW_CLASS = '''class ChunkSizeController:
     """Chunk-prefill token-budget controller. Modes: depth | slo (EMA/mean) |
@@ -49,9 +51,14 @@ NEW_CLASS = '''class ChunkSizeController:
                  hold: int = 3) -> None:
         import os
         from collections import deque
-        self.chunk = max_tokens
         self.min = min_tokens
         self.max = max_tokens
+        # Start at the DEPLOYED chunked-prefill operating point, not the ceiling:
+        # DYNAMIC_CHUNK_START (default = min/floor = the small-chunk strategy vLLM runs),
+        # then AIMD-grow toward max only when the latency tail has headroom. Starting at
+        # max (mono) begins in the worst-TPOT regime and biases the controller upward.
+        _start = int(os.getenv("DYNAMIC_CHUNK_START", str(min_tokens)))
+        self.chunk = max(min_tokens, min(max_tokens, _start))
         self.target = target
         self.hold = hold
         self._step_count = 0
