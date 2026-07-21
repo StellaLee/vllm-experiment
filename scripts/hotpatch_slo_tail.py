@@ -39,8 +39,8 @@ if not SCHED.exists():
     print(f"ERROR: {SCHED} not found", file=sys.stderr); sys.exit(1)
 src = SCHED.read_text()
 
-if "DYNAMIC_CHUNK_START" in src:
-    print("slocvar+trace+start controller already present — no changes."); sys.exit(0)
+if "file=self._trace_fh" in src:
+    print("slocvar+trace+start controller (print-based) already present — no changes."); sys.exit(0)
 
 NEW_CLASS = '''class ChunkSizeController:
     """Chunk-prefill token-budget controller. Modes: depth | slo (EMA/mean) |
@@ -85,7 +85,7 @@ NEW_CLASS = '''class ChunkSizeController:
         if _tp:
             try:
                 self._trace_fh = open(_tp, "w", buffering=1)
-                self._trace_fh.write("step,wall_s,depth,signal_ms,chunk\\n")
+                print("step,wall_s,depth,signal_ms,chunk", file=self._trace_fh)
             except Exception:
                 self._trace_fh = None
         import logging
@@ -106,9 +106,9 @@ NEW_CLASS = '''class ChunkSizeController:
     def _trace(self, decode_depth: int, signal_ms: float) -> None:
         if self._trace_fh is not None:
             import time
-            self._trace_fh.write(
-                "%d,%.3f,%d,%.2f,%d\\n" % (
-                    self._step_count, time.time(), decode_depth, signal_ms, self.chunk))
+            print("%d,%.3f,%d,%.2f,%d" % (
+                self._step_count, time.time(), decode_depth, signal_ms, self.chunk),
+                file=self._trace_fh)
 
     def _step_depth(self, decode_depth: int) -> int:
         if decode_depth > self.target * 1.5:
