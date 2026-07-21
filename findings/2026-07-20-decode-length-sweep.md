@@ -42,6 +42,31 @@ Saturation sanity: all three sub-saturation (mono TTFT first50→last50 ratio 1.
 - **TTFT** still shows chunk's median/throughput cost (+20–30% p50) — the tail-vs-throughput
   tradeoff, now visible on the decode side too.
 
+## Decode-length distribution (why max-tokens=1024 is the right cap)
+We log `output_tokens` per request, so the realized decode-length distribution is measurable
+(not assumed). Pooled over the 3 trials, mono+chunk (n=480/setting):
+
+| max-tokens | min | p50 | p90 | p95 | max | mean | **% hitting cap (censored)** |
+|---|---|---|---|---|---|---|---|
+| 128 | 14 | 128 | 128 | 128 | 128 | 112 | **76.5%** |
+| 512 | 14 | 315 | 512 | 512 | 512 | 298 | 24.4% |
+| **1024** | 14 | 314 | 797 | 927 | 1024 | 358 | **3.5%** |
+
+- **mt=128 is pathological**: the median *equals* the cap and 76.5% of requests are truncated —
+  the "short decode" was imposed by the cap, not the workload. This is why the mt=128 TPOT
+  null is an artifact.
+- **mt=1024 recovers the natural distribution**: only 3.5% censored, so the aggregate is the
+  model's real EOS behavior — median ~314, mean ~358, p95 ~927 tokens (a realistic
+  ShareGPT-style response-length distribution). Raising the cap to 2048 would move little
+  (only that 3.5% tail is clipped). **1024 is the smallest cap at which natural decode
+  dominates**, so the TPOT-tail effect is genuine generation, not cap-clipping.
+
+Padding note: the uncacheable prefill pad is deterministic filler (a unique per-request tag
+`[req ci.turn]` + repeated "quick brown fox" text, identical across arms), **not** random
+tokens — chosen to defeat prefix caching without differentially confounding the arms. Prefill
+cost is token-*count*-bound, not content-bound; and the healthy decode distribution above
+confirms the pad prefix does not induce degenerate generation.
+
 ## Consequence for the paper
 The §6 "decode-bound, chunking buys nothing" claim is **scoped to short decodes**. Under
 realistic generation lengths a genuine **stall-bound regime exists on 14B/TP=2**, and chunking
