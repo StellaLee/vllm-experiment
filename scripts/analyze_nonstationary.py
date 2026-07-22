@@ -7,7 +7,7 @@ membership is reconstructed from the existing log fields (no per-token logging c
 
 Env:
   SCHEDULE  e.g. "8@50,40@50"   (required)
-  ARMS      e.g. "16384 2048 512 hslo400ns"   (space-separated arm labels; first = mono baseline)
+  ARMS      e.g. "16384ns 2048ns 512ns hslo400ns"   (space-separated arm labels; first = mono baseline)
 Reads logs/*-longp-b{arm}-t1.jsonl and, for hslo* arms, logs/*-longp-b{arm}-chunktrace.csv.
 """
 import csv, glob, json, os, sys
@@ -56,7 +56,7 @@ def bucket_trace(rows, sched):
 
 def main():
     SCHEDULE = os.environ["SCHEDULE"]
-    ARMS = os.environ.get("ARMS", "16384 2048 512 hslo400ns").split()
+    ARMS = os.environ.get("ARMS", "16384ns 2048ns 512ns hslo400ns").split()  # labels are b-less; glob adds the b
     sched = parse_schedule(SCHEDULE)
     nphase = len(sched)
     print(f"schedule={SCHEDULE}  phases={[(n, s) for n, s in sched]}  arms={ARMS}\n")

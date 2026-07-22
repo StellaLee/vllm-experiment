@@ -1,6 +1,7 @@
 #!/bin/bash
 # orchestrate_longprompt_openloop.sh -- E1: open-loop Poisson version of the whale regime check.
-# Identical bimodal-whale workload to orchestrate_longprompt.sh, but drives arrivals with --rate
+# Identical bimodal-whale workload to orchestrate_longprompt_hslo_af.sh (whales 44k-50k chars, cap
+# 50k, pad-seed 1001 -- NOT the older orchestrate_longprompt.sh 48k-60k defaults), but drives arrivals with --rate
 # (open-loop Poisson) instead of --concurrency. RATE is derived from the realized throughput of the
 # 07-21 closed-loop conc-20 chunk-2048 run (Little's law: same mean in-flight population that produced
 # the original signal), unless overridden by env RATE. VALIDITY GATE: a clean-mono result (P99 TBT ~
