@@ -18,8 +18,12 @@ which is what makes prefix caching effective for multi-turn workloads.
 Output: JSONL with one record per request, including conv_id, turn number,
 prompt length, TTFT, and total latency.
 """
-import argparse, json, math, os, random, time, urllib.request, urllib.error, threading
+import argparse, json, math, os, random, sys, time, urllib.request, urllib.error, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Shared pure timing/geometry helpers live in scripts/ (imported by the analyzers too).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
+from replay_timing import parse_schedule, phase_at  # noqa: E402
 
 
 def sample_pad_len(ci, turn_num, args):
@@ -235,6 +239,11 @@ def main():
     ap.add_argument("--min-turns", type=int, default=1,
                     help="Only include conversations with at least this many human turns. "
                          "Use --min-turns 4 to guarantee all conversations reach turn 4.")
+    ap.add_argument("--concurrency-schedule", default=None,
+                    help='Non-stationary closed-loop schedule "N1@S1,N2@S2,..." (concurrency@seconds), '
+                         'cycled until --duration elapses. Overrides --concurrency/--rate/--stagger.')
+    ap.add_argument("--duration", type=float, default=None,
+                    help="Total wall-clock seconds for --concurrency-schedule (required with it).")
     ap.add_argument("--output", required=True, help="JSONL output path for per-request records")
     ap.add_argument("--pad-chars", type=int, default=0,
                     help="Prepend N chars of UNIQUE filler to each prompt to force a "
@@ -304,7 +313,48 @@ def main():
     records_lock = threading.Lock()
     print_lock = threading.Lock()
 
-    if args.rate:
+    if args.concurrency_schedule:
+        # Non-stationary closed-loop: maintain in_flight ~= N(t) where N steps through the phase
+        # schedule over wall-clock. Rising phase -> launch immediately (crisp boundary); falling
+        # phase -> stop launching, let running convs drain (no kills, no runaway queue). The conv
+        # list is recycled with a per-launch unique id (conv_seq) so refill prompts stay
+        # un-cacheable and whale-frac holds in expectation.
+        sched = parse_schedule(args.concurrency_schedule)
+        if not args.duration:
+            raise SystemExit("ERROR: --concurrency-schedule requires --duration")
+        in_flight = {"n": 0}
+        lock2 = threading.Lock()
+        threads = []
+        conv_seq = 0
+        t_start = time.monotonic()
+
+        def _run_one(seq, conv):
+            try:
+                replay_conversation(seq, conv, args, records, records_lock, print_lock)
+            finally:
+                with lock2:
+                    in_flight["n"] -= 1
+
+        while True:
+            elapsed = time.monotonic() - t_start
+            if elapsed >= args.duration:
+                break
+            _, target, _ = phase_at(sched, elapsed)
+            with lock2:
+                room = target - in_flight["n"]
+            for _ in range(max(0, room)):
+                conv = convs[conv_seq % len(convs)]
+                with lock2:
+                    in_flight["n"] += 1
+                th = threading.Thread(target=_run_one, args=(conv_seq, conv), daemon=True)
+                th.start()
+                threads.append(th)
+                conv_seq += 1
+            threads = [t for t in threads if t.is_alive()]   # prune finished
+            time.sleep(0.5)
+        for t in threads:
+            t.join(timeout=130)
+    elif args.rate:
         # Open-loop Poisson arrival: spawn each conversation thread after an
         # exponentially-distributed inter-arrival delay. Max workers is capped
         # high (num_convs) so no conversation is ever blocked waiting for a slot.
