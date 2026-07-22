@@ -36,6 +36,10 @@ def test_patch_applies_gate_block():
     assert rc == 0
     assert 'if os.getenv("ADAPTIVE_LPT"):' in out
     assert 'self.scheduler_config.long_prefill_token_threshold = _alpt_thr' in out
+    # hysteresis: entry and exit are governed by separate gates, with persisted state
+    assert '_alpt_exit_gate = int(os.getenv("ADAPTIVE_LPT_EXIT_GATE", "0"))' in out
+    assert '_alpt_was_protect = getattr(self, "_alpt_in_protect", False)' in out
+    assert '_alpt_stay = _alpt_was_protect and _alpt_pf > _alpt_exit_gate' in out
     idx_anchor = out.index("token_budget = self.max_num_scheduled_tokens")
     idx_gate = out.index('if os.getenv("ADAPTIVE_LPT"):')
     idx_chunk_ctrl = out.index("if self._chunk_ctrl is not None:")
@@ -48,6 +52,19 @@ def test_patch_idempotent():
     rc2 = H.main()                       # second apply on already-patched file
     assert rc2 == 0
     assert open(os.environ["VLLM_SCHED_PATH"]).read() == out1   # no further change
+
+
+def test_patch_upgrades_old_block_to_hysteresis():
+    # A file already patched with the pre-hysteresis (single shared entry/exit gate) block
+    # should be upgraded in place to the new hysteresis block, not left alone or duplicated.
+    rc0, out0 = _apply(FIXTURE)                       # fresh install (now the new block)
+    open(os.environ["VLLM_SCHED_PATH"], "w").write(FIXTURE.replace(H.ANCHOR, H.OLD_BLOCK, 1))
+    rc1 = H.main()
+    out1 = open(os.environ["VLLM_SCHED_PATH"]).read()
+    assert rc1 == 0
+    assert H.OLD_BLOCK not in out1
+    assert H.NEW_BLOCK in out1
+    assert out1.count('if os.getenv("ADAPTIVE_LPT"):') == 1   # no duplication
 
 
 def test_patch_missing_anchor_errors():
