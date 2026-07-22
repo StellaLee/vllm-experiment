@@ -22,6 +22,17 @@ Also confirmed along the way: `--max-num-partial-prefills` / `--max-long-partial
 read anywhere in `vllm/v1/`'s actual scheduling logic. Only `long_prefill_token_threshold` does
 anything.
 
+**Update — the adaptive threshold was built, found broken, fixed, and now wins cleanly.** The
+first version (`adaptivelpt`) had a missing-hysteresis bug: the same 4096-token bar governed both
+entering and exiting protect mode, so it released a whale while ~4200-4500 tokens were still left,
+dumping that remainder uncapped and making tail protection *worse* than doing nothing adaptive at
+all (W:goodput 75.5%, below even mono's 78.6%). Fixed with an asymmetric entry/exit gate
+(`adaptivelpt2`): **S:TTFT=248ms** (ties mono's 250ms) **and** **W:max=489.2ms / W:goodput=100%**
+(matches the always-on static `16384lpt512`'s 490.4ms/100%) — simultaneously, for the first time
+in this whole line of work. A separate finding surfaced along the way via a whale-only TPOT
+breakdown: static-2048-class arms (`static-2048`, `16384lpt2048`) suffer a **whale-on-whale freeze**
+effect that has nothing to do with the adaptive-threshold story — see below.
+
 ---
 
 ## TL;DR
@@ -86,11 +97,62 @@ Same phase-schedule workload, all arms compared under identical `SLO_TBT_MS=500`
 | **16384lpt512** | 16384 | **512** | 263 | 592 | 195.8 | **490.4** | **100.0%** |
 | 16384lpt2048 | 16384 | 2048 | 250 | 562 | 392.8 | 1324.6 | 82.4% |
 | 2048lpt512 | 2048 | 512 | 263 | 593 | 215.3 | 454.0 | 100.0% |
+| adaptivelpt (pre-fix, buggy) | 16384† | 0↔512 | 248 | 553 | 219.2 | 1126.4 | 75.5% |
+| **adaptivelpt2 (hysteresis fix)** | 16384† | 0↔512 | **248** | 566 | 208.6 | **489.2** | **100.0%** |
 
 †lengthgate's *server-side* budget is 16384; the controller toggles the *effective per-step*
-budget between 16384 (blast) and 512 (protect) at runtime.
+budget between 16384 (blast) and 512 (protect) at runtime. adaptivelpt/adaptivelpt2's server-side
+budget is likewise static at 16384; the controller toggles `long_prefill_token_threshold` between
+0 (off) and 512 (protect), never the budget itself.
 
 n=1080 requests/phase-type, n≈37.6–38.2k pooled TBT samples per arm. Single trial per arm.
+
+### Whale-only breakdown (TTFT and TPOT, isolating actual whale requests, n=10/arm)
+
+The pooled `W:` columns above mix whales (20% of W-phase arrivals) with the 80% ordinary short
+requests that also arrive during the W-phase window — diluting the whale-specific signal,
+especially for TTFT and TPOT (mean-of-decode-stream metrics, as opposed to pooled per-token TBT).
+Isolating records by `pad_chars > 20000`:
+
+| arm | whale TTFT mean/p95 | whale TPOT mean/p95 |
+|---|---|---|
+| mono | **3252 / 4879** | 48.53 / 92.28 |
+| static-2048 | 3483 / 5272 | **73.83 / 380.09** |
+| 16384lpt2048 | 3759 / 5188 | **78.83 / 437.18** |
+| static-512 | 4075 / 6150 | 51.66 / 110.57 |
+| lengthgate | 4058 / 6535 | 47.24 / 110.83 |
+| adaptivelpt (pre-fix) | 4458 / 6172 | 58.01 / 204.16 |
+| 16384lpt512 | 4624 / 7158 | 53.50 / 128.25 |
+| **adaptivelpt2** | 4617 / 7106 | 53.30 / 129.01 |
+| 2048lpt512 | 4715 / 6646 | 61.64 / 200.15 |
+| 16384lpt256 | 5710 / 8787 | 60.76 / 153.38 |
+
+n=10 whales/arm is thin — p95 and p99 collapse to the same index at this sample size (verified:
+identical values both ways), so don't over-read the exact ranking among the middle cluster
+(lengthgate/512/16384lpt512/adaptivelpt2 are indistinguishable at this n). The large, consistent
+gap between {static-2048, 16384lpt2048} and everyone else is the real signal — see below.
+`adaptivelpt2`'s near-exact match to `16384lpt512` (4617/7106 vs 4624/7158 TTFT; 53.30/129.01 vs
+53.50/128.25 TPOT) confirms the hysteresis fix: once triggered, a whale's experience under
+`adaptivelpt2` is now indistinguishable from being permanently capped — the only difference from
+`16384lpt512` is that `adaptivelpt2` relaxes during calm periods instead of staying capped forever.
+
+### New finding: whale-on-whale freeze exposure (independent of the adaptive-threshold story)
+
+`static-2048` and `16384lpt2048` have by far the worst whale-only TPOT tail (p95 380-437ms vs
+92-204ms everywhere else) — a mechanism distinct from the pooled `W:max` freeze (which measures a
+whale's prefill hitting *other* decoders). This measures what happens to a whale *after* it
+finishes prefilling and starts decoding: it's just as exposed to a *later* whale's full-size
+admission as any other decoder is. Neither `static-2048` nor `16384lpt2048` ever shrinks below
+2048 tokens/step regardless of how many whales are queued, so each such collision costs
+`db + α·2048 ≈ 380-435ms` (matching the established mechanistic model) — and a plausible reason
+this specific pair is worst: capping to 2048 (rather than mono's one-shot or 512's much smaller
+slices) also makes each whale **linger longer** in the system (more steps needed per whale),
+increasing the window during which a whale-turned-decoder can collide with a subsequent whale's
+prefill. Every arm that shrinks further under whale pressure (mono, 512, lengthgate, all
+`lpt512`-class arms) avoids this because either the freeze is too rare to matter (mono: whales
+resolve in ~1 step, low residency) or too small to matter (512/lpt512-class: capped admissions).
+This is a standalone result, applicable to any arm holding a fixed ~2048 ceiling, independent of
+whether the adaptive-threshold controller works or not — worth its own line in the paper.
 
 ## Calibration (before the 4-arm run)
 
@@ -202,24 +264,65 @@ Results are in the table above. Two findings, both against the naive expectation
    nothing measurable. The cap alone is already doing the work; the step budget can stay at its
    most generous, simplest setting.
 
+## The adaptive threshold: design, bug, fix
+
+Built per `docs/superpowers/specs/2026-07-22-adaptive-lpt-design.md` /
+`docs/superpowers/plans/2026-07-22-adaptive-lpt.md`: make `long_prefill_token_threshold` adaptive
+at runtime while the step-wide budget stays static at mono (16384), reusing lengthgate's own
+`pf_remaining` signal but redirected at the per-request cap instead of `token_budget`.
+
+**Mechanism.** `long_prefill_token_threshold` is read as a plain `scheduler_config` attribute at
+both existing use sites, with no caching — so `scripts/hotpatch_adaptive_lpt.py` inserts a single
+per-step block right after the unconditional `token_budget = self.max_num_scheduled_tokens` line
+(runs regardless of `DYNAMIC_CHUNK`/`ChunkSizeController` state) that mutates
+`self.scheduler_config.long_prefill_token_threshold` directly. One insertion point, versus
+lengthgate's four — and fully decoupled from the budget, which never moves.
+
+**Bug — missing hysteresis (found via trace, before trusting the first result).** The initial
+version used the *same* threshold (4096) to both enter and exit protect mode:
+`threshold = 512 if pf_remaining > 4096 else 0`. Result (`adaptivelpt`): S:TTFT recovered
+perfectly (248ms, ties mono) but **W:max got worse, not better** (1126.4ms vs the static
+`16384lpt512`'s 490.4ms), and **W:goodput dropped to 75.5% — below mono's own 78.6%**. Root cause,
+confirmed directly from the trace: all 8 protect→off transitions happened while `pf_remaining` was
+still **4226-4556 tokens** (mean 4374) — just under the entry bar. A whale gets released from
+protection while it still has ~4200+ tokens left, and that remainder is admitted **fully uncapped**
+at the mono budget, producing exactly the kind of freeze the controller exists to prevent. This is
+a straight cost transfer from the whale onto its decode neighbors (confirmed by the whale-only
+breakdown above: pre-fix `adaptivelpt`'s own whale TTFT, 4458ms, was *better* than the always-on
+`16384lpt512`'s 4624ms — the bug let the whale "cheat" at its neighbors' expense).
+
+**Fix — asymmetric entry/exit gate (hysteresis).** Separate the entry condition
+(`pf_remaining > ADAPTIVE_LPT_GATE`, unchanged at 4096) from the exit condition (stay in protect
+mode until `pf_remaining ≤ ADAPTIVE_LPT_EXIT_GATE`, default **0** — i.e. don't relax until the
+request is essentially fully drained). Requires one bit of per-step state
+(`getattr(self, "_alpt_in_protect", False)`, the same read-with-default pattern already used
+elsewhere in this file for `_ff_last_tokens`). The patcher was made migration-aware (detects the
+old single-gate block and replaces it in place) so the box's already-patched scheduler.py could be
+upgraded without restoring from a backup. Verified before rerunning: relax-point `pf_remaining` on
+the fixed version now sits at **155-460 tokens** (mean 291) — down from 4226-4556 — confirming the
+uncapped tail-dump shrank from ~4300 tokens to ~300.
+
+**Result (`adaptivelpt2`, see table above): S:TTFT=248ms (ties mono), W:max=489.2ms /
+W:goodput=100% (matches `16384lpt512` almost exactly, both better than the pre-fix buggy version's
+1126.4ms/75.5%).** This is the first arm in this whole line of work to hit both halves of the
+original hypothesis simultaneously — mono's throughput, the always-on static threshold's tail
+protection, with none of its throughput tax.
+
 ## Next steps
 
-1. **Build an adaptive threshold on a static (mono) budget.** The remaining inefficiency is
-   `16384lpt512`'s +5% S:TTFT tax during Phase S (0% whales) — pure overhead from ordinary
-   non-whale prompts occasionally exceeding 512 tokens with nothing to protect against. Reuse
-   lengthgate's own `pf_remaining`-vs-length-threshold gate signal, but redirect its output at
-   `long_prefill_token_threshold` (the two read sites in scheduler.py, ~line 736 and ~1032)
-   instead of `token_budget`. Because the step budget never moves in this design, it structurally
-   avoids lengthgate's bug 2 (collateral bystander starvation) by construction — only the flagged
-   request's own slice is ever capped.
-2. Before trusting a "protect" value for that controller, note the 256-vs-512 non-monotonicity
-   above means the right protect-mode threshold isn't obvious a priori and needs its own
-   validation, not an assumed carry-over from the static sweep.
-3. Decide whether `lengthgate`'s bug 2 (step-wide starvation) is worth fixing directly now that a
-   structurally simpler alternative exists, or whether the custom step-budget controller should be
-   retired from the paper narrative in favor of the threshold-based result.
-4. All results here are single-trial (n=1 per arm) — replicate before treating any specific number
-   (especially the non-monotonic 256 result) as more than directional.
+1. **Replicate.** Every result in this document, including the final `adaptivelpt2` win, is a
+   single trial (n=1). The hysteresis fix is mechanistically well-understood and directly
+   trace-verified, but before this becomes a paper headline it needs 2-3 repeat runs.
+2. Decide whether `lengthgate` (the step-budget controller, bug 2 unfixed) is worth fixing directly
+   now that the threshold-based approach has a clean, working result, or whether it should be
+   retired from the paper narrative in favor of `adaptivelpt2`.
+3. Consider whether the **whale-on-whale freeze exposure** finding (static-2048/16384lpt2048
+   specifically) deserves its own follow-up — e.g. does it hold at higher whale-fraction / higher
+   whale arrival rate, where more whales are concurrently in flight?
+4. The 256-vs-512 non-monotonicity (threshold's own value) and the `ADAPTIVE_LPT_GATE=4096` entry
+   bar were both reused as-is from earlier validated values, not retuned for the adaptive
+   controller specifically — a follow-up sweep of the adaptive controller's own gate/protect
+   values is still open, lower priority now that the core mechanism works.
 
 ## Artifacts
 
@@ -235,8 +338,15 @@ Results are in the table above. Two findings, both against the naive expectation
 - Orchestration: `pilot_lengthgate_rates.sh` (rate calibration), `orchestrate_lengthgate.sh`
   (4-arm run), `rerun_lengthgate_arm.sh` (post-fix rerun → `logs/lgate_ANALYSIS_v2.txt`),
   `rerun_lpt_arm.sh` (5th arm, native flag → `logs/lgate_ANALYSIS_v3.txt`), `rerun_lpt_grid.sh`
-  (3 more threshold/budget combos → `logs/lgate_ANALYSIS_v4.txt`, the final 8-arm table).
-- Design spec: `docs/superpowers/specs/2026-07-22-lengthgate-dynamic-chunk-design.md`. Plan:
-  `docs/superpowers/plans/2026-07-22-lengthgate-dynamic-chunk.md`.
-- Data: `logs/2026-07-22-lgate-b*-t1.jsonl` (+ `-chunktrace.csv` for lengthgate arms),
-  `logs/lgate_ANALYSIS_v4.txt` (final 8-arm table).
+  (3 more threshold/budget combos → `logs/lgate_ANALYSIS_v4.txt`), `run_adaptive_lpt_arm.sh` /
+  `run_adaptive_lpt_arm2.sh` (pre-fix and post-fix adaptive controller arms →
+  `logs/lgate_ANALYSIS_v5.txt`, the final 10-arm table).
+- Adaptive controller: `scripts/hotpatch_adaptive_lpt.py` (single-anchor, migration-aware patcher
+  — detects and upgrades an already-installed pre-hysteresis block in place). Tests in
+  `tests/test_hotpatch_adaptive_lpt.py`. Design spec:
+  `docs/superpowers/specs/2026-07-22-adaptive-lpt-design.md`. Plan:
+  `docs/superpowers/plans/2026-07-22-adaptive-lpt.md`.
+- Design spec (lengthgate): `docs/superpowers/specs/2026-07-22-lengthgate-dynamic-chunk-design.md`.
+  Plan: `docs/superpowers/plans/2026-07-22-lengthgate-dynamic-chunk.md`.
+- Data: `logs/2026-07-2{2,3}-lgate-b*-t1.jsonl` (+ `-chunktrace.csv` for lengthgate/adaptivelpt
+  arms), `logs/lgate_ANALYSIS_v5.txt` (final 10-arm table).
