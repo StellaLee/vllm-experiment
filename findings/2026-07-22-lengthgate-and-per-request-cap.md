@@ -10,7 +10,17 @@ whale-fraction** (`--phase-schedule`), not concurrency. Locked schedule: `6:0.0@
 prompt is prefilling. It has two real bugs (both root-caused, one fixed). Then discovered vLLM's
 **native `--long-prefill-token-threshold`** flag does the same job structurally better — it caps
 the *offending request*, not the *whole step* — and it pareto-dominates static-2048 on both tail
-metrics while costing almost nothing in throughput, with zero custom controller code.
+metrics while costing almost nothing in throughput, with zero custom controller code. A follow-up
+threshold×budget grid then found the win is **not monotonic in threshold value** (256 is worse
+than 512, not better) and that **shrinking the step budget alongside the threshold adds nothing**
+— which points at the next real experiment: an *adaptive* threshold on a *static* budget, reusing
+lengthgate's own length-gate signal but redirected at the per-request cap instead of the step
+budget.
+
+Also confirmed along the way: `--max-num-partial-prefills` / `--max-long-partial-prefills` are
+**dead config in this vLLM build** — real CLI flags, validated and logged at startup, but never
+read anywhere in `vllm/v1/`'s actual scheduling logic. Only `long_prefill_token_threshold` does
+anything.
 
 ---
 
@@ -42,22 +52,45 @@ metrics while costing almost nothing in throughput, with zero custom controller 
   structural problems traceable to that choice (hslo: no load-sensitive signal to react to on this
   hardware; lengthgate: collateral throttling of bystanders). A **static, per-request** cap needs no
   runtime adaptivity at all to get the benefit.
+- **The threshold's own value is NOT monotonic and NOT free.** A 4-way sweep at mono budget
+  (off/256/512/2048) found **512 pareto-dominates 256** — smaller isn't automatically safer.
+  Mechanism (hypothesis, not trace-confirmed): a smaller threshold makes any long-ish request stay
+  mid-prefill for more steps, raising the odds several such requests overlap in one step; the
+  threshold bounds each request's *own* slice but never the step's *total* volume, so overlaps
+  stack uncapped. The same gap shows up at threshold=2048: `16384lpt2048` has a **worse** tail
+  (max=1324.6, gp=82.4%) than plain **static-2048** (max=863.1, gp=98.1%), because static-2048
+  bounds the whole step regardless of how many requests share it, while the threshold doesn't.
+- **Shrinking the step budget alongside the threshold buys nothing.** `2048lpt512`
+  (S:TTFT=263, W:max=454.0, gp=100.0%) is statistically indistinguishable from `16384lpt512`
+  (S:TTFT=263, W:max=490.4, gp=100.0%) — once the per-request cap is active, the step budget can
+  just stay at its most generous (mono) setting with no further tuning needed.
+- **A static threshold pays a throughput tax even when it isn't needed.** `16384lpt512`'s
+  S:TTFT (263ms, Phase S, 0% whales) is +5% over mono's 250ms — pure overhead from ordinary
+  non-whale prompts occasionally exceeding 512 tokens and getting sliced for no reason during a
+  phase with nothing to protect against. This is the opening for an *adaptive* threshold.
 
 ---
 
 ## Results table
 
-Same phase-schedule workload, all arms compared under identical `SLO_TBT_MS=500`:
+Same phase-schedule workload, all arms compared under identical `SLO_TBT_MS=500`. `budget` =
+`--max-num-batched-tokens`, `thr` = `--long-prefill-token-threshold` (`off` = flag unset):
 
-| arm | S:TTFTmean | S:TTFTp95 | W:P99 TBT | W:max TBT | W:goodput% |
-|---|---|---|---|---|---|
-| mono (16384) | 250 | 566 | 93.4 | **3023.4** | 78.6% |
-| static-512 | 271 | 643 | 127.3 | 261.4 | 100.0% |
-| static-2048 | 249 | 549 | 380.8 | 863.1 | 98.1% |
-| lengthgate (custom, post depth==0 fix) | 249 | 550 | 125.6 | 1667.4 | 81.2% |
-| **16384 + long-prefill-token-threshold=512** | 263 | 592 | 195.8 | **490.4** | **100.0%** |
+| arm | budget | thr | S:TTFTmean | S:TTFTp95 | W:P99 TBT | W:max TBT | W:goodput% |
+|---|---|---|---|---|---|---|---|
+| mono | 16384 | off | 250 | 566 | 93.4 | **3023.4** | 78.6% |
+| static-512 | 512 | off | 271 | 643 | 127.3 | 261.4 | 100.0% |
+| static-2048 | 2048 | off | 249 | 549 | 380.8 | 863.1 | 98.1% |
+| lengthgate (custom, post depth==0 fix) | 16384† | off | 249 | 550 | 125.6 | 1667.4 | 81.2% |
+| 16384lpt256 | 16384 | 256 | 295 | 680 | 157.9 | 1713.1 | 96.8% |
+| **16384lpt512** | 16384 | **512** | 263 | 592 | 195.8 | **490.4** | **100.0%** |
+| 16384lpt2048 | 16384 | 2048 | 250 | 562 | 392.8 | 1324.6 | 82.4% |
+| 2048lpt512 | 2048 | 512 | 263 | 593 | 215.3 | 454.0 | 100.0% |
 
-n=1080 requests/phase-type, n≈37.6–38.2k pooled TBT samples per arm.
+†lengthgate's *server-side* budget is 16384; the controller toggles the *effective per-step*
+budget between 16384 (blast) and 512 (protect) at runtime.
+
+n=1080 requests/phase-type, n≈37.6–38.2k pooled TBT samples per arm. Single trial per arm.
 
 ## Calibration (before the 4-arm run)
 
@@ -145,18 +178,48 @@ the freeze mechanism itself (`step_time ≈ db + α·B`, iteration-heartbeat mod
 mis-scoped:** using the step-wide budget as the *only* lever for the adaptive/protective half of
 the story, when a per-request cap was available and avoids both lengthgate bugs by construction.
 
+## Dead flags: `max-num-partial-prefills` / `max-long-partial-prefills`
+
+Before the grid, checked whether these two flags (docstrings describe exactly the desired
+mechanism — "allow shorter prompts to jump the queue in front of longer prompts") could contribute
+to the sweep. Grepped the full `vllm/` package on the box: both are real, validated, logged
+`SchedulerConfig` fields and real CLI flags (`engine/arg_utils.py:1379,1383`) — but **zero
+references anywhere in `vllm/v1/`'s actual scheduling code**. They parse, validate cross-field
+constraints, and log a startup message as if active, but nothing in the admission loop ever reads
+them. Confirmed dead in vLLM 0.23.0's V1 scheduler; excluded from the grid.
+
+## The threshold×budget grid
+
+Ran 3 more arms (`rerun_lpt_grid.sh`) to map `long_prefill_token_threshold`'s own frontier and test
+whether pairing it with a smaller step budget helps: `16384lpt256`, `16384lpt2048`, `2048lpt512`.
+Results are in the table above. Two findings, both against the naive expectation:
+
+1. **512 pareto-dominates 256** on every axis that matters (S:TTFT, W:max, W:goodput) — the
+   threshold-vs-tail relationship is not "smaller is safer." See the mechanism hypothesis in the
+   TL;DR: the threshold bounds one request's slice, never the step's total volume, so a smaller
+   threshold (more steps per long request in flight) raises the odds of uncapped overlaps.
+2. **`2048lpt512` ≈ `16384lpt512`** — combining a shrunk step budget with the per-request cap adds
+   nothing measurable. The cap alone is already doing the work; the step budget can stay at its
+   most generous, simplest setting.
+
 ## Next steps
 
-1. **Sweep `long_prefill_token_threshold`** (256 / 1024 / 2048, same phase-schedule, mono budget)
-   to map this knob's own throughput-vs-tail Pareto frontier, the same way static budget was
-   swept. Expect: lower threshold → better max/goodput, worse S:TTFT (whale itself pays more
-   slicing overhead); a sweet spot likely between 512 and 2048.
-2. Decide whether `lengthgate`'s bug 2 is worth fixing directly (e.g. reserve headroom for
-   non-whale admissions during protect mode) now that a structurally simpler native alternative
-   exists, or whether the custom controller should be retired from the paper narrative in favor of
-   the native-flag result.
-3. Consider whether combining a per-request threshold with a *non-mono* step budget (e.g.
-   2048 + lpt512) adds anything, or whether it's redundant once the per-request cap is in place.
+1. **Build an adaptive threshold on a static (mono) budget.** The remaining inefficiency is
+   `16384lpt512`'s +5% S:TTFT tax during Phase S (0% whales) — pure overhead from ordinary
+   non-whale prompts occasionally exceeding 512 tokens with nothing to protect against. Reuse
+   lengthgate's own `pf_remaining`-vs-length-threshold gate signal, but redirect its output at
+   `long_prefill_token_threshold` (the two read sites in scheduler.py, ~line 736 and ~1032)
+   instead of `token_budget`. Because the step budget never moves in this design, it structurally
+   avoids lengthgate's bug 2 (collateral bystander starvation) by construction — only the flagged
+   request's own slice is ever capped.
+2. Before trusting a "protect" value for that controller, note the 256-vs-512 non-monotonicity
+   above means the right protect-mode threshold isn't obvious a priori and needs its own
+   validation, not an assumed carry-over from the static sweep.
+3. Decide whether `lengthgate`'s bug 2 (step-wide starvation) is worth fixing directly now that a
+   structurally simpler alternative exists, or whether the custom step-budget controller should be
+   retired from the paper narrative in favor of the threshold-based result.
+4. All results here are single-trial (n=1 per arm) — replicate before treating any specific number
+   (especially the non-monotonic 256 result) as more than directional.
 
 ## Artifacts
 
@@ -171,8 +234,9 @@ the story, when a per-request cap was available and avoids both lengthgate bugs 
   tests in `tests/test_analyze_lengthgate.py`.
 - Orchestration: `pilot_lengthgate_rates.sh` (rate calibration), `orchestrate_lengthgate.sh`
   (4-arm run), `rerun_lengthgate_arm.sh` (post-fix rerun → `logs/lgate_ANALYSIS_v2.txt`),
-  `rerun_lpt_arm.sh` (5th arm, native flag → `logs/lgate_ANALYSIS_v3.txt`).
+  `rerun_lpt_arm.sh` (5th arm, native flag → `logs/lgate_ANALYSIS_v3.txt`), `rerun_lpt_grid.sh`
+  (3 more threshold/budget combos → `logs/lgate_ANALYSIS_v4.txt`, the final 8-arm table).
 - Design spec: `docs/superpowers/specs/2026-07-22-lengthgate-dynamic-chunk-design.md`. Plan:
   `docs/superpowers/plans/2026-07-22-lengthgate-dynamic-chunk.md`.
 - Data: `logs/2026-07-22-lgate-b*-t1.jsonl` (+ `-chunktrace.csv` for lengthgate arms),
-  `logs/lgate_ANALYSIS_v3.txt` (final 5-arm table).
+  `logs/lgate_ANALYSIS_v4.txt` (final 8-arm table).
