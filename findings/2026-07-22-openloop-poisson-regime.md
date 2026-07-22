@@ -45,6 +45,7 @@ no.
 - **Validity gate (the load-bearing check for open-loop):** the whale-freeze only shows if a live
   decode batch exists when a whale prefills. The analyzer reports realized concurrency per arm; a clean
   mono tail would mean "rate too low, raise it," not a negative result. **Gate passed** (below).
+- **Arrival rate (Derived)**: λ = 1.232 conv/s
 
 ## Results
 
