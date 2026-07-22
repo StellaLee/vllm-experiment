@@ -124,3 +124,57 @@ def bucket_by_phase(recs, sched):
             idx, conc, _ = phase_at(sched, emit - t0)
             _bucket(idx, conc)["tbt"].append(ms)
     return out
+
+
+def parse_phase_schedule(s):
+    """'10:0.0@60,3:0.2@45' -> [(rate, whale_frac, seconds), ...] for the open-loop phase driver."""
+    out = []
+    for part in s.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        rf, sec = part.split("@")
+        rate, frac = rf.split(":")
+        out.append((float(rate), float(frac), float(sec)))
+    if not out:
+        raise ValueError(f"empty phase schedule: {s!r}")
+    return out
+
+
+def phase_type_at(sched, t):
+    """Elapsed t (s) -> (phase_idx, rate, whale_frac, cycle). Schedule cycles forever."""
+    period = sum(sec for _, _, sec in sched)
+    if period <= 0:
+        raise ValueError("phase schedule period must be > 0")
+    cycle = int(t // period)
+    off = t - cycle * period
+    for idx, (rate, frac, sec) in enumerate(sched):
+        if off < sec:
+            return idx, rate, frac, cycle
+        off -= sec
+    idx = len(sched) - 1
+    return idx, sched[idx][0], sched[idx][1], cycle
+
+
+def generate_phase_arrivals(sched, duration, seed):
+    """Deterministic open-loop arrivals for a (rate, whale_frac, seconds) phase schedule.
+    Piecewise-homogeneous Poisson: at time t use the current phase's rate for the next
+    inter-arrival; the arrival's whale flag uses the phase's frac at its own time. Returns
+    a sorted list of (arrival_s, is_whale, seq). Seeded so every arm replays identically."""
+    import random as _random
+    rng = _random.Random(f"phasearr-{seed}")
+    out = []
+    t = 0.0
+    seq = 0
+    while True:
+        rate = phase_type_at(sched, t)[1]
+        if rate <= 0:
+            break
+        t += rng.expovariate(rate)
+        if t >= duration:
+            break
+        frac = phase_type_at(sched, t)[2]
+        is_whale = rng.random() < frac
+        out.append((t, is_whale, seq))
+        seq += 1
+    return out

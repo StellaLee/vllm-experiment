@@ -79,6 +79,56 @@ def test_bucket_trace_rows():
     assert 2000 in b[0] and 900 in b[1]
 
 
+def test_sample_pad_len_force_whale():
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+    from replay_sharegpt import sample_pad_len
+
+    class A:  # minimal args stand-in
+        pad_seed = 1001; whale_frac = 0.0; whale_min_chars = 44000; whale_max_chars = 50000
+        pad_mean_chars = 800; pad_cv2 = 0.5; pad_min = 100; pad_max = 8000; pad_chars = 0
+    a = A()
+    forced = sample_pad_len(0, 0, a, force_whale=True)
+    assert 44000 <= forced <= 50000            # forced whale -> whale-range pad
+    short = sample_pad_len(0, 0, a, force_whale=False)
+    assert short <= 8000                        # forced non-whale -> normal pad path
+    legacy = sample_pad_len(0, 0, a)            # force_whale=None -> unchanged behavior (wf=0 -> normal)
+    assert legacy <= 8000
+
+
+def test_parse_phase_schedule():
+    assert rt.parse_phase_schedule("10:0.0@60,3:0.2@45") == [(10.0, 0.0, 60.0), (3.0, 0.2, 45.0)]
+
+
+def test_parse_phase_schedule_empty_rejected():
+    try:
+        rt.parse_phase_schedule("")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_phase_type_at_cycles():
+    s = rt.parse_phase_schedule("10:0.0@60,3:0.2@60")
+    assert rt.phase_type_at(s, 0.0)[1:3] == (10.0, 0.0)     # phase 0 (S)
+    assert rt.phase_type_at(s, 59.9)[0] == 0
+    assert rt.phase_type_at(s, 60.0)[1:3] == (3.0, 0.2)     # phase 1 (W)
+    assert rt.phase_type_at(s, 120.0)[0] == 0               # cycled back to S
+    assert rt.phase_type_at(s, 120.0)[3] == 1               # cycle index 1
+
+
+def test_generate_phase_arrivals_deterministic_and_bounded():
+    s = rt.parse_phase_schedule("20:0.0@30,5:0.5@30")
+    a = rt.generate_phase_arrivals(s, 120.0, seed=1001)
+    b = rt.generate_phase_arrivals(s, 120.0, seed=1001)
+    assert a == b                                        # deterministic (paired arms)
+    assert all(0.0 <= t < 120.0 for t, _, _ in a)        # bounded by duration
+    assert [seq for _, _, seq in a] == list(range(len(a)))  # seq is 0..n-1 in arrival order
+    # S phases (frac 0.0) produce no whales; W phases (frac 0.5) produce some
+    s_whales = sum(w for t, w, _ in a if rt.phase_type_at(s, t)[2] == 0.0)
+    w_whales = sum(w for t, w, _ in a if rt.phase_type_at(s, t)[2] == 0.5)
+    assert s_whales == 0 and w_whales > 0
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

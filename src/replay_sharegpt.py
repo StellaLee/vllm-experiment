@@ -23,10 +23,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Shared pure timing/geometry helpers live in scripts/ (imported by the analyzers too).
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
-from replay_timing import parse_schedule, phase_at  # noqa: E402
+from replay_timing import (parse_schedule, phase_at,  # noqa: E402
+                           parse_phase_schedule, generate_phase_arrivals)
 
 
-def sample_pad_len(ci, turn_num, args):
+def sample_pad_len(ci, turn_num, args, force_whale=None):
     """Per-request pad length (chars). Deterministic in (pad_seed, ci, turn_num) so
     the SAME length sequence is replayed against every policy arm (paired comparison).
 
@@ -43,14 +44,24 @@ def sample_pad_len(ci, turn_num, args):
     Bimodal whale mode (--whale-frac F): independently of the above, with probability F this
     request becomes a LONG-prompt whale with pad uniform in [whale_min_chars, whale_max_chars].
     Deterministic per (seed, ci, turn) so the same whale positions hit every arm (paired).
+
+    force_whale (bool or None): when the caller already knows the whale decision (the open-loop
+    --phase-schedule driver forces it per-arrival so a phase's whale-frac holds exactly, not just
+    in expectation), True/False overrides the --whale-frac draw; None falls back to it.
     """
     wf = float(getattr(args, "whale_frac", 0.0) or 0.0)
-    if wf > 0.0:
+    if force_whale is True:
+        rc = random.Random(f"whale-{args.pad_seed}-{ci}-{turn_num}")
+        lo = float(getattr(args, "whale_min_chars", 48000))
+        hi = float(getattr(args, "whale_max_chars", 60000))
+        return int(rc.uniform(lo, hi))
+    if force_whale is None and wf > 0.0:
         rc = random.Random(f"whale-{args.pad_seed}-{ci}-{turn_num}")
         if rc.random() < wf:
             lo = float(getattr(args, "whale_min_chars", 48000))
             hi = float(getattr(args, "whale_max_chars", 60000))
             return int(rc.uniform(lo, hi))
+    # force_whale is False -> skip whale, fall through to the normal pad path below.
     if args.pad_mean_chars and args.pad_mean_chars > 0:
         rng = random.Random(f"{args.pad_seed}-{ci}-{turn_num}")
         m, c = float(args.pad_mean_chars), float(args.pad_cv2)
@@ -142,7 +153,7 @@ def build_prompt(history, new_human):
     return "\n\n".join(parts)
 
 
-def replay_conversation(ci, conv, args, records, records_lock, print_lock):
+def replay_conversation(ci, conv, args, records, records_lock, print_lock, force_whale=None):
     """Replay one conversation sequentially. Safe to call from multiple threads."""
     turns = conv["conversations"]
     history = []
@@ -156,7 +167,7 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
 
         human_msg = turns[i]["value"].strip()
         prompt = build_prompt(history, human_msg)
-        pad_len = sample_pad_len(ci, turn_num, args)
+        pad_len = sample_pad_len(ci, turn_num, args, force_whale=force_whale)
         # Context-overflow guard: cap the PAD (front) so total prompt stays under
         # --max-prompt-chars, preserving the real question at the end intact.
         maxpc = int(getattr(args, "max_prompt_chars", 0) or 0)
@@ -244,6 +255,11 @@ def main():
                          'cycled until --duration elapses. Overrides --concurrency/--rate/--stagger.')
     ap.add_argument("--duration", type=float, default=None,
                     help="Total wall-clock seconds for --concurrency-schedule (required with it).")
+    ap.add_argument("--phase-schedule", default=None,
+                    help='Open-loop non-stationary whale-fraction schedule "R:F@S,..." '
+                         '(rate_conv_per_s : whale_frac @ seconds), cycled until --duration. '
+                         'Arrivals are Poisson, seeded by --pad-seed so all arms are paired. '
+                         'Overrides --concurrency-schedule/--rate/--concurrency.')
     ap.add_argument("--output", required=True, help="JSONL output path for per-request records")
     ap.add_argument("--pad-chars", type=int, default=0,
                     help="Prepend N chars of UNIQUE filler to each prompt to force a "
@@ -298,7 +314,11 @@ def main():
     convs = convs[:args.num_convs]
     print(f"[replay] filtered to {len(convs)} conversations (min_turns={args.min_turns})")
 
-    if args.concurrency_schedule:
+    if args.phase_schedule:
+        print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "
+              f"max_tokens={args.max_tokens} | phase-schedule={args.phase_schedule} "
+              f"duration={args.duration}s (open-loop, whale-fraction non-stationary)")
+    elif args.concurrency_schedule:
         print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "
               f"max_tokens={args.max_tokens} | schedule={args.concurrency_schedule} "
               f"duration={args.duration}s (non-stationary closed-loop)")
@@ -317,7 +337,35 @@ def main():
     records_lock = threading.Lock()
     print_lock = threading.Lock()
 
-    if args.concurrency_schedule:
+    if args.phase_schedule:
+        # Open-loop non-stationary whale-fraction: a deterministic, seeded arrival schedule
+        # (paired across arms) whose per-arrival whale flag follows the current phase's frac.
+        # Each arrival launches one conversation thread after sleeping to its arrival time; the
+        # whale decision is FORCED so the phase's frac holds exactly, not just in expectation.
+        if not args.duration:
+            raise SystemExit("ERROR: --phase-schedule requires --duration")
+        sched = parse_phase_schedule(args.phase_schedule)
+        arrivals = generate_phase_arrivals(sched, args.duration, args.pad_seed)
+        print(f"[replay] phase-schedule: {len(arrivals)} arrivals over {args.duration}s "
+              f"({sum(1 for _, w, _ in arrivals if w)} whales)")
+        threads = []
+        t_start = time.monotonic()
+        for t_arr, is_whale, seq in arrivals:
+            dt = t_arr - (time.monotonic() - t_start)
+            if dt > 0:
+                time.sleep(dt)
+            conv = convs[seq % len(convs)]
+            th = threading.Thread(
+                target=replay_conversation,
+                args=(seq, conv, args, records, records_lock, print_lock),
+                kwargs={"force_whale": is_whale},
+                daemon=True,
+            )
+            threads.append(th)
+            th.start()
+        for th in threads:
+            th.join()
+    elif args.concurrency_schedule:
         # Non-stationary closed-loop: maintain in_flight ~= N(t) where N steps through the phase
         # schedule over wall-clock. Rising phase -> launch immediately (crisp boundary); falling
         # phase -> stop launching, let running convs drain (no kills, no runaway queue). The conv
