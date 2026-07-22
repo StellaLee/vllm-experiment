@@ -298,7 +298,11 @@ def main():
     convs = convs[:args.num_convs]
     print(f"[replay] filtered to {len(convs)} conversations (min_turns={args.min_turns})")
 
-    if args.rate:
+    if args.concurrency_schedule:
+        print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "
+              f"max_tokens={args.max_tokens} | schedule={args.concurrency_schedule} "
+              f"duration={args.duration}s (non-stationary closed-loop)")
+    elif args.rate:
         print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "
               f"max_tokens={args.max_tokens} | rate={args.rate} conv/s (open-loop Poisson)")
     elif args.stagger_window is not None:
@@ -353,7 +357,7 @@ def main():
             threads = [t for t in threads if t.is_alive()]   # prune finished
             time.sleep(0.5)
         for t in threads:
-            t.join(timeout=130)
+            t.join()
     elif args.rate:
         # Open-loop Poisson arrival: spawn each conversation thread after an
         # exponentially-distributed inter-arrival delay. Max workers is capped
