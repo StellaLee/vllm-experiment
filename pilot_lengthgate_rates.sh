@@ -16,7 +16,8 @@ kill_ours(){ pkill -TERM -f "venv-vllm023.*api_server" 2>/dev/null; sleep 10
 rm -f logs/lgatepilot_ALLDONE
 
 run_static(){ # $1=budget
-  local B=$1 FB="logs/${DATE}-lgatepilot-b${B}"
+  local B=$1
+  local FB="logs/${DATE}-lgatepilot-b${B}"
   echo ">>> static budget=$B  schedule=$SCHED"
   env CUDA_VISIBLE_DEVICES=0,1 PREFIX_REORDER=0 DYNAMIC_CHUNK=0 \
     $PYTHON -m vllm.entrypoints.openai.api_server --model "$MODEL" --port $PORT \
