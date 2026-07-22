@@ -65,6 +65,20 @@ def test_bucket_by_phase():
     assert len(b[0]["tbt"]) > 0 and len(b[1]["tbt"]) > 0        # tokens span both phases
 
 
+def test_bucket_trace_rows():
+    # emulate chunktrace rows: wall_s crossing the 50s boundary; depth>0 marks activity start
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+    import analyze_nonstationary as an
+    s = rt.parse_schedule("8@50,40@50")
+    rows = [
+        {"wall_s": "1000.0", "depth": "0",  "chunk": "16384"},  # idle, ignored for t0
+        {"wall_s": "1002.0", "depth": "5",  "chunk": "2000"},   # t0 here -> phase 0
+        {"wall_s": "1055.0", "depth": "30", "chunk": "900"},    # +53s -> phase 1
+    ]
+    b = an.bucket_trace(rows, s)
+    assert 2000 in b[0] and 900 in b[1]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
