@@ -35,7 +35,18 @@ def sample_pad_len(ci, turn_num, args):
     C=0 collapses to the constant M. Draw is clamped to [pad_min, pad_max]; clamping
     slightly reduces the achieved Cs^2 at large C, so we log the realized pad_chars and
     recompute Cs^2 empirically in analysis rather than trusting the nominal value.
+
+    Bimodal whale mode (--whale-frac F): independently of the above, with probability F this
+    request becomes a LONG-prompt whale with pad uniform in [whale_min_chars, whale_max_chars].
+    Deterministic per (seed, ci, turn) so the same whale positions hit every arm (paired).
     """
+    wf = float(getattr(args, "whale_frac", 0.0) or 0.0)
+    if wf > 0.0:
+        rc = random.Random(f"whale-{args.pad_seed}-{ci}-{turn_num}")
+        if rc.random() < wf:
+            lo = float(getattr(args, "whale_min_chars", 48000))
+            hi = float(getattr(args, "whale_max_chars", 60000))
+            return int(rc.uniform(lo, hi))
     if args.pad_mean_chars and args.pad_mean_chars > 0:
         rng = random.Random(f"{args.pad_seed}-{ci}-{turn_num}")
         m, c = float(args.pad_mean_chars), float(args.pad_cv2)
@@ -74,6 +85,7 @@ def stream_request(host, port, prompt, max_tokens, model):
     t0 = time.monotonic()
     ttft = None
     output_parts = []
+    chunk_times = []  # monotonic arrival time of each non-empty text chunk (for ITL/TBT)
     completion_tokens = None
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
@@ -93,8 +105,10 @@ def stream_request(host, port, prompt, max_tokens, model):
                     if choices:
                         text = choices[0].get("text", "") or ""
                     if text:
+                        now = time.monotonic()
                         if ttft is None:
-                            ttft = time.monotonic() - t0
+                            ttft = now - t0
+                        chunk_times.append(now)
                         output_parts.append(text)
                 except json.JSONDecodeError:
                     pass
@@ -107,7 +121,12 @@ def stream_request(host, port, prompt, max_tokens, model):
     word_tokens = max(1, len(output_text.split()))
     tokens_exact = completion_tokens is not None and completion_tokens > 0
     output_tokens = completion_tokens if tokens_exact else word_tokens
-    return ttft, total, output_tokens, tokens_exact
+    # Inter-token latencies (TBT): gaps between successive streamed chunks. The first chunk's
+    # arrival is TTFT, so ITLs cover tokens 2..N. vLLM streams ~1 token/chunk, so these are
+    # per-token TBTs -- the metric Sarathi-Serve reports as P99 TBT, and the transient that a
+    # per-request MEAN TPOT smooths over.
+    itls = [chunk_times[k] - chunk_times[k - 1] for k in range(1, len(chunk_times))]
+    return ttft, total, output_tokens, tokens_exact, itls
 
 
 def build_prompt(history, new_human):
@@ -134,6 +153,11 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
         human_msg = turns[i]["value"].strip()
         prompt = build_prompt(history, human_msg)
         pad_len = sample_pad_len(ci, turn_num, args)
+        # Context-overflow guard: cap the PAD (front) so total prompt stays under
+        # --max-prompt-chars, preserving the real question at the end intact.
+        maxpc = int(getattr(args, "max_prompt_chars", 0) or 0)
+        if maxpc > 0:
+            pad_len = min(pad_len, max(0, maxpc - len(prompt) - 4))
         if pad_len > 0:
             # Unique filler -> un-cacheable large prefill. Tag is deterministic and
             # unique per (conv,turn): identical across arms (paired), distinct across
@@ -144,13 +168,15 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
             prompt = pad + "\n\n" + prompt
 
         try:
-            ttft, total, output_tokens, tokens_exact = stream_request(args.host, args.port, prompt, args.max_tokens, args.model)
+            ttft, total, output_tokens, tokens_exact, itls = stream_request(args.host, args.port, prompt, args.max_tokens, args.model)
             gpt_placeholder = f"[turn {turn_num+1} response]"
             if i + 1 < len(turns) and turns[i + 1].get("from") == "gpt":
                 gpt_placeholder = turns[i + 1]["value"].strip()[:256]
 
             decode_s = total - (ttft or 0)
-            tpot = round(decode_s / output_tokens, 5) if output_tokens > 0 else None
+            # TPOT = mean time-per-output-token AFTER the first (the first token's time is TTFT),
+            # so divide by (output_tokens - 1) to match vllm bench serve / Sarathi TBT. Guard N<=1.
+            tpot = round(decode_s / (output_tokens - 1), 5) if output_tokens > 1 else None
 
             record = {
                 "conv_id": conv.get("id", ci),
@@ -162,6 +188,9 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock):
                 "tokens_exact": tokens_exact,
                 "ttft": round(ttft, 4) if ttft is not None else None,
                 "tpot": tpot,
+                # Full per-token inter-token latencies (ms). Pool across requests for the true
+                # P99 TBT (Sarathi's metric); mean of these == tpot above.
+                "tbt_ms": [round(x * 1000, 2) for x in itls],
                 "latency": round(total, 4),
                 "ts": time.time(),
             }
@@ -224,6 +253,18 @@ def main():
                     help="Clamp floor for variable pad length (chars).")
     ap.add_argument("--pad-max", type=int, default=40000,
                     help="Clamp ceiling for variable pad length (chars).")
+    ap.add_argument("--whale-frac", type=float, default=0.0,
+                    help="Bimodal whale mode: fraction of requests that become LONG-prompt "
+                         "whales (pad uniform in [whale-min-chars, whale-max-chars]). 0=off. "
+                         "Deterministic per (seed, ci, turn) so whale positions are paired.")
+    ap.add_argument("--whale-min-chars", type=int, default=48000,
+                    help="Whale pad floor (chars). ~4.4 chars/token => 48000 ~= 11k tokens.")
+    ap.add_argument("--whale-max-chars", type=int, default=60000,
+                    help="Whale pad ceiling (chars). ~60000 ~= 13.6k tokens.")
+    ap.add_argument("--max-prompt-chars", type=int, default=0,
+                    help="Context-overflow guard: cap total prompt chars by trimming the PAD "
+                         "(front), preserving the real question. 0=off. Set below "
+                         "(max-model-len - max-tokens) * ~4 chars/token.")
     args = ap.parse_args()
 
     with open(args.dataset) as f:
