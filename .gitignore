@@ -15,3 +15,8 @@ data/sharegpt_v3.json
 
 # Paper
 paper/
+paper-pes-im/
+
+# macOS
+.DS_Store
+**/.DS_Store

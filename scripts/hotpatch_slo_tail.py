@@ -39,8 +39,8 @@ if not SCHED.exists():
     print(f"ERROR: {SCHED} not found", file=sys.stderr); sys.exit(1)
 src = SCHED.read_text()
 
-if "file=self._trace_fh" in src:
-    print("slocvar+trace+start controller (print-based) already present — no changes."); sys.exit(0)
+if "last_tokens=None" in src:
+    print("feedforward v2 (actual-token) controller already present — no changes."); sys.exit(0)
 
 NEW_CLASS = '''class ChunkSizeController:
     """Chunk-prefill token-budget controller. Modes: depth | slo (EMA/mean) |
@@ -77,6 +77,10 @@ NEW_CLASS = '''class ChunkSizeController:
         # slocvar: CVaR/expected-shortfall cutoff. signal = MEAN of the worst
         # (100 - cvar_pctl)% of the window -> lower variance than a single percentile.
         self._cvar_pctl = float(os.getenv("DYNAMIC_CHUNK_CVAR_PCTL", "90"))
+        # feedforward: per-token step-time estimate (EMA of dt / granted budget) and the
+        # budget granted last step (needed to attribute the measured latency to a token count).
+        self._tau = None
+        self._last_budget = None
         # Per-step budget trace (DYNAMIC_CHUNK_TRACE=path). Line-buffered so a
         # SIGTERM'd server still leaves a complete csv; one short write / ~30ms
         # decode step is negligible vs the step itself.
@@ -93,8 +97,10 @@ NEW_CLASS = '''class ChunkSizeController:
             "ChunkSizeController mode=%s min=%d max=%d slo_ms=%.1f pctl=%.0f",
             self.mode, self.min, self.max, self.slo * 1000.0, self._pctl)
 
-    def step(self, decode_depth: int) -> int:
+    def step(self, decode_depth: int, last_tokens=None) -> int:
         self._step_count += 1
+        if self.mode == "feedforward":
+            return self._step_feedforward(decode_depth, last_tokens)
         if self.mode == "slocvar":
             return self._step_slocvar(decode_depth)
         if self.mode == "slotail":
@@ -171,6 +177,38 @@ NEW_CLASS = '''class ChunkSizeController:
             logging.getLogger(__name__).info(
                 "ChunkCtrl[slotail] step=%d depth=%d p%.0f_ms=%.1f chunk=%d",
                 self._step_count, decode_depth, self._pctl, sig * 1000.0, self.chunk)
+        return self.chunk
+
+    def _step_feedforward(self, decode_depth: int, last_tokens=None) -> int:
+        # Model-based (feedforward) sizing: pick the token budget whose PREDICTED step latency
+        # hits the SLO, instead of servoing measured latency to a setpoint (which limit-cycles
+        # on the bimodal plant -> min/max only). tau = EMA of per-token step time (dt / tokens
+        # ACTUALLY processed last step). Budget B* = SLO / tau is the self-consistent point where
+        # a full step takes exactly the SLO -> converges to a STABLE INTERIOR value. Decode takes
+        # its share of B*, prefill gets the rest, so as the decode batch grows the prefill chunk
+        # auto-shrinks. v2: divide by ACTUAL tokens (passed from the scheduler), not the granted
+        # budget -- on decode-only steps granted>>actual, which made v1 underestimate tau and
+        # inflate the budget to the ceiling. Falls back to granted budget if not supplied.
+        import time
+        now = time.monotonic()
+        T = last_tokens if (last_tokens is not None and last_tokens > 0) else self._last_budget
+        if self._last_t is not None and T:
+            dt = now - self._last_t
+            if 0.0 < dt < 0.5:  # ignore idle gaps between bursts
+                tau_obs = dt / float(max(1, T))
+                self._tau = tau_obs if self._tau is None else (
+                    self.ema * tau_obs + (1.0 - self.ema) * self._tau)
+        self._last_t = now
+        if self._tau and self._tau > 0.0:
+            self.chunk = int(max(self.min, min(self.max, round(self.slo / self._tau))))
+        self._last_budget = self.chunk
+        self._trace(decode_depth, (self._tau or 0.0) * self.chunk * 1000.0)  # predicted step ms
+        if self._step_count % 50 == 0:
+            import logging
+            logging.getLogger(__name__).info(
+                "ChunkCtrl[feedforward] step=%d depth=%d tau_us=%.3f pred_ms=%.1f chunk=%d",
+                self._step_count, decode_depth, (self._tau or 0.0) * 1e6,
+                (self._tau or 0.0) * self.chunk * 1000.0, self.chunk)
         return self.chunk
 
     def _step_slocvar(self, decode_depth: int) -> int:
