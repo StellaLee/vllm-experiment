@@ -38,22 +38,23 @@ log "E2 non-stationary: SCHEDULE='$SCHEDULE' DURATION=${DURATION}s whale_frac=$W
 run_arm(){ # $1=label $2=mode(static|hslo) $3=budget(for static)
   local ARM=$1 MODE=$2 BUD=$3
   log "  [$ARM] server GPUs 0,1 port=$PORT mode=$MODE budget=$BUD"
+  local FB="logs/${DATE}-longp-b${ARM}"
   local EXTRA="DYNAMIC_CHUNK=0"
   if [ "$MODE" = "hslo" ]; then
-    EXTRA="DYNAMIC_CHUNK=1 CHUNK_MODE=hslo DYNAMIC_CHUNK_MIN=$FLOOR DYNAMIC_CHUNK_START=$START DYNAMIC_CHUNK_SLO_MS=$SLO_MS DYNAMIC_CHUNK_ALPHA_MIN_PREFILL=$ALPHA_MIN DYNAMIC_CHUNK_ALPHA_MIN=$ALPHA_HW_MS DYNAMIC_CHUNK_TRACE=logs/${DATE}-longp-${ARM}-chunktrace.csv"
+    EXTRA="DYNAMIC_CHUNK=1 CHUNK_MODE=hslo DYNAMIC_CHUNK_MIN=$FLOOR DYNAMIC_CHUNK_START=$START DYNAMIC_CHUNK_SLO_MS=$SLO_MS DYNAMIC_CHUNK_ALPHA_MIN_PREFILL=$ALPHA_MIN DYNAMIC_CHUNK_ALPHA_MIN=$ALPHA_HW_MS DYNAMIC_CHUNK_TRACE=${FB}-chunktrace.csv"
     BUD=16384   # hslo controls the budget dynamically; server ceiling stays 16384
   fi
   env CUDA_VISIBLE_DEVICES=0,1 PREFIX_REORDER=0 $EXTRA \
       $PYTHON -m vllm.entrypoints.openai.api_server \
       --model "$MODEL" --port $PORT --max-num-seqs $MAX_SEQS --max-num-batched-tokens $BUD \
       --max-model-len 16384 --tensor-parallel-size 2 --gpu-memory-utilization 0.90 \
-      > logs/${DATE}-longp-${ARM}-server.log 2>&1 &
+      > ${FB}-server.log 2>&1 &
   local SV=$!
   for i in $(seq 1 120); do sleep 5
-    grep -q "Application startup complete" logs/${DATE}-longp-${ARM}-server.log && break
-    [ "$i" = 120 ] && { log "  [$ARM] SERVER TIMEOUT"; kill "$SV" 2>/dev/null; touch logs/longpns_FAILED; exit 1; }
+    grep -q "Application startup complete" ${FB}-server.log && break
+    [ "$i" = 120 ] && { log "  [$ARM] SERVER TIMEOUT"; kill "$SV" 2>/dev/null; sleep 8; kill -9 "$SV" 2>/dev/null; kill_ours; touch logs/longpns_FAILED; exit 1; }
   done
-  local out="logs/${DATE}-longp-${ARM}-t1.jsonl"
+  local out="${FB}-t1.jsonl"
   $PYTHON src/replay_sharegpt.py --host localhost --port $PORT --model "$MODEL" \
     --dataset "$DATASET" --num-convs $NCONV --max-turns 1 --min-turns 1 \
     --max-tokens $MAXTOK --concurrency-schedule "$SCHEDULE" --duration $DURATION \
@@ -61,7 +62,7 @@ run_arm(){ # $1=label $2=mode(static|hslo) $3=budget(for static)
     --whale-frac $WHALE_FRAC --whale-min-chars $WHALE_MIN --whale-max-chars $WHALE_MAX \
     --max-prompt-chars $MAX_PROMPT_CHARS --pad-seed 1001 \
     --output "$out" > "${out%.jsonl}.client.log" 2>&1 || true
-  log "  [$ARM] done recs=$(grep -c . "$out" 2>/dev/null || echo 0) preempt=$(grep -c -i preempt logs/${DATE}-longp-${ARM}-server.log 2>/dev/null || echo 0)"
+  log "  [$ARM] done recs=$(grep -c . "$out" 2>/dev/null || echo 0) preempt=$(grep -c -i preempt ${FB}-server.log 2>/dev/null || echo 0)"
   kill "$SV" 2>/dev/null; sleep 8; kill -9 "$SV" 2>/dev/null; kill_ours
 }
 
@@ -71,8 +72,10 @@ run_arm 512ns     static 512
 run_arm hslo400ns hslo   16384
 
 log "analyzing (per-phase TBT/TTFT + hslo budget by phase)"
-SCHEDULE="$SCHEDULE" ARMS="16384ns 2048ns 512ns hslo400ns" \
-  $PYTHON scripts/analyze_nonstationary.py > logs/longpns_ANALYSIS.txt 2>&1
+if ! SCHEDULE="$SCHEDULE" ARMS="16384ns 2048ns 512ns hslo400ns" \
+     $PYTHON scripts/analyze_nonstationary.py > logs/longpns_ANALYSIS.txt 2>&1; then
+  log "ANALYSIS FAILED"; touch logs/longpns_FAILED; exit 1
+fi
 echo "[$(STAMP)] DONE" >> logs/longpns_ANALYSIS.txt
 touch logs/longpns_ALLDONE
 log "done -> logs/longpns_ANALYSIS.txt"
