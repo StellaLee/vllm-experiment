@@ -43,14 +43,18 @@ METHOD_ANCHOR = "\nclass Scheduler(SchedulerInterface):\n"
 METHOD = '''
     def _step_lengthgate(self, decode_depth: int, pf_remaining=None) -> int:
         # Prompt-length gate. Blast a large chunk by default (packs many short prefills / fast whale
-        # TTFT when nothing is decoding); shrink to PROTECT the moment a long prompt is prefilling
-        # while decoders are live, so the whale is sliced instead of freezing them. Reacts in time
+        # TTFT); shrink to PROTECT whenever a long prompt is prefilling -- gated on LENGTH ALONE, not
+        # decode_depth. Unlike a db-driven controller, protecting costs this controller nothing when
+        # no one is decoding: slicing only delays the whale's OWN TTFT a little, never anyone else's.
+        # Gating on depth>0 (as hslo does) is a liability here, not a feature: a whale that lands in a
+        # momentary depth==0 lull would get blasted unsliced, freezing anyone who arrives DURING that
+        # multi-second window -- exactly the failure this controller exists to avoid. Reacts in time
         # because pf_remaining includes WAITING requests -> a queued whale is caught before admission.
         thr = int(os.getenv("LENGTHGATE_THRESHOLD", "4096"))
         protect = int(os.getenv("LENGTHGATE_PROTECT", "512"))
         blast = int(os.getenv("LENGTHGATE_BLAST", "16384"))
         pf = int(pf_remaining or 0)
-        if pf > thr and decode_depth > 0:
+        if pf > thr:
             self.chunk = int(max(self.min, min(self.max, protect)))
         else:
             self.chunk = int(max(self.min, min(self.max, blast)))
