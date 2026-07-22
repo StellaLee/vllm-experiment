@@ -43,6 +43,17 @@ def test_realized_concurrency_and_throughput():
     assert abs(tp - 3 / 20.0) < 1e-9
 
 
+def test_realized_concurrency_tie():
+    # req A [0,10], req B starts EXACTLY when A ends at t=10 -> [10,20].
+    # opens-before-closes tie rule => peak counts them as briefly overlapping at t=10 => max == 2.
+    recs = [
+        {"ts": 10.0, "latency": 10.0},   # A: [0, 10]
+        {"ts": 20.0, "latency": 10.0},   # B: [10, 20]
+    ]
+    mean, mx = rt.realized_concurrency(recs)
+    assert mx == 2, f"expected tie peak 2, got {mx}"
+
+
 def test_bucket_by_phase():
     s = rt.parse_schedule("8@50,40@50")
     # one request: start_wall=0 (ttft in phase 0), tokens stretch to t=60 (phase 1)
