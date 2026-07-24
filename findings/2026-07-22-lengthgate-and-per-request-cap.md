@@ -308,11 +308,43 @@ W:goodput=100% (matches `16384lpt512` almost exactly, both better than the pre-f
 original hypothesis simultaneously — mono's throughput, the always-on static threshold's tail
 protection, with none of its throughput tax.
 
+## Update (2026-07-24): replicated 3× — the tightest result in this whole line of work
+
+Ran 2 more trials of `adaptivelpt2` against the same phase-schedule workload (same seed,
+`run_adaptive_lpt_arm2_replicate.sh`, TRIAL=2/3). 0 preemptions, 1245 records each, matching
+the original run's scale exactly.
+
+| | trial 1 | trial 2 | trial 3 | mean ± std |
+|---|---|---|---|---|
+| S:TTFT mean | 248ms | 248ms | 248ms | **248 ± 0** |
+| W:TBT p99 | 208.6ms | 207.4ms | 208.7ms | 208.2 ± 0.7 |
+| W:TBT max | 489.2ms | 489.4ms | 488.3ms | **489.0 ± 0.6** |
+| W:goodput | 100.0% | 100.0% | 100.0% | **100.0 ± 0** |
+
+This is the tightest replication of any result in the project so far — essentially
+indistinguishable across 3 independent trials. Against the (single-instance) baselines,
+adaptivelpt2 ties mono's S:TTFT (250ms) and matches static-16384lpt512's W:max/goodput
+(490.4ms/100%) in every trial, not just once. The simultaneous-win claim — mono's admission
+throughput with the best static threshold's tail protection, and none of its cost — is now
+a replicated result, not a single demonstration.
+
+**Why so tight, compared to §5.6/§5.8's replications (which showed real trial-to-trial
+spread)?** This experiment reuses the same workload seed across trials (isolating
+serving/timing noise, same convention as the other two), but the phase-scheduled design here
+runs far longer per trial (360s, 1080+159 records) than the closed-loop single-shot designs in
+§5.6/§5.8 — more events per trial likely averages out transient serving noise more thoroughly.
+Worth keeping in mind when comparing "replication tightness" across the paper's three
+replicated findings: it may reflect experiment duration/sample size as much as underlying
+mechanism stability.
+
+**Status: this resolves the single-trial caveat for this finding — it was the last remaining
+single-trial leg among §5.6/§5.7/§5.8.** A fresh-seed replicate (workload-draw variance, as
+opposed to just serving-timing noise) remains open, same as the other two.
+
 ## Next steps
 
-1. **Replicate.** Every result in this document, including the final `adaptivelpt2` win, is a
-   single trial (n=1). The hysteresis fix is mechanistically well-understood and directly
-   trace-verified, but before this becomes a paper headline it needs 2-3 repeat runs.
+1. ~~**Replicate.**~~ **Done 2026-07-24** — see update above. A fresh-seed replicate (not just
+   same-seed reruns) remains open.
 2. Decide whether `lengthgate` (the step-budget controller, bug 2 unfixed) is worth fixing directly
    now that the threshold-based approach has a clean, working result, or whether it should be
    retired from the paper narrative in favor of `adaptivelpt2`.

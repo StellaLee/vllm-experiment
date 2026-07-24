@@ -90,14 +90,72 @@ Chunk-size profile across the three arms:
 The best static budget depends on which SLO you defend (TTFT vs TBT) and on the whale rate — i.e., it
 should move with the workload. **That is the concrete justification for dynamic chunking.**
 
+## Update (2026-07-24): the pooled +20.6% TTFT cost at chunk=512 was mostly the whale's own
+
+A later head-to-head (`2026-07-23-whale-threshold-concurrency-tradeoff.md`, "budget=512 vs.
+threshold=512" update) reran this same step-wide-budget mechanism at wf=5% with whale vs.
+short populations disaggregated. The whale-only TTFT delta for chunk=512 vs. mono came out to
+**+20.2%/+20.7%** (two MAXTOK arms) — almost exactly this doc's pooled **+20.6%**. Since whale
+TTFT values are an order of magnitude larger than short TTFT values, the pooled mean above was
+very likely dominated by the whale population paying the cost of being chunked, not a broad
+cost spread across the whole stream; the disaggregated short-only TTFT was roughly
+flat-to-improved. Doesn't change the headline (chunk=512 over-pays TTFT relative to chunk=2048
+either way), but sharpens *who* pays it.
+
+## Update (2026-07-24): 3-trial replication — robust, after fixing a real context-overflow bug
+
+Attempted a straight 2-more-trials replication (`TRIALS="2 3"`, original `WHALE_MIN=48000/
+WHALE_MAX=60000/MAX_PROMPT_CHARS=62000`) and got wildly inconsistent mono baselines across
+trials (trial 1 mono TTFT 5676ms vs. trial 2/3's 682ms/339ms — an order of magnitude apart).
+Root cause: this script's whale bounds and overflow guard were set assuming the *originally
+assumed* ~4 chars/token ratio, but the measured true ratio (established elsewhere this
+session) is 3.235 chars/token — denser. At the true ratio even the 62000-char guard is
+~19,168 tokens, already over the 16384 context limit, so a meaningful fraction of whale draws
+silently 400'd. Trial 1's original run got a lucky seed (only 4/200 failures); the replication
+attempts got unlucky seeds (27–29/200 failures each) — and since the biggest whales are
+exactly what causes mono's worst stalls, losing them disproportionately deflated *both* arms'
+tails, invalidating the comparison rather than showing a weaker effect.
+
+**Fix:** tightened to `WHALE_MIN=44000/WHALE_MAX=50000/MAX_PROMPT_CHARS=50000` — the same
+bounds already validated safe in the whale/threshold/concurrency work. Archived the buggy runs
+(`logs/archive_longp_overflow_bug/`, not deleted) and reran all 3 trials clean. Error rates are
+now low and consistent (4, 6, 6 out of 200 across trials 1/2/3, vs. 4/29/27 before the fix),
+and completion counts match closely (195/193/194).
+
+**Result: the core finding replicates robustly, with one part turning out stronger than the
+original single trial suggested.**
+
+| | trial 1 | trial 2 | trial 3 | mean ± std |
+|---|---|---|---|---|
+| chunk=2048 dTTFT | −15.8% | −48.9% | −28.8% | **−31.2% ± 16.7** |
+| chunk=2048 dTBT-p99 | −43.3% | −83.7% | −14.3% | −47.1% ± 34.9 |
+| chunk=2048 dTBT-max | −79.8% | −85.0% | −85.4% | **−83.4% ± 3.1** |
+| chunk=512 dTTFT | +14.1% | −4.0% | +16.1% | +8.7% ± 11.1 |
+| chunk=512 dTBT-p99 | −82.3% | −95.0% | −73.1% | **−83.5% ± 11.0** |
+| chunk=512 dTBT-max | −93.4% | −93.4% | −95.5% | **−94.1% ± 1.2** |
+
+TBT-max is the tightest, most reproducible number in the whole result (80–85% for chunk=2048,
+93–96% for chunk=512, both across all 3 trials) — this is a stable, structural effect, not a
+lucky single run. TBT-p99 replicates in direction every time but is noisier in magnitude.
+The interior-optimum claim holds and chunk=2048's TTFT improvement is *more* consistent than
+the original single trial showed — it improves TTFT in all 3 trials (−16% to −49%), not just
+the original's −11%. Chunk=512's TTFT cost is directionally present in 2/3 trials but mild
+(trial 2 is essentially flat at −4%), so "512 over-pays TTFT" is right in direction but less
+ironclad in magnitude than the tight TBT numbers.
+
+**Status: this resolves the single-trial caveat for this finding.** The whale-fraction ×
+whale-size grid (mapping the frontier more broadly) remains a separate, still-open next step.
+
 ## Caveats
 
-- **Single trial, n=32 whales, one whale size/fraction.** Directionally overwhelming (82–94% ≫ noise),
-  but a paper needs 2–3 trials + a whale-fraction × whale-size grid to map the frontier.
 - **Isolated sequential arms** removes cross-arm contention but allows small box-state drift between
   arms (far smaller than the effect).
-- Whales are ~12k tokens (context-safe under 16384); pushing toward 15k would sharpen mono's stall
-  further but risks overflow — would need max-model-len headroom.
+- Whales are ~12k tokens (context-safe under 16384 at the corrected 44-50k char bounds); pushing
+  toward larger whales would sharpen mono's stall further but needs care re-deriving safe bounds
+  from the measured (not assumed) chars/token ratio, given the overflow bug found above.
+- A whale-fraction × whale-size grid (5/15/30% × 8k/12k/15k tokens) to map the frontier more
+  broadly remains open — the 3-trial replication above confirms this one point is stable, not
+  that the effect's shape is fully characterized across whale characteristics.
 
 ## Artifacts
 
