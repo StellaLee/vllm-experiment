@@ -40,9 +40,15 @@ collapses to one core experiment plus one modeling layer:
 
 1. **One gate experiment carries both C1 and C3.** Log integrated energy *and* instantaneous
    power draw from the same whale-prefill run (mono vs. chunk=2048 vs. chunk=512, single GPU,
-   7B model). The power trace gives C3 (the spike, and chunking flattening it); the
-   integrated-energy totals from the same runs give C1 (energy-per-token roughly invariant
-   across scheduling policy) essentially for free, without a separate sweep.
+   7B model). **Update (2026-07-24) — ran, and C3 pivoted:** the power trace shows peak power
+   does NOT flatten with chunking (all arms saturate ~460W near the GPU's ceiling), but a
+   different, replicated (3 trials, holds per-trial not just pooled) effect does: chunking
+   lowers mean ramp rate ~35% and duty-cycle-shifts toward fewer/longer/smoother episodes, at
+   a modest energy cost (up to +3.7% at chunk=512). This ramp-rate/duty-cycle tradeoff, not
+   peak-flattening, is now the paper's adopted headline — see
+   `docs/2026-07-24-pes-im-prepare.md` §2-4 for the full data and reasoning. C1 still holds
+   essentially for free from the same runs (energy-per-token +0.1% at chunk=2048, +3.7% at
+   chunk=512 vs. mono).
 2. **C2 (chunking is energy-dominated) and E2/E4 are dropped, not just deprioritized.** There
    is no page budget for a third empirical claim or a Pareto figure in 5 pages, and C2 was
    already flagged as "at-risk, fails safe" — cutting it loses nothing load-bearing.
@@ -52,28 +58,27 @@ collapses to one core experiment plus one modeling layer:
 
 ## Task list against 2026-08-15
 
-### Days 1-3: Phase 0 (setup) + the one gate experiment
+### Days 1-3: Phase 0 (setup) + the one gate experiment — **DONE 2026-07-24**
 
-- [ ] NVML power logger (`nvidia-smi --query-gpu=power.draw --format=csv -lms 100`, plus
-      `nvmlDeviceGetTotalEnergyConsumption` for integrated energy) wired into the replay
-      harness so every request's window has both a power time series and a total-energy
-      figure.
-- [ ] Clock-lock (`nvidia-smi -lgc`) + thermal warmup wrapper — kills DVFS variance.
-- [ ] **Check for wall-power/PDU access before committing to NVML alone.** A power-systems
-      reviewer is likely to know NVML's limitations (board power, not full-system; sampling
-      characteristics) and ask about it directly. Even one independent cross-check (IPMI
-      sensors, a smart PDU reading) would matter more to this audience than to an MLSys one —
-      worth a cheap early check.
-- [ ] **Gate experiment:** Qwen2.5-Coder-7B, single GPU, bimodal short+whale mix (reuse
-      `--whale-frac`/`--whale-min-chars`/`--whale-max-chars`, retuned for 7B since its
-      prefill compute burst is smaller than 14B's — may need a larger whale or a different
-      threshold to get a clean stall), mono vs. chunk=2048 vs. chunk=512, power + energy
-      logged per run. **Go/no-go:** does mono show a clear, large power spike during the
-      whale iteration that chunking measurably flattens, while integrated energy across the
-      three arms stays roughly flat? If yes, this one experiment carries the whole empirical
-      section. If it's noisy or small on 7B, fall back to the original herd-based power-spike
-      design instead (more setup work, so decide this by day 3 at the latest to leave room for
-      the rest of the schedule).
+- [x] NVML power logger (`scripts/power_logger.py`, pynvml-based, samples power draw +
+      cumulative energy counter + temperature at 50ms resolution, wall-clock timestamped) —
+      standalone side-car rather than wired into the replay harness (correlates via existing
+      per-request `ts`/`latency` fields instead, no harness changes needed).
+- [x] Clock-lock (`nvidia-smi -lgc` to 3105MHz, max supported) + persistence mode + discarded
+      warmup burst before each measured trial — kills DVFS variance.
+- [x] **Wall-power/PDU access checked — found real IPMI/BMC chassis sensors**
+      (`GPU_Power`, `Total_Power` on the H3C rack chassis), a genuine independent cross-check
+      beyond NVML. Caveat: ~2.5s/query latency, so it's a steady-state cross-check only, not
+      spike-resolution — snapshotted before/after each arm regardless.
+- [x] **Gate experiment:** ran (`orchestrate_pesim_gate.sh`), 3 arms × 3 trials, n=194-196
+      each. **Go/no-go outcome: pivoted, not failed.** Peak power did NOT flatten with
+      chunking (all arms ~460W, near the GPU's power ceiling) — the original go/no-go
+      criterion as literally stated was not met. But a different, cleanly replicated (holds
+      per-trial, not just pooled) effect emerged: ramp rate and duty-cycle shape change
+      monotonically with chunk size. Decided against the stated fallback (herd-based design)
+      — this pivot is a *stronger* claim for a rigor-focused audience than the original
+      peak-flattening hypothesis would have been. Full reasoning and data:
+      `docs/2026-07-24-pes-im-prepare.md`.
 
 ### Days 2-5 (parallel with the above once a trace exists): coincidence-factor grid model
 
@@ -99,10 +104,13 @@ collapses to one core experiment plus one modeling layer:
 - [ ] Structure, roughly to the 5-page budget: motivation/grid relevance of AI-serving load
       growth (~0.75-1pp) — lean on the CFP's own "low-carbon energy transition" framing and
       the well-known, current concern about datacenter demand growth; brief methodology
-      (~0.5pp); the conservation statement, C1 (~0.5pp); the power-spike measurement, C3
-      (~1-1.25pp); the coincidence-factor grid model (~1-1.5pp, the actual spine); discussion
-      tied explicitly to Topic 4's language (stability, resilience, climate adaptation,
-      demand-side management) plus conclusion (~0.5-0.75pp).
+      (~0.5pp); the conservation statement, C1 (~0.5pp); the ramp-rate/duty-cycle tradeoff,
+      C3 revised (~1-1.25pp — chunking doesn't flatten peak power but lowers ramp rate ~35%
+      and shifts duty cycle, at a modest energy cost — see
+      `docs/2026-07-24-pes-im-prepare.md`); the coincidence-factor grid model (~1-1.5pp, the
+      actual spine, now targeting aggregate ramp rate as well as peak); discussion tied
+      explicitly to Topic 4's language (stability, resilience, climate adaptation,
+      demand-side management, ramp-rate compliance) plus conclusion (~0.5-0.75pp).
 - [ ] Related work needs to be power-systems literature (coincidence factor / load
       diversity-factor modeling, datacenter demand-response studies, EV-charging load
       studies as the nearest analogue), not the ML-systems literature the MLSys paper cites —

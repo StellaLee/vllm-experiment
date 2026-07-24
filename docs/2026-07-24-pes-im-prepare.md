@@ -62,11 +62,15 @@ remove DVFS/idle-ramp variance from the power trace; reset after.
   scheduling overhead).
 - **C3, as originally framed ("chunking flattens the power spike"): NOT supported.** See §3 —
   peak power is statistically flat across all three arms.
-- **C3, revised and empirically supported: chunking reframes the power profile's *shape*, not
-  its peak** — fewer, longer, smoother elevated-power episodes with a lower ramp rate, at a
-  modest energy cost, while *increasing* total near-ceiling duty cycle. This is a genuine,
-  mechanistically coherent, and arguably more power-systems-relevant finding than the original
-  hypothesis (see §5, ramp-rate framing).
+- **C3, revised — now the paper's adopted headline (RESOLVED 2026-07-24, see §4):**
+  chunking reframes the power profile's *shape*, not its peak — fewer, longer, smoother
+  elevated-power episodes with a lower ramp rate, at a modest energy cost, while *increasing*
+  total near-ceiling duty cycle. **Confirmed to hold independently in all 3 trials** (not just
+  pooled — see §3), which is why this, not the original peak-flattening hypothesis, is now the
+  paper's central empirical claim. Arguably a *stronger* fit for Topic 4 than the original
+  hypothesis: a non-obvious, measured tradeoff is more publishable to a rigor-focused audience
+  than a simple "peak shaving" win, and it maps directly onto ramp-rate limits already used to
+  regulate other flexible grid loads (see §5.3).
 
 ## 3. Gate experiment results (actual data, 3 arms × 3 trials, n=194-196/arm/trial)
 
@@ -104,36 +108,116 @@ the SMs are saturated at all, which is consistent with peak staying flat while s
 **Earlier smoke test for context** (mono/16384 only, n=20, whale-frac=0.3, less continuous
 background load): baseline 305.3W, peak 450.4W, spike ratio 1.48× — a starker contrast than
 the full run, plausibly because with fewer/shorter-running requests the "baseline" period
-itself was less loaded. This is the open question in §4.
+itself was less loaded. Superseded by §4's resolution — not pursued further.
 
-## 4. Open decision — not yet resolved
+**Per-trial monotonicity check (2026-07-24), the evidence that resolved §4:** computed
+power-shape stats per trial (not pooled) to rule out a single-trial artifact driving the
+pooled averages.
 
-Whether the flat-baseline-vs-whale-spike contrast (peak-magnitude framing) is recoverable at
-lower concurrency (a less continuously-saturated baseline), or whether we commit fully to the
-ramp-rate/duty-cycle reframing (§2, §5) as the paper's actual empirical spine regardless of
-concurrency. Three options were on the table and not yet decided:
-1. Reframe around ramp rate (adopt what the data shows now).
-2. Try a lower-concurrency rerun first to check if peak-flattening is recoverable.
-3. Do both — build the theory now (it doesn't depend on which framing wins) and rerun at
-   lower concurrency in parallel.
+| Trial | mono ramp (W/s) | 2048 ramp | 512 ramp | mono frac≥420W | 2048 frac | 512 frac |
+|---|---|---|---|---|---|---|
+| 1 | 38.2 | 35.4 | 22.2 | 0.520 | 0.568 | 0.699 |
+| 2 | 41.4 | 38.6 | 29.6 | 0.481 | 0.516 | 0.620 |
+| 3 | 44.3 | 43.6 | 29.4 | 0.424 | 0.490 | 0.576 |
+
+Mean ramp rate strictly decreases (mono > 2048 > 512) and near-ceiling duty cycle strictly
+increases (mono < 2048 < 512) **in every trial independently** — this is a real, replicated
+mechanism, not a pooling artifact.
+
+**Whale-window disaggregation (2026-07-24), confirming the mechanism directly:** split every
+power sample into "inside a whale prefill window" (± 1s pad) vs. "outside," per arm (mean
+over 3 trials):
+
+| Budget | frac≥420W, whale windows | frac≥420W, non-whale | mean ramp, whale windows |
+|---|---|---|---|
+| 16384 (mono) | 58.4% | 0.2% | 44.2 W/s |
+| 2048 (chunk) | 63.1% | 0.1% | 41.1 W/s |
+| 512 (chunk) | 72.7% | 2.7% | 25.9 W/s |
+
+Near-ceiling time is essentially **zero outside whale windows for every arm** — confirming
+the effect is entirely a whale-prefill phenomenon, not a diffuse artifact — and the same
+monotonic ramp-rate trend holds *within* whale windows specifically. Bonus mechanistic
+confirmation: whale windows contain progressively *more* power samples under chunking
+(e.g. trial 1: mono n=1443 → chunk=512 n=1629) — chunking spreads the same whale prefill work
+over more wall-clock time (interleaved with other decode work), which is exactly why total
+near-ceiling *duration* increases even though instantaneous peak intensity doesn't. This
+closes the loop on the mechanism: chunking doesn't change the compute, only how long it takes
+to get through it while sharing the GPU with everything else.
+
+## 4. Open decision — RESOLVED 2026-07-24: adopt the ramp-rate/duty-cycle reframing
+
+Decided **against** chasing a lower-concurrency rerun to recover the original peak-flattening
+framing, for two reasons: (1) it isn't guaranteed to reproduce, costing calendar time we don't
+have much of before Aug 15; (2) artificially lowering concurrency to manufacture a peak
+contrast is less representative of real continuous-load LLM serving, and could itself read as
+"gaming" the experiment for a specific answer to a rigor-focused reviewer. The ramp-rate/
+duty-cycle effect is already cleanly replicated (per-trial monotonicity above) and is
+arguably a *better*, more standards-grounded claim than peak-flattening would have been. This
+is now the paper's adopted headline (see the top-level headline statement below).
+
+**Headline (adopted):** *Chunked prefill scheduling — already deployed in production for
+latency reasons — doesn't reduce an LLM-serving GPU's peak power draw, but it reshapes its
+temporal profile: ~35% lower mean ramp rate and fewer, longer, smoother power transitions, at
+the cost of more sustained near-ceiling duty cycle and a modest (up to 3.7%) energy penalty at
+the most aggressive setting. This tradeoff is invisible to latency-only evaluation and maps
+directly onto ramp-rate limits already used to regulate other flexible grid loads (EV
+fast-charging, battery storage).*
+
+**Consequence for the coincidence-factor grid model (§5.1, §7):** unaffected in structure — it
+takes any measured single-GPU trace as input regardless of which framing won — but its target
+quantity shifts from aggregate *peak* to aggregate *ramp rate* ($dP/dt$), since that's where
+chunking's real, replicated effect lives. The same diversity-factor math applies to $dP/dt$ as
+to $P(t)$ itself (noted already in §5.1).
 
 ## 5. Theory to add (for "systems engineering" credibility with this audience)
 
 Recommended, in priority order (full derivation owed, not yet written into paper prose):
 
-1. **Two-state (ON/OFF) load model → coincidence/diversity factor** (core addition). Model
-   each GPU as alternating baseline power $P_b$ / burst power $P_{max}$ with duty cycle
-   $p = \lambda \cdot E[\tau]$ (renewal-reward). For $N$ independent GPUs, aggregate burst
-   count $K(t) \sim \text{Binomial}(N,p)$; coincidence factor
-   $CF(N) = E[\max_t D(t)]/(N \cdot P_{max})$. Independent arrivals: $CF(N) \to p$ as
-   $N\to\infty$ (classical diversity-factor asymptote, matches EV-charging literature, §6C).
-   Fully synchronized arrivals: $CF=1$ for all $N$ (no diversity benefit). General case with
-   synchronization parameter $s\in[0,1]$: $CF(N,s) \approx s + (1-s)\cdot(p + O(1/\sqrt N))$ —
-   this is the closed form behind the already-planned coincidence-factor grid-model sweep,
-   giving it an analytic backbone instead of being purely a numeric sweep.
-2. **Cold-load-pickup framing** (near-free, high payoff). Correlated whale arrivals across a
-   fleet (synchronized batch job, viral prompt, shared cron trigger) collapsing $K(t)\to N$
-   simultaneously is structurally identical to cold-load pickup — the well-studied
+1. **Two-state (ON/OFF) load model → coincidence/diversity factor** (core addition).
+   **Validated by Monte Carlo (2026-07-25, `scripts/coincidence_factor_model.py`), and the
+   validation process caught two real errors in the naive closed form below — both are now
+   corrected and confirmed against simulation, not just asserted:**
+   - **Original naive claim (WRONG as stated):** model each GPU as alternating baseline power
+     $P_b$ / burst power $P_{max}$ with duty cycle $p=\lambda\cdot E[\tau]$; aggregate burst
+     count $K(t)\sim\text{Binomial}(N,p)$; $CF(N,s)\approx s+(1-s)(p+O(1/\sqrt N))$, claiming
+     $CF\to p$ as $N\to\infty$ under independent arrivals.
+   - **Error 1 — missing baseline term.** The naive form implicitly assumes zero power when
+     "off" (true for classical appliances like AC compressors, false for our GPUs: measured
+     $P_b/P_{max}=0.81$, since continuous concurrency=20 decode load keeps the GPU far from
+     idle even outside whale windows). **Corrected, validated endpoint:**
+     $CF(N,s{=}0) \to P_b/P_{max} + (1-P_b/P_{max})\cdot p$ as $N\to\infty$ — predicted 0.9343,
+     simulated 0.9423 at N=1000 (converging from above: 0.998→0.959→0.942 at N=10/100/1000).
+     This is a substantive finding in its own right: LLM-serving GPUs under realistic
+     continuous load look like "large baseline + small variable overlay," not a classical
+     intermittent appliance — which structurally *limits* how much diversity-factor smoothing
+     can ever help, independent of how well-diversified arrivals are.
+   - **Error 2 — $s$ does not interpolate linearly.** Any nonzero probability of a
+     fully-shared (synchronized) arrival event means such an event *will* eventually occur
+     within a long-enough observation window, and when it does, every server bursts
+     simultaneously ($K=N$ exactly) for its duration — so $CF$ jumps toward 1 abruptly once
+     $s$ is large enough that a shared event is *likely* within the window, not gradually as
+     $s$ increases. Demonstrated directly (N=200, 100s window): $s=0.05\to CF{\approx}0.98$
+     (near the independent floor) but $s=0.10\to CF{\approx}0.99$ — a threshold effect, not a
+     graded one. **This is arguably the more useful finding for the paper**: a *small*
+     probability of correlated/synchronized whale arrival across a fleet is
+     disproportionately dangerous for aggregate peak demand, regardless of how well the
+     "normal" independent traffic is diversified — the same qualitative lesson as
+     cold-load-pickup (item 2 below), now with a validated quantitative demonstration behind
+     it rather than just an analogy.
+   - **What to actually report in the paper:** the two validated endpoints (independent floor
+     $\approx 0.93$; synchronized ceiling $=1$) plus the threshold-sensitivity finding, framed
+     as "small correlation risk, large consequence" — not a smooth interpolating formula,
+     which does not hold. A reference window must also be stated explicitly (fixed to our own
+     measured trace's ~100s duration for the Monte Carlo) since coincidence factors are a
+     property of the reference period as well as $N$ — matches real power-engineering
+     practice of reporting different coincidence factors for 15-min/hourly/daily periods, and
+     is why a percentile-based statistic (P99 of pooled aggregate demand) was used alongside
+     the literal max — the max alone drifts upward as the window grows (an extreme-value
+     effect, not a bug), while P99 is far more stable.
+2. **Cold-load-pickup framing** (near-free, high payoff — **now quantitatively backed, not
+   just an analogy**, per item 1's threshold-sensitivity result). Correlated whale arrivals
+   across a fleet (synchronized batch job, viral prompt, shared cron trigger) collapsing
+   $K(t)\to N$ simultaneously is structurally identical to cold-load pickup — the well-studied
    power-reliability phenomenon where thermostatic loads (AC compressors, water heaters) all
    switch ON simultaneously after an outage ends. Naming this signals fluency in the venue's
    own vocabulary at the cost of a sentence or two.
@@ -217,13 +301,23 @@ months) — real, if modest, incentive to keep the Aug 15 deadline.
 
 ## 8. Next steps
 
-1. Resolve §4 (lower-concurrency rerun vs. commit to ramp-rate framing vs. both).
-2. Build the hybrid bench-serve harness (§7) if/when a rerun is needed.
-3. Write out the §5.1 coincidence-factor derivation formally and validate it against a
-   Monte-Carlo simulation seeded with the real measured single-GPU trace (no GPU time needed
-   for this piece — pure post-processing).
+1. ~~Resolve §4~~ — **DONE 2026-07-25**: committed to the ramp-rate/duty-cycle framing,
+   confirmed via per-trial monotonicity check + whale-window disaggregation (§3).
+2. Build the hybrid bench-serve harness (§7) — still open, only needed if/when a fresh
+   experiment is run (not blocking the theory/writing work).
+3. ~~Write out the §5.1 coincidence-factor derivation formally and validate it~~ —
+   **DONE 2026-07-25** (`scripts/coincidence_factor_model.py`): validation caught two real
+   errors in the naive closed form (missing baseline term, non-linear $s$-interpolation),
+   both now corrected and confirmed against simulation. See §5 item 1 for the full result —
+   this is genuinely stronger paper content than the original naive formula would have been.
 4. Read B's two not-yet-fully-checked adjacent papers (Measurement of Generative AI Workload
-   Power Profiles; TAPAS) before finalizing related-work claims.
+   Power Profiles; TAPAS) before finalizing related-work claims. Still open.
+5. **New**: separately re-derive/validate the ramp-rate ($dD/dt$) version of the
+   coincidence-factor model — the level (power) version is now validated, but the ramp-rate
+   version (relevant since that's what the actual gate experiment showed chunking affects,
+   §2-3) has only been sketched by analogy, not independently checked the way level was.
+6. Start writing the empirical section (§2-3 numbers, now settled) and the theory section
+   (§5, now validated) — both are stable enough to write from; no need to wait on 2, 4, or 5.
 
 
 ## 9. Literature review
