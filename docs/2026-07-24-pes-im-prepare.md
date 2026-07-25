@@ -214,6 +214,37 @@ Recommended, in priority order (full derivation owed, not yet written into paper
      is why a percentile-based statistic (P99 of pooled aggregate demand) was used alongside
      the literal max — the max alone drifts upward as the window grows (an extreme-value
      effect, not a bug), while P99 is far more stable.
+   - **Ramp-rate extension (2026-07-25, same script, `ramp_coincidence_factor`/
+     `smoothed_aggregate`).** The level model above uses an instantaneous ON/OFF step; an
+     earlier draft of a "ramp CF" built directly on that step was degenerate (its value scaled
+     for free with $1/dt$, not tied to anything physical, so it was removed rather than
+     reported). Replaced with a first-order-lag (RC) model per server, with time constant
+     $\tau=(P_{max}-P_b)/\text{measured ramp rate}$ calibrated directly from the *real* §3
+     numbers (mono 41.3 W/s, chunk=512 27.1 W/s) — so a single isolated simulated server's
+     ramp matches what was actually measured on hardware, making $CF_{ramp}$ a meaningful
+     ratio rather than a free parameter. **Two results, both checked at $n_{mc}=150$ for
+     stability (not yet independently cross-validated the way the level-CF findings above
+     were — treat as first-pass):**
+     - **The single-GPU ramp-rate benefit attenuates, not disappears, at fleet scale.**
+       Under fully independent arrivals ($s=0$), chunk=512's ~34.4% single-GPU ramp
+       reduction becomes only a ~22-23% reduction in *realized aggregate fleet ramp rate*
+       (stable at N=100 and N=1000: mono 1305/11920 W/s vs chunk=512 1002/9293 W/s). Reason:
+       a slower individual transition means each server occupies its ramp phase for *longer*
+       ($\tau$ scales inversely with rate), which raises the chance that an otherwise-
+       independent neighboring server's ramp happens to overlap by pure coincidence — partly
+       offsetting the per-server smoothing gain. This is a genuinely non-obvious systems point
+       worth stating plainly: **individual-server smoothing does not translate 1:1 to
+       fleet-level benefit; the translation is real but attenuated, and the attenuation
+       mechanism (longer transition ⇒ larger overlap window) is itself an artifact of *how*
+       chunking achieves its smoothing (a longer excursion), not a modeling error.**
+     - **Ramp-rate coincidence does NOT show the same sharp threshold as level coincidence.**
+       Sweeping $s$ finely (N=200): $CF_{ramp}$ rises smoothly (0.306→0.323→0.348→0.386→
+       0.418→0.507→0.704 at $s=$0, 0.02, 0.05, 0.1, 0.15, 0.25, 0.5) — a graded curve, in clear
+       contrast to the level CF's near-step jump from ~0.98 to ~0.99 between $s=0.05$ and
+       $s=0.1$. Worth stating explicitly so the paper doesn't over-generalize "coincidence
+       effects are always threshold-shaped" from the level result alone — the two quantities
+       (instantaneous power level vs. its time-derivative) behave differently under the same
+       correlation model, and only the level metric exhibits the cold-load-pickup-style cliff.
 2. **Cold-load-pickup framing** (near-free, high payoff — **now quantitatively backed, not
    just an analogy**, per item 1's threshold-sensitivity result). Correlated whale arrivals
    across a fleet (synchronized batch job, viral prompt, shared cron trigger) collapsing
@@ -312,12 +343,23 @@ months) — real, if modest, incentive to keep the Aug 15 deadline.
    this is genuinely stronger paper content than the original naive formula would have been.
 4. Read B's two not-yet-fully-checked adjacent papers (Measurement of Generative AI Workload
    Power Profiles; TAPAS) before finalizing related-work claims. Still open.
-5. **New**: separately re-derive/validate the ramp-rate ($dD/dt$) version of the
-   coincidence-factor model — the level (power) version is now validated, but the ramp-rate
-   version (relevant since that's what the actual gate experiment showed chunking affects,
-   §2-3) has only been sketched by analogy, not independently checked the way level was.
-6. Start writing the empirical section (§2-3 numbers, now settled) and the theory section
-   (§5, now validated) — both are stable enough to write from; no need to wait on 2, 4, or 5.
+5. ~~Separately re-derive/validate the ramp-rate ($dD/dt$) version of the coincidence-factor
+   model~~ — **DONE 2026-07-25** (`scripts/coincidence_factor_model.py`,
+   `ramp_coincidence_factor`/`smoothed_aggregate`): found two genuinely new, non-obvious
+   results — (a) chunk=512's ~34.4% single-GPU ramp-rate benefit attenuates to only ~22-23% at
+   fleet scale under independent arrivals (a longer individual transition raises the chance of
+   coincidental overlap with neighboring servers' ramps, partly offsetting the per-server
+   gain); (b) ramp-rate coincidence rises *smoothly* with the correlation parameter $s$, unlike
+   level coincidence's sharp threshold jump — so "coincidence effects are threshold-shaped" is
+   NOT a universal property, only a property of the level metric. See §5 item 1's new
+   sub-bullet for the full numbers. Flagged as first-pass (not yet independently
+   cross-validated the way the level-CF findings were).
+6. Generate the two coincidence-factor figures (CF vs N at s=0; CF vs s at fixed N) — and now
+   also candidate ramp-rate companion figures (fleet ramp reduction vs N; CF_ramp vs s
+   contrasted with CF_max vs s) — for §6 of `paper.md`.
+7. Start writing the empirical section (§2-3 numbers, now settled) and the theory section
+   (§5, now validated for both level and ramp) — both are stable enough to write from; no need
+   to wait on 2 or 4.
 
 
 ## 9. Literature review

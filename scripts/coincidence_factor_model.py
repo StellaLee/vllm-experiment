@@ -33,11 +33,19 @@ either number in the paper):
      aggregate peak demand, regardless of how well-diversified the "normal" independent
      traffic is -- which is the same qualitative lesson as cold-load pickup (sec 5.2).
 
-Also computes the same simulation on ramp rate (dD/dt) instead of level, since that's the
-quantity the actual gate experiment showed chunking affects (see
-docs/2026-07-24-pes-im-prepare.md sec 3-4) -- the same diversity-factor argument applies to
-dK/dt as to K(t) itself, though this hasn't been separately re-derived/validated the way the
-level (CF) quantity above has.
+RAMP-RATE EXTENSION (added 2026-07-25, after the level CF above was already validated):
+an earlier version of this file computed a "ramp CF" as the instantaneous-step aggregate
+D(t)'s |dD/dt|, normalized by (P_max-P_b)/dt -- this is DEGENERATE (scales with 1/dt for
+free, not tied to anything physical) and was removed. Replaced with `smoothed_aggregate` /
+`ramp_coincidence_factor`, which model each server's transition as a first-order lag with
+time constant tau = (P_max-P_b)/measured_ramp_rate_w_per_s, calibrated directly from the REAL
+measured mono (41.3 W/s) vs chunk=512 (27.1 W/s) mean ramp rates (paper.md Sec 5) -- so a
+single isolated server's simulated ramp now matches what was actually measured on hardware,
+and CF_ramp is a meaningful ratio (realized aggregate peak ramp) / (N * that same physical
+single-server ramp), not a dt-dependent artifact. This extension has been run and its results
+are reported honestly below in main(); unlike the level CF, it has NOT yet been cross-checked
+against a second, independent derivation the way the baseline-term and threshold-effect
+findings above were -- treat its numbers as a first-pass result, not a fully validated one.
 """
 import csv
 import json
@@ -150,8 +158,8 @@ def alternating_process(mean_on, mean_off, T_sim, rng):
     return events
 
 
-def simulate_aggregate(N, s, cal, T_sim, dt, rng):
-    """Returns the K(t) time series (# servers bursting at each grid step).
+def simulate_states(N, s, cal, T_sim, dt, rng):
+    """Returns the raw (N, n_steps) boolean ON/OFF state matrix (one row per server).
 
     s controls correlation while holding each INDIVIDUAL server's marginal occupancy fixed at
     the calibrated p_duty: a server is busy if EITHER a "shared" alternating process (occupancy
@@ -184,8 +192,51 @@ def simulate_aggregate(N, s, cal, T_sim, dt, rng):
                 i0, i1 = int(a / dt), int(b / dt)
                 state[i, i0:i1] = True
 
-    K = state.sum(axis=0)
-    return K
+    return state
+
+
+def simulate_aggregate(N, s, cal, T_sim, dt, rng):
+    """Returns the K(t) time series (# servers bursting at each grid step)."""
+    return simulate_states(N, s, cal, T_sim, dt, rng).sum(axis=0)
+
+
+def smoothed_aggregate(state, P_b, P_max, dt, tau):
+    """Applies a first-order-lag (RC) filter to each server's boolean ON/OFF target, then sums
+    across servers to get a continuous aggregate power trace D(t). This replaces the
+    instantaneous step-function state with a physically motivated ramp of time constant tau:
+    right after a switch, |dP/dt| = (P_max-P_b)/tau, matching the REAL measured mean ramp rate
+    when tau is calibrated as tau = (P_max-P_b)/measured_ramp_rate (see ramp_coincidence_factor).
+    Vectorized across the N servers (loop only over time steps, not servers), since a per-server
+    Python loop over N*n_mc*n_steps was too slow to be practical here."""
+    N, n_steps = state.shape
+    target = np.where(state, P_max, P_b).astype(float)
+    P = np.empty_like(target)
+    P[:, 0] = P_b
+    alpha = dt / tau
+    for i in range(1, n_steps):
+        P[:, i] = P[:, i - 1] + alpha * (target[:, i - 1] - P[:, i - 1])
+    return P.sum(axis=0)
+
+
+def ramp_coincidence_factor(N, s, cal, tau, T_window, dt, n_mc, rng):
+    """Ramp-rate analogue of coincidence_factor(): CF_ramp = (realized mean peak |dD/dt|) /
+    (N * single-server max ramp rate), where D(t) is the sum of N first-order-lag-smoothed
+    per-server traces (see smoothed_aggregate) rather than instantaneous steps. The
+    denominator N*(P_max-P_b)/tau is the theoretical worst case where all N servers ramp
+    perfectly in phase -- the ramp-rate equivalent of "N*P_max" in the level CF.
+
+    tau is calibrated from a REAL measured mean ramp rate (prepare.md Sec 3 / paper.md Sec 5):
+    tau = (P_max - P_b) / measured_ramp_rate_w_per_s. Pass the mono (41.3 W/s) or chunk=512
+    (27.1 W/s) rate to compare fleet-level ramp-coincidence risk under individual-server
+    smoothing, independent of s."""
+    single_max_ramp = (cal["P_max"] - cal["P_b"]) / tau
+    peak_ramps = []
+    for _ in range(n_mc):
+        state = simulate_states(N, s, cal, T_window, dt, rng)
+        D = smoothed_aggregate(state, cal["P_b"], cal["P_max"], dt, tau)
+        ramp = np.abs(np.diff(D)) / dt
+        peak_ramps.append(ramp.max() if len(ramp) else 0.0)
+    return np.mean(peak_ramps) / (N * single_max_ramp)
 
 
 def coincidence_factor(N, s, cal, T_window, dt, n_mc, rng):
@@ -211,21 +262,16 @@ def coincidence_factor(N, s, cal, T_window, dt, n_mc, rng):
     ever-longer window, is what restores the CLT-driven N -> p_duty convergence.
     """
     window_maxes = []
-    peak_ramps = []
     pooled = []
     for _ in range(n_mc):
         K = simulate_aggregate(N, s, cal, T_window, dt, rng)
         D = N * cal["P_b"] + (cal["P_max"] - cal["P_b"]) * K
         window_maxes.append(D.max())
         pooled.append(D[::5])  # subsample to keep the pooled array bounded
-        ramp = np.abs(np.diff(D)) / dt
-        peak_ramps.append(ramp.max() if len(ramp) else 0.0)
     pooled = np.concatenate(pooled)
     CF_max = np.mean(window_maxes) / (N * cal["P_max"])
     CF_p99 = np.percentile(pooled, 99) / (N * cal["P_max"])
-    single_max_ramp = (cal["P_max"] - cal["P_b"]) / dt
-    CF_ramp = np.mean(peak_ramps) / (N * single_max_ramp)
-    return CF_max, CF_p99, CF_ramp
+    return CF_max, CF_p99
 
 
 def main():
@@ -243,7 +289,7 @@ def main():
     predicted_s0 = base_frac + (1 - base_frac) * cal["p_duty"]
     print(f"  predicted = {predicted_s0:.4f}")
     for N in [10, 100, 1000]:
-        CF_max, CF_p99, _ = coincidence_factor(N, 0.0, cal, T_window, dt, n_mc, RNG)
+        CF_max, CF_p99 = coincidence_factor(N, 0.0, cal, T_window, dt, n_mc, RNG)
         print(f"  N={N:<6} CF_max(sim)={CF_max:.4f}  CF_p99(sim)={CF_p99:.4f}")
     print("s=1 (fully synchronized) endpoint: CF = 1 trivially (every server bursts together)")
     print()
@@ -253,13 +299,32 @@ def main():
     print("simultaneously (K=N exactly) for its duration -- driving CF to ~1 abruptly, not smoothly,")
     print("once the window is long enough to contain at least one such event. Demonstrated directly:")
     for s in [0.05, 0.1, 0.25]:
-        CF_max, _, _ = coincidence_factor(200, s, cal, T_window, dt, n_mc, RNG)
+        CF_max, _ = coincidence_factor(200, s, cal, T_window, dt, n_mc, RNG)
         print(f"  N=200, s={s:<5}: CF_max={CF_max:.4f}")
     print("(s=0.05 stays near the independent floor; s=0.10 already jumps to ~1 -- a THRESHOLD")
     print(" effect, not a graded one. This is itself the more important, more actionable finding:")
     print(" a SMALL probability of correlated/synchronized whale arrival across a fleet is")
     print(" disproportionately dangerous for aggregate peak demand, regardless of how well")
     print(" diversified the 'normal' independent traffic is.)")
+
+    print()
+    print("=== RAMP-RATE EXTENSION (new -- physically-grounded, first-order-lag per server) ===")
+    print("tau calibrated so a single isolated server's ramp matches the REAL measured mean")
+    print("ramp rate (paper.md Sec 5): mono=41.3 W/s, chunk(budget=512)=27.1 W/s.")
+    ramp_rates = {"mono (41.3 W/s)": 41.3, "chunk=512 (27.1 W/s)": 27.1}
+    n_mc_ramp = 50  # smaller than n_mc=200 above -- smoothed_aggregate is O(n_steps) per rep
+    print("-- does individual-server ramp smoothing lower fleet ramp-coincidence at s=0? --")
+    for label, rate in ramp_rates.items():
+        tau = (cal["P_max"] - cal["P_b"]) / rate
+        for N in [10, 100, 1000]:
+            cf_ramp = ramp_coincidence_factor(N, 0.0, cal, tau, T_window, dt, n_mc_ramp, RNG)
+            print(f"  [{label}] N={N:<6} tau={tau:.3f}s CF_ramp(s=0)={cf_ramp:.4f}")
+    print("-- is the s-threshold effect (seen on level CF) also present on ramp CF? --")
+    for label, rate in ramp_rates.items():
+        tau = (cal["P_max"] - cal["P_b"]) / rate
+        for s in [0.0, 0.05, 0.1, 0.25]:
+            cf_ramp = ramp_coincidence_factor(200, s, cal, tau, T_window, dt, n_mc_ramp, RNG)
+            print(f"  [{label}] N=200, s={s:<5}: CF_ramp={cf_ramp:.4f}")
 
 
 if __name__ == "__main__":
