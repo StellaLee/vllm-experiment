@@ -144,6 +144,48 @@ near-ceiling *duration* increases even though instantaneous peak intensity doesn
 closes the loop on the mechanism: chunking doesn't change the compute, only how long it takes
 to get through it while sharing the GPU with everything else.
 
+### 3.1 Robustness checks (2026-07-25): wider request-size variance + Poisson arrivals
+
+Two concerns raised: (1) the original S/W distributions were too narrow/near-deterministic
+(short: lognormal cv2=0.5 clamped to 8000 chars; whale: uniform[44000,50000], cv≈0.037 — barely
+more variable than a two-point mixture) to be representative of realistic heavy-tailed request
+traffic; (2) the whole gate experiment only ever used closed-loop (fixed concurrency=20)
+arrivals — does the finding generalize to a different arrival discipline? Both addressed with
+a single smoke-test trial each (not yet 3×-replicated like the main result — treat as a clean
+preliminary check, not final):
+
+**Widened distributions** (short cv2 0.5→3.0, pad_max 8000→12000 giving cv≈1.3 empirically;
+whale range [44000,50000]→[18000,50000] giving cv≈0.26, ~7× more variable), same closed-loop
+concurrency=20:
+
+| Condition | mono ramp | 2048 ramp | 512 ramp | mono duty | 2048 duty | 512 duty |
+|---|---|---|---|---|---|---|
+| Original (narrow, pooled 3 trials) | 41.3 | ~38.6 | 27.1 | 47.8% | 52.7% | 63.6% |
+| Widened (1 trial) | 46.0 | 43.8 | 27.8 | 39.7% | 47.3% | 59.8% |
+
+Same monotonic pattern, closely matching magnitudes — the finding is not an artifact of the
+original distributions' near-deterministic bimodality.
+
+**Poisson open-loop arrivals** (same widened distributions, `--rate 2.4` matched to the
+widened closed-loop run's own realized throughput, replacing `--concurrency 20`):
+
+| Condition | mono ramp | 2048 ramp | 512 ramp | mono duty | 2048 duty | 512 duty |
+|---|---|---|---|---|---|---|
+| Widened, closed-loop (1 trial) | 46.0 | 43.8 | 27.8 | 39.7% | 47.3% | 59.8% |
+| Widened, Poisson open-loop (1 trial) | 44.6 | 39.2 | 19.2 | 41.4% | 41.7% | 68.8% |
+
+Same monotonic pattern under a fundamentally different arrival process (no admission cap,
+exponential inter-arrival times vs. a fixed 20-slot closed loop) — if anything the 512 arm's
+ramp reduction is *larger* under Poisson arrivals (19.2 vs. 27.8 W/s). Whale-window
+disaggregation confirms the mechanism localizes identically under both new conditions:
+near-zero duty cycle outside whale windows (0.0%, 0.5%, 0.0% for mono/2048/512 under Poisson),
+same monotonic ramp trend within them (50.3→44.1→19.1 W/s). **Conclusion: the ramp-rate/duty-cycle
+finding is robust to both request-size-distribution shape and arrival-process discipline** —
+worth a sentence in the paper's Limitations→robustness framing, upgrading "we tested one
+workload distribution and one arrival process" to "and found the same effect under two
+independent axes of variation, single-trial." A fresh-seed / additional-trial replication of
+these two new conditions remains open, same as the main result's own replication status.
+
 ## 4. Open decision — RESOLVED 2026-07-24: adopt the ramp-rate/duty-cycle reframing
 
 Decided **against** chasing a lower-concurrency rerun to recover the original peak-flattening
