@@ -103,10 +103,10 @@ def merge_windows(windows):
     return merged
 
 
-def calibrate(records_path, power_path, label):
+def calibrate(records_path, power_path, label, whale_thresh=40000):
     recs = load_records(records_path)
     power = load_power(power_path)
-    raw_windows = whale_windows(recs)
+    raw_windows = whale_windows(recs, whale_thresh=whale_thresh)
     windows = merge_windows(raw_windows)  # union busy-periods, not naively-summed raw windows
 
     t0, t1 = power[0][0], power[-1][0]

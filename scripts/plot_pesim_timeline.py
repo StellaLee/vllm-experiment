@@ -16,8 +16,6 @@ import json
 
 import matplotlib.pyplot as plt
 
-WHALE_PAD_CHARS = 40000  # matches analyze_pesim_gate.py's whale-window threshold
-
 
 def load_records(path):
     recs = []
@@ -49,9 +47,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True)
     ap.add_argument("--date", default="2026-07-24")
+    ap.add_argument("--name", default="pesim_gate", help="matches orchestrate_pesim_gate.sh's NAME (pesim_gate or pesim_gate_$TAG)")
     ap.add_argument("--arms", nargs="+", default=["b16384", "b2048", "b512"])
     ap.add_argument("--labels", nargs="+", default=["mono (budget=16384)", "chunk (budget=2048)", "chunk (budget=512)"])
     ap.add_argument("--trial", type=int, default=1)
+    ap.add_argument("--whale-thresh", type=int, default=40000, help="pad_chars cutoff for the whale marker; lower for a widened whale distribution")
     ap.add_argument("--out", default="pesim_timeline.png")
     args = ap.parse_args()
 
@@ -60,7 +60,7 @@ def main():
                               gridspec_kw={"height_ratios": [1, 1.6], "hspace": 0.08})
 
     for col, (arm, label) in enumerate(zip(args.arms, args.labels)):
-        base = f"{args.dir}/{args.date}-pesimgate-{arm}-t{args.trial}"
+        base = f"{args.dir}/{args.date}-{args.name}-{arm}-t{args.trial}"
         recs = load_records(f"{base}.jsonl")
         pts, ppw = load_power(f"{base}-power.csv")
 
@@ -69,7 +69,7 @@ def main():
 
         rel_start = [r["start_ts"] - t0 for r in recs]
         pad_chars = [r["pad_chars"] for r in recs]
-        is_whale = [pc >= WHALE_PAD_CHARS for pc in pad_chars]
+        is_whale = [pc >= args.whale_thresh for pc in pad_chars]
 
         ax_top = axes[0, col]
         ax_bot = axes[1, col]

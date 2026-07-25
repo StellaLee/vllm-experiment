@@ -18,9 +18,13 @@ import csv
 import json
 import os
 
-WHALE_THRESH = 40000  # pad_chars cutoff, consistent with the 14B longprompt convention
+WHALE_THRESH = int(os.environ.get("WHALE_THRESH_CHARS", 40000))  # pad_chars cutoff;
+# default matches the 14B longprompt convention / original [44000,50000] whale range.
+# Override to a lower value (e.g. 14000) when analyzing a run with a widened whale
+# distribution that extends below the original range (see orchestrate_pesim_gate.sh WHALE_MIN).
 
 DATE = os.environ.get("DATE")
+NAME = os.environ.get("NAME", "pesim_gate")
 BUDGETS = os.environ.get("BUDGETS", "16384 2048 512").split()
 TRIALS = os.environ.get("TRIALS", "1").split()
 
@@ -74,8 +78,8 @@ def main():
         arm = f"b{b}"
         arm_baselines, arm_peaks, arm_ept = [], [], []
         for tr in TRIALS:
-            rec_path = f"logs/{DATE}-pesimgate-{arm}-t{tr}.jsonl"
-            pw_path = f"logs/{DATE}-pesimgate-{arm}-t{tr}-power.csv"
+            rec_path = f"logs/{DATE}-{NAME}-{arm}-t{tr}.jsonl"
+            pw_path = f"logs/{DATE}-{NAME}-{arm}-t{tr}-power.csv"
             if not (os.path.exists(rec_path) and os.path.exists(pw_path)):
                 print(f"{arm:<8}{tr:<7} MISSING ({rec_path} or {pw_path})")
                 continue

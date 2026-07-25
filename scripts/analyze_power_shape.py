@@ -6,9 +6,10 @@ across trials rather than being an artifact of pooling."""
 import csv
 import os
 
-DATE = "2026-07-24"
-BUDGETS = ["16384", "2048", "512"]
-TRIALS = ["1", "2", "3"]
+DATE = os.environ.get("DATE", "2026-07-24")
+NAME = os.environ.get("NAME", "pesim_gate")
+BUDGETS = os.environ.get("BUDGETS", "16384 2048 512").split()
+TRIALS = os.environ.get("TRIALS", "1 2 3").split()
 THRESH_W = 420.0  # "near-ceiling" threshold
 
 
@@ -55,7 +56,7 @@ for b in BUDGETS:
     arm = f"b{b}"
     per_trial = []
     for tr in TRIALS:
-        pw_path = f"logs/{DATE}-pesimgate-{arm}-t{tr}-power.csv"
+        pw_path = f"logs/{DATE}-{NAME}-{arm}-t{tr}-power.csv"
         if not os.path.exists(pw_path):
             print(f"{arm:<8}{tr:<7} MISSING")
             continue
@@ -81,7 +82,7 @@ for b in BUDGETS:
     arm = f"b{b}"
     per_arm_per_trial[b] = {}
     for tr in TRIALS:
-        pw_path = f"logs/{DATE}-pesimgate-{arm}-t{tr}-power.csv"
+        pw_path = f"logs/{DATE}-{NAME}-{arm}-t{tr}-power.csv"
         if os.path.exists(pw_path):
             power = load_power(pw_path)
             _, frac_above, n_events, mean_ramp, max_ramp = stats_for(power)
