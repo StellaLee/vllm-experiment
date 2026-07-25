@@ -16,6 +16,7 @@ DATE = os.environ.get("DATE", "2026-07-24")
 NAME = os.environ.get("NAME", "pesim_gate")
 BUDGETS = os.environ.get("BUDGETS", "16384 2048 512").split()
 TRIALS = os.environ.get("TRIALS", "1 2 3").split()
+LOGDIR = os.environ.get("LOGDIR", "logs")
 THRESH_W = 420.0
 WHALE_THRESH_CHARS = int(os.environ.get("WHALE_THRESH_CHARS", 40000))
 WINDOW_PAD_S = 1.0  # widen whale windows by this much on each side to catch the transition
@@ -93,8 +94,8 @@ agg = {}  # (b, region) -> list of (frac_above, mean_ramp) across trials
 for b in BUDGETS:
     arm = f"b{b}"
     for tr in TRIALS:
-        rec_path = f"logs/{DATE}-{NAME}-{arm}-t{tr}.jsonl"
-        pw_path = f"logs/{DATE}-{NAME}-{arm}-t{tr}-power.csv"
+        rec_path = f"{LOGDIR}/{DATE}-{NAME}-{arm}-t{tr}.jsonl"
+        pw_path = f"{LOGDIR}/{DATE}-{NAME}-{arm}-t{tr}-power.csv"
         if not (os.path.exists(rec_path) and os.path.exists(pw_path)):
             continue
         recs = load_records(rec_path)

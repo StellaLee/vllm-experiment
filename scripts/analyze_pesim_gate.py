@@ -27,6 +27,7 @@ DATE = os.environ.get("DATE")
 NAME = os.environ.get("NAME", "pesim_gate")
 BUDGETS = os.environ.get("BUDGETS", "16384 2048 512").split()
 TRIALS = os.environ.get("TRIALS", "1").split()
+LOGDIR = os.environ.get("LOGDIR", "logs")
 
 
 def load_records(path):
@@ -78,8 +79,8 @@ def main():
         arm = f"b{b}"
         arm_baselines, arm_peaks, arm_ept = [], [], []
         for tr in TRIALS:
-            rec_path = f"logs/{DATE}-{NAME}-{arm}-t{tr}.jsonl"
-            pw_path = f"logs/{DATE}-{NAME}-{arm}-t{tr}-power.csv"
+            rec_path = f"{LOGDIR}/{DATE}-{NAME}-{arm}-t{tr}.jsonl"
+            pw_path = f"{LOGDIR}/{DATE}-{NAME}-{arm}-t{tr}-power.csv"
             if not (os.path.exists(rec_path) and os.path.exists(pw_path)):
                 print(f"{arm:<8}{tr:<7} MISSING ({rec_path} or {pw_path})")
                 continue

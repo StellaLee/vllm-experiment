@@ -20,3 +20,6 @@ paper-pes-im/
 # macOS
 .DS_Store
 **/.DS_Store
+
+# Data
+data/
