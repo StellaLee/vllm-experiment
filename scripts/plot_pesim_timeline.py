@@ -97,7 +97,7 @@ def main():
         ax_top.set_xlim(0, xmax)
         ax_bot.set_xlim(0, xmax)
 
-    fig.suptitle(f"PES-IM gate experiment: request timeline vs. power profile (trial {args.trial})", y=1.00)
+    fig.suptitle(f"Gate experiment: request timeline vs. power profile (trial {args.trial})", y=1.00)
     fig.tight_layout()
     fig.savefig(args.out, dpi=150, bbox_inches="tight")
     print(f"wrote {args.out}")

@@ -31,6 +31,7 @@ DATE=$(date +%Y-%m-%d)
 BUDGETS=${BUDGETS:-"16384 2048 512"}      # first = mono baseline
 CONC=${CONC:-20}; RATE=${RATE:-}; MAX_SEQS=${MAX_SEQS:-48}; MAXTOK=${MAXTOK:-256}; NCONV=${NCONV:-200}
 WHALE_FRAC=${WHALE_FRAC:-0.15}; WHALE_MIN=${WHALE_MIN:-44000}; WHALE_MAX=${WHALE_MAX:-50000}
+WHALE_PARETO_ALPHA=${WHALE_PARETO_ALPHA:-0}
 MAX_PROMPT_CHARS=${MAX_PROMPT_CHARS:-50000}
 PAD_MEAN=${PAD_MEAN:-800}; PAD_CV2=${PAD_CV2:-0.5}; PAD_MIN=${PAD_MIN:-100}; PAD_MAX=${PAD_MAX:-8000}
 NWARMUP=${NWARMUP:-20}
@@ -92,6 +93,7 @@ run_arm(){ # budget
       --max-tokens $MAXTOK "${arrival_args[@]}" \
       --pad-mean-chars $PAD_MEAN --pad-cv2 $PAD_CV2 --pad-min $PAD_MIN --pad-max $PAD_MAX \
       --whale-frac $WHALE_FRAC --whale-min-chars $WHALE_MIN --whale-max-chars $WHALE_MAX \
+      --whale-pareto-alpha $WHALE_PARETO_ALPHA \
       --max-prompt-chars $MAX_PROMPT_CHARS --pad-seed $((1000+tr)) \
       --output "$out" > "${out%.jsonl}.client.log" 2>&1 || rc=1
     kill -TERM "$plog" 2>/dev/null; wait "$plog" 2>/dev/null

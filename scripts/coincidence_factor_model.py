@@ -42,10 +42,19 @@ time constant tau = (P_max-P_b)/measured_ramp_rate_w_per_s, calibrated directly 
 measured mono (41.3 W/s) vs chunk=512 (27.1 W/s) mean ramp rates (paper.md Sec 5) -- so a
 single isolated server's simulated ramp now matches what was actually measured on hardware,
 and CF_ramp is a meaningful ratio (realized aggregate peak ramp) / (N * that same physical
-single-server ramp), not a dt-dependent artifact. This extension has been run and its results
-are reported honestly below in main(); unlike the level CF, it has NOT yet been cross-checked
-against a second, independent derivation the way the baseline-term and threshold-effect
-findings above were -- treat its numbers as a first-pass result, not a fully validated one.
+single-server ramp), not a dt-dependent artifact.
+
+UPDATE 2026-07-25: the first-pass numbers above were wrong, caught while deriving a closed-form
+cross-check for CF_ramp (see ramp_coincidence_factor's docstring for the full account). Every
+server started the simulated window OFF at P_b simultaneously, so the whole ensemble relaxing
+toward equilibrium together produced a synchronized O(N) startup transient that dominated the
+"peak ramp" in every trial -- not a real coincidence event. A Campbell's-theorem / filtered-
+telegraph-noise closed form (validated against direct Monte Carlo to 5-15%) predicts the
+aggregate ramp's fluctuation scale grows as sqrt(N), not N, so CF_ramp should shrink as
+~1/sqrt(N) rather than saturate. Fixed by adding a warm-up period (see `warmup` arg) and
+measuring the peak ramp only after the ensemble reaches stationarity: CF_ramp now shrinks as
+predicted, confirming the ramp-coincidence risk genuinely averages out at fleet scale for both
+scheduling policies -- unlike the level CF's baseline-driven floor.
 """
 import csv
 import json
@@ -218,7 +227,7 @@ def smoothed_aggregate(state, P_b, P_max, dt, tau):
     return P.sum(axis=0)
 
 
-def ramp_coincidence_factor(N, s, cal, tau, T_window, dt, n_mc, rng):
+def ramp_coincidence_factor(N, s, cal, tau, T_window, dt, n_mc, rng, warmup=50.0):
     """Ramp-rate analogue of coincidence_factor(): CF_ramp = (realized mean peak |dD/dt|) /
     (N * single-server max ramp rate), where D(t) is the sum of N first-order-lag-smoothed
     per-server traces (see smoothed_aggregate) rather than instantaneous steps. The
@@ -228,14 +237,38 @@ def ramp_coincidence_factor(N, s, cal, tau, T_window, dt, n_mc, rng):
     tau is calibrated from a REAL measured mean ramp rate (prepare.md Sec 3 / paper.md Sec 5):
     tau = (P_max - P_b) / measured_ramp_rate_w_per_s. Pass the mono (41.3 W/s) or chunk=512
     (27.1 W/s) rate to compare fleet-level ramp-coincidence risk under individual-server
-    smoothing, independent of s."""
+    smoothing, independent of s.
+
+    BUG FOUND AND FIXED 2026-07-25: simulate_states/smoothed_aggregate force every server to
+    begin the window OFF at P_b simultaneously (P[:, 0] = P_b for all N rows, and the underlying
+    alternating_process is guaranteed OFF at t=0 by construction). Without a warm-up, the whole
+    N-server ensemble relaxes toward equilibrium occupancy together starting from that shared
+    initial condition, producing a deterministic, O(N) synchronized "cold start" transient --
+    not a real coincidence event. Traced directly: the simulated peak ramp landed at t=1.5-2.2s
+    into EVERY single 100s window, for every N tested, regardless of s -- i.e. it was always the
+    startup transient, never a genuine mid-window coincidence. This made CF_ramp falsely
+    *saturate* to a nonzero floor (~0.28 mono / ~0.34 chunk=512 at N=1000) instead of shrinking.
+
+    A closed-form check (Campbell's theorem / filtered-telegraph-noise spectrum: treating each
+    server's ON/OFF state as a two-state Markov (random telegraph) process with autocovariance
+    p(1-p)*exp(-lambda*|tau|), lambda = 1/mean_on + 1/mean_off, passed through the RC filter of
+    pole kappa = 1/tau, gives Var(dP/dt) = sigma_T^2 * lambda*kappa^2/(lambda+kappa), sigma_T^2 =
+    (P_max-P_b)^2*p(1-p) -- matches direct Monte Carlo of smoothed_aggregate to within 5-15%)
+    predicts Var(D'(t)) = N*Var(dP/dt), i.e. the aggregate ramp's FLUCTUATION scale grows only as
+    sqrt(N), not N -- so CF_ramp should shrink as ~1/sqrt(N), not saturate. Simulating with a
+    generous warm-up (50s >> the ~1.6s relaxation time 1/lambda) and measuring the peak ramp only
+    in the post-warmup, genuinely stationary remainder confirms this: CF_ramp(N=1000/5000/20000)
+    = 0.036/0.016/0.0086 (mono), fitting 1/sqrt(N) almost exactly (4x N -> ~2x shrinkage). The
+    ramp-coincidence risk genuinely averages out at fleet scale for both scheduling policies --
+    unlike the level CF's baseline-driven floor, which does not."""
     single_max_ramp = (cal["P_max"] - cal["P_b"]) / tau
+    i0 = int(warmup / dt)
     peak_ramps = []
     for _ in range(n_mc):
-        state = simulate_states(N, s, cal, T_window, dt, rng)
+        state = simulate_states(N, s, cal, T_window + warmup, dt, rng)
         D = smoothed_aggregate(state, cal["P_b"], cal["P_max"], dt, tau)
         ramp = np.abs(np.diff(D)) / dt
-        peak_ramps.append(ramp.max() if len(ramp) else 0.0)
+        peak_ramps.append(ramp[i0:].max() if len(ramp) > i0 else 0.0)
     return np.mean(peak_ramps) / (N * single_max_ramp)
 
 

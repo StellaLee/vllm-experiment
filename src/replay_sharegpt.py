@@ -42,25 +42,37 @@ def sample_pad_len(ci, turn_num, args, force_whale=None):
     recompute Cs^2 empirically in analysis rather than trusting the nominal value.
 
     Bimodal whale mode (--whale-frac F): independently of the above, with probability F this
-    request becomes a LONG-prompt whale with pad uniform in [whale_min_chars, whale_max_chars].
+    request becomes a LONG-prompt whale with pad uniform in [whale_min_chars, whale_max_chars]
+    -- or, if --whale-pareto-alpha A is set, pad ~ Pareto(alpha=A, xm=whale_min_chars), clamped
+    at whale_max_chars (a genuine power-law tail instead of a uniform spread, standard technique
+    for heavy-tailed request/flow/file-size traffic: ordinary body below the crossover, Pareto
+    tail above it -- a single Pareto over the WHOLE size range, from short-prompt scale up to
+    whale scale, would need alpha<1 (infinite mean) to put meaningful mass that far out, which is
+    numerically pathological, so the tail-only splice is the standard, well-behaved choice).
     Deterministic per (seed, ci, turn) so the same whale positions hit every arm (paired).
 
     force_whale (bool or None): when the caller already knows the whale decision (the open-loop
     --phase-schedule driver forces it per-arrival so a phase's whale-frac holds exactly, not just
     in expectation), True/False overrides the --whale-frac draw; None falls back to it.
     """
+    def _draw_whale_size(rc):
+        lo = float(getattr(args, "whale_min_chars", 48000))
+        hi = float(getattr(args, "whale_max_chars", 60000))
+        alpha = float(getattr(args, "whale_pareto_alpha", 0.0) or 0.0)
+        if alpha > 0.0:
+            # Inverse-CDF Pareto sampling: X = xm / U^(1/alpha), U ~ Uniform(0,1), clamped at hi.
+            u = rc.random()
+            return int(min(hi, lo / (u ** (1.0 / alpha))))
+        return int(rc.uniform(lo, hi))
+
     wf = float(getattr(args, "whale_frac", 0.0) or 0.0)
     if force_whale is True:
         rc = random.Random(f"whale-{args.pad_seed}-{ci}-{turn_num}")
-        lo = float(getattr(args, "whale_min_chars", 48000))
-        hi = float(getattr(args, "whale_max_chars", 60000))
-        return int(rc.uniform(lo, hi))
+        return _draw_whale_size(rc)
     if force_whale is None and wf > 0.0:
         rc = random.Random(f"whale-{args.pad_seed}-{ci}-{turn_num}")
         if rc.random() < wf:
-            lo = float(getattr(args, "whale_min_chars", 48000))
-            hi = float(getattr(args, "whale_max_chars", 60000))
-            return int(rc.uniform(lo, hi))
+            return _draw_whale_size(rc)
     # force_whale is False -> skip whale, fall through to the normal pad path below.
     if args.pad_mean_chars and args.pad_mean_chars > 0:
         rng = random.Random(f"{args.pad_seed}-{ci}-{turn_num}")
@@ -286,6 +298,10 @@ def main():
                     help="Whale pad floor (chars). ~4.4 chars/token => 48000 ~= 11k tokens.")
     ap.add_argument("--whale-max-chars", type=int, default=60000,
                     help="Whale pad ceiling (chars). ~60000 ~= 13.6k tokens.")
+    ap.add_argument("--whale-pareto-alpha", type=float, default=0.0,
+                    help="When >0, draw whale pad length from a Pareto(alpha, xm=whale-min-chars) "
+                         "tail instead of uniform(whale-min-chars, whale-max-chars), clamped at "
+                         "whale-max-chars. A genuine power-law tail for the long-prompt population.")
     ap.add_argument("--max-prompt-chars", type=int, default=0,
                     help="Context-overflow guard: cap total prompt chars by trimming the PAD "
                          "(front), preserving the real question. 0=off. Set below "

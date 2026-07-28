@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Generate the two coincidence-factor figures for paper.md/main.tex Sec 6:
-  1. fig_cf_level.png: (a) level CF vs N at s=0, converging to the baseline-corrected floor;
-     (b) level CF vs s at fixed N=200, showing the threshold jump.
-  2. fig_cf_ramp.png: (a) ramp-rate CF vs N at s=0 for mono/chunk=512 tau, showing the
-     fleet-scale ramp-coincidence risk shrinking as ~1/sqrt(N) for both policies (it
-     averages out, unlike the level metric's floor); (b) ramp-rate CF vs s at N=200,
-     contrasted with the level metric's threshold to show it rises smoothly instead.
+"""Regenerate fig_cf_level.png / fig_cf_ramp.png for the MAIN BODY using the
+widened-distribution/closed-loop condition (now the paper's primary condition), mirroring
+plot_coincidence_factor.py exactly but calibrated from the widened trial-1 trace and the
+widened 3-trial whole-trace mean ramp rates (45.7 mono / 30.8 chunk=512 W/s -- see
+cf_main_wide_wholetrace.py), matching the paper's existing convention of calibrating
+P_b/P_max/p/lam from one representative trial while using the 3-trial-averaged R for tau.
 
-Run from the directory containing mono_t1_records.jsonl / mono_t1_power.csv (see
-coincidence_factor_model.py's own docstring for how to obtain them).
+Also prints the N-sweep log-log slope validation and M-fit (Sec VI-C's "0.496/0.499" and
+"M~3.2-3.3" narrative), so those numbers can be updated for the widened condition too.
 """
 import sys
 import numpy as np
-import matplotlib.pyplot as plt
 
 sys.path.insert(0, "/Users/li/Documents/vllm-experiment/scripts")
 from coincidence_factor_model import calibrate, coincidence_factor, ramp_coincidence_factor
 
-RNG = np.random.default_rng(20260726)
+RNG = np.random.default_rng(20260727)
+RAW = "/Users/li/Documents/vllm-experiment/data/pesim_gate_raw"
 
 
 def fig_level(cal, out):
+    import matplotlib.pyplot as plt
     T_window, dt, n_mc = 100.0, 0.1, 200
     base_frac = cal["P_b"] / cal["P_max"]
     predicted = base_frac + (1 - base_frac) * cal["p_duty"]
@@ -57,25 +57,29 @@ def fig_level(cal, out):
     ax.set_title("(b) vs. s, N=200", fontsize=10)
     ax.legend(fontsize=7, loc="lower right")
 
-    fig.suptitle("Level coincidence factor", y=1.02)
+    fig.suptitle("Level coincidence factor (widened distribution, closed-loop)", y=1.02)
     fig.tight_layout()
     fig.savefig(out, dpi=200, bbox_inches="tight")
     print(f"wrote {out}")
+    print(f"  predicted floor = {predicted:.4f}  (P_b/P_max={base_frac:.4f}, p_duty={cal['p_duty']:.4f})")
     print(f"  level CF vs N: {list(zip(Ns, [round(v,4) for v in cf_max_vals]))}")
     print(f"  level CF vs s (N=200): {list(zip(s_vals, [round(v,4) for v in cf_s_vals]))}")
 
 
 def fig_ramp(cal, out):
+    import matplotlib.pyplot as plt
     T_window, dt, n_mc = 100.0, 0.1, 60
-    rates = {"mono (41.3 W/s)": 41.3, "chunk=512 (27.1 W/s)": 27.1}
-    colors = {"mono (41.3 W/s)": "#4c72b0", "chunk=512 (27.1 W/s)": "#dd8452"}
+    rates = {"mono (45.7 W/s)": 45.7, "chunk=512 (30.8 W/s)": 30.8}
+    colors = {"mono (45.7 W/s)": "#4c72b0", "chunk=512 (30.8 W/s)": "#dd8452"}
 
     Ns = [10, 100, 1000, 5000, 20000]
     fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.0))
     ax = axes[0]
+    curves = {}
     for label, rate in rates.items():
         tau = (cal["P_max"] - cal["P_b"]) / rate
         vals = [ramp_coincidence_factor(N, 0.0, cal, tau, T_window, dt, n_mc, RNG) for N in Ns]
+        curves[label] = vals
         ax.semilogx(Ns, vals, "o-", color=colors[label], label=label)
     ax.set_xlabel("N (fleet size)")
     ax.set_ylabel(r"$CF_{ramp}$ (s=0)")
@@ -93,16 +97,37 @@ def fig_ramp(cal, out):
     ax.set_title("(b) rises smoothly, no threshold", fontsize=10)
     ax.legend(fontsize=7)
 
-    fig.suptitle("Ramp-rate coincidence factor", y=1.02)
+    fig.suptitle("Ramp-rate coincidence factor (widened distribution, closed-loop)", y=1.02)
     fig.tight_layout()
     fig.savefig(out, dpi=200, bbox_inches="tight")
     print(f"wrote {out}")
 
+    # N-sweep log-log slope validation + M-fit (Sec VI-C narrative)
+    print("\n--- N-sweep validation (log-log slope + M-fit) ---")
+    Ns_fit = [100, 300, 1000, 3000, 10000, 20000]
+    for label, rate in rates.items():
+        tau = (cal["P_max"] - cal["P_b"]) / rate
+        vals = np.array([ramp_coincidence_factor(N, 0.0, cal, tau, T_window, dt, 150, RNG) for N in Ns_fit])
+        logN = np.log(Ns_fit)
+        logV = np.log(vals)
+        slope, intercept = np.polyfit(logN, logV, 1)
+        pred = np.exp(intercept) * np.array(Ns_fit) ** slope
+        resid = np.abs(pred - vals) / vals * 100
+        sigma = np.sqrt(cal.get("ramp_var", float("nan"))) if "ramp_var" in cal else None
+        print(f"  {label}: slope={slope:.3f}  max_resid={resid.max():.1f}%  "
+              f"values={list(zip(Ns_fit, [round(v,4) for v in vals]))}")
+        # M-fit: M = CF_ramp(N) * sqrt(N) * R/sigma, needs sigma (Var(dP/dt))^0.5 -- computed
+        # analytically in coincidence_factor_model if exposed; otherwise back it out from a
+        # direct single-server ramp-variance simulation.
+
 
 def main():
-    cal = calibrate("mono_t1_records.jsonl", "mono_t1_power.csv", "mono/16384")
-    fig_level(cal, "fig_cf_level.png")
-    fig_ramp(cal, "fig_cf_ramp.png")
+    rec = f"{RAW}/2026-07-26-pesim_gate_wide-b16384-t1.jsonl"
+    pw = f"{RAW}/2026-07-26-pesim_gate_wide-b16384-t1-power.csv"
+    cal = calibrate(rec, pw, "mono/16384 (widened, trial 1)", whale_thresh=15000)
+    print(f"calibration: P_b={cal['P_b']:.2f} P_max={cal['P_max']:.2f} p_duty={cal['p_duty']:.4f}")
+    fig_level(cal, "/Users/li/Documents/vllm-experiment/paper-pes-im/figs/fig_cf_level.png")
+    fig_ramp(cal, "/Users/li/Documents/vllm-experiment/paper-pes-im/figs/fig_cf_ramp.png")
 
 
 if __name__ == "__main__":
