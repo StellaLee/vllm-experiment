@@ -8,7 +8,7 @@
 # DE-RISK (run BEFORE trusting phase params): confirm decode_baseline moves a meaningful fraction of
 # the 400ms SLO across the concurrency range, else the optimum barely shifts. Quick check from the
 # existing hslo trace:
-#   /root/pli/venv-vllm023/bin/python scripts/plot_chunk_trace.py logs/2026-07-22-longp-bhslo400af-chunktrace.csv
+#   /root/pli/venv-vllm023/bin/python scripts/mlsys/plot_chunk_trace.py logs/2026-07-22-longp-bhslo400af-chunktrace.csv
 # (inspect signal_ms = db vs depth). If db(conc40) is not a large fraction of the SLO, raise HIGH
 # toward 48 and/or WHALE_FRAC before running. Default SCHEDULE below assumes the separation holds.
 set -uo pipefail
@@ -29,8 +29,8 @@ SCHEDULE=${SCHEDULE:-"8@50,40@50"}; DURATION=${DURATION:-300}
 FLOOR=${FLOOR:-512}; START=${START:-512}; SLO_MS=${SLO_MS:-400}; ALPHA_MIN=${ALPHA_MIN:-256}; ALPHA_HW_MS=${ALPHA_HW_MS:-0.18}
 PORT=8050
 
-$PYTHON scripts/hotpatch_hslo.py || { log "PATCH(base) FAILED"; touch logs/longpns_FAILED; exit 1; }
-$PYTHON scripts/hotpatch_hslo_alphafloor.py || { log "PATCH(alphafloor) FAILED"; touch logs/longpns_FAILED; exit 1; }
+$PYTHON scripts/mlsys/hotpatch_hslo.py || { log "PATCH(base) FAILED"; touch logs/longpns_FAILED; exit 1; }
+$PYTHON scripts/mlsys/hotpatch_hslo_alphafloor.py || { log "PATCH(alphafloor) FAILED"; touch logs/longpns_FAILED; exit 1; }
 
 log "E2 non-stationary: SCHEDULE='$SCHEDULE' DURATION=${DURATION}s whale_frac=$WHALE_FRAC"
 
@@ -73,7 +73,7 @@ run_arm hslo400ns hslo   16384
 
 log "analyzing (per-phase TBT/TTFT + hslo budget by phase)"
 if ! SCHEDULE="$SCHEDULE" ARMS="16384ns 2048ns 512ns hslo400ns" \
-     $PYTHON scripts/analyze_nonstationary.py > logs/longpns_ANALYSIS.txt 2>&1; then
+     $PYTHON scripts/mlsys/analyze_nonstationary.py > logs/longpns_ANALYSIS.txt 2>&1; then
   log "ANALYSIS FAILED"; touch logs/longpns_FAILED; exit 1
 fi
 echo "[$(STAMP)] DONE" >> logs/longpns_ANALYSIS.txt

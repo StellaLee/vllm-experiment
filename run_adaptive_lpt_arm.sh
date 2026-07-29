@@ -21,7 +21,7 @@ FB="logs/${DATE}-lgate-b${ARM}"
 
 rm -f logs/lgate_adaptivelpt_ALLDONE logs/lgate_adaptivelpt_FAILED "${FB}-t1.jsonl" "${FB}-chunktrace.csv"
 
-$PYTHON scripts/hotpatch_adaptive_lpt.py || { log "PATCH FAILED"; touch logs/lgate_adaptivelpt_FAILED; exit 1; }
+$PYTHON scripts/mlsys/hotpatch_adaptive_lpt.py || { log "PATCH FAILED"; touch logs/lgate_adaptivelpt_FAILED; exit 1; }
 
 log "arm=$ARM budget=16384 gate=$GATE protect=$PROTECT off=$OFF SCHED='$SCHED' DUR=${DUR}s"
 env CUDA_VISIBLE_DEVICES=0,1 PREFIX_REORDER=0 DYNAMIC_CHUNK=0 \
@@ -48,7 +48,7 @@ kill $SV 2>/dev/null; sleep 8; kill -9 $SV 2>/dev/null; kill_ours
 log "re-analyzing all 9 arms"
 SCHEDULE="$SCHED" \
   ARMS="16384 512 2048 lengthgate 16384lpt512 16384lpt256 16384lpt2048 2048lpt512 ${ARM}" \
-  SLO_TBT_MS=500 $PYTHON scripts/analyze_lengthgate.py > logs/lgate_ANALYSIS_v5.txt 2>&1
+  SLO_TBT_MS=500 $PYTHON scripts/mlsys/analyze_lengthgate.py > logs/lgate_ANALYSIS_v5.txt 2>&1
 echo "[$(STAMP)] DONE" >> logs/lgate_ANALYSIS_v5.txt
 touch logs/lgate_adaptivelpt_ALLDONE
 log "done -> logs/lgate_ANALYSIS_v5.txt"

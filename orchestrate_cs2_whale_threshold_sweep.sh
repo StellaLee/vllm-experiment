@@ -80,7 +80,7 @@ RC=0
 for t in $THRESHOLDS; do run_threshold "$t" || RC=1; done
 log "analyzing"
 THRESHOLDS="$THRESHOLDS" WHALE_FRACS="$WHALE_FRACS" CONCS="$CONCS" \
-  $PYTHON scripts/analyze_cs2_whale_threshold_sweep.py > logs/cs2wt_ANALYSIS.txt 2>&1
+  $PYTHON scripts/mlsys/analyze_cs2_whale_threshold_sweep.py > logs/cs2wt_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE (rc=$RC)" >> logs/cs2wt_ANALYSIS.txt
 if [ "$RC" = 0 ]; then touch logs/cs2wt_ALLDONE; else touch logs/cs2wt_FAILED; fi
 log "done -> logs/cs2wt_ANALYSIS.txt"

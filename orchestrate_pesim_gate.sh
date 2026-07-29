@@ -85,7 +85,7 @@ run_arm(){ # budget
   for tr in $TRIALS; do
     local out="${prefix}-t${tr}.jsonl"
     local ptrace="${prefix}-t${tr}-power.csv"
-    $PYTHON scripts/power_logger.py --gpus $GPU --interval-ms 50 --output "$ptrace" &
+    $PYTHON scripts/pesim/power_logger.py --gpus $GPU --interval-ms 50 --output "$ptrace" &
     local plog=$!
     sleep 1
     $PYTHON src/replay_sharegpt.py --host localhost --port $port --model "$MODEL" \
@@ -110,7 +110,7 @@ RC=0
 for b in $BUDGETS; do run_arm "$b" || RC=1; done
 reset_gpu
 log "analyzing"
-NAME="$NAME" BUDGETS="$BUDGETS" DATE="$DATE" TRIALS="$TRIALS" $PYTHON scripts/analyze_pesim_gate.py > logs/${NAME}_ANALYSIS.txt 2>&1
+NAME="$NAME" BUDGETS="$BUDGETS" DATE="$DATE" TRIALS="$TRIALS" $PYTHON scripts/pesim/analyze_pesim_gate.py > logs/${NAME}_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE (rc=$RC)" >> logs/${NAME}_ANALYSIS.txt
 if [ "$RC" = 0 ]; then touch logs/${NAME}_ALLDONE; else touch logs/${NAME}_FAILED; fi
 log "done -> logs/${NAME}_ANALYSIS.txt"

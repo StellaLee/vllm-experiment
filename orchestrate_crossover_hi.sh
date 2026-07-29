@@ -33,7 +33,7 @@ run_point(){  # $1=cv2  $2=prefix
   env CUDA_VISIBLE_DEVICES=0,1 PYTHON="$PYTHON" MODEL="$MODEL" PREFIX="$pfx" \
       TP=2 RATE=0.64 MAX_TOKENS=1024 CV2="$cv" NUM_CONVS=80 TRIALS="1 2 3" \
       MONO_BUDGET=16384 CHUNK_BUDGET=512 FLOOR=512 SLO_MS=50 CVAR_PCTL=90 \
-      bash scripts/run_cs2_3arm.sh > "logs/crossoverhi-${pfx}-run.log" 2>&1
+      bash scripts/mlsys/run_cs2_3arm.sh > "logs/crossoverhi-${pfx}-run.log" 2>&1
   free_gpus >/dev/null 2>&1
 }
 
@@ -41,7 +41,7 @@ run_point 1.75 cross175
 run_point 2.25 cross225
 
 log "analyzing (full 5-point curve)"
-python scripts/analyze_crossover.py > logs/crossoverhi_ANALYSIS.txt 2>&1
+python scripts/mlsys/analyze_crossover.py > logs/crossoverhi_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE" >> logs/crossoverhi_ANALYSIS.txt
 touch logs/crossoverhi_ALLDONE
 log "crossover-hi sweep done -> logs/crossoverhi_ANALYSIS.txt"

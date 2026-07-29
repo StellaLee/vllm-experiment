@@ -65,7 +65,7 @@ RC=0
 for b in $BUDGETS; do run_budget "$b" || RC=1; done
 log "analyzing"
 OUT_ANALYSIS="logs/cs2fracsweep_n${NCONV}_ANALYSIS.txt"
-BUDGETS="$BUDGETS" FRAC_PCTS="$FRAC_PCTS" NCONV="$NCONV" $PYTHON scripts/analyze_cs2_frac_sweep.py > "$OUT_ANALYSIS" 2>&1
+BUDGETS="$BUDGETS" FRAC_PCTS="$FRAC_PCTS" NCONV="$NCONV" $PYTHON scripts/mlsys/analyze_cs2_frac_sweep.py > "$OUT_ANALYSIS" 2>&1
 echo "[$(STAMP)] DONE (rc=$RC)" >> "$OUT_ANALYSIS"
 if [ "$RC" = 0 ]; then touch "logs/cs2fracsweep_n${NCONV}_ALLDONE"; else touch "logs/cs2fracsweep_n${NCONV}_FAILED"; fi
 log "done -> $OUT_ANALYSIS"

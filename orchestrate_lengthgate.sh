@@ -18,8 +18,8 @@ SCHED=${SCHED:-"12:0.0@45,3:0.2@45"}; DUR=${DUR:-360}   # pilot-calibrated; >=2 
 THRESH=${THRESH:-4096}; PROTECT=${PROTECT:-512}; BLAST=${BLAST:-16384}
 PORT=8050
 
-$PYTHON scripts/hotpatch_hslo.py || { log "PATCH(hslo base) FAILED"; touch logs/lgate_FAILED; exit 1; }
-$PYTHON scripts/hotpatch_lengthgate.py || { log "PATCH(lengthgate) FAILED"; touch logs/lgate_FAILED; exit 1; }
+$PYTHON scripts/mlsys/hotpatch_hslo.py || { log "PATCH(hslo base) FAILED"; touch logs/lgate_FAILED; exit 1; }
+$PYTHON scripts/mlsys/hotpatch_lengthgate.py || { log "PATCH(lengthgate) FAILED"; touch logs/lgate_FAILED; exit 1; }
 
 log "lengthgate: SCHED='$SCHED' DUR=${DUR}s thresh=$THRESH protect=$PROTECT blast=$BLAST"
 
@@ -56,7 +56,7 @@ run_arm lengthgate lengthgate 16384
 
 log "analyzing per phase-type"
 if ! SCHEDULE="$SCHED" ARMS="16384 512 2048 lengthgate" SLO_TBT_MS=500 \
-     $PYTHON scripts/analyze_lengthgate.py > logs/lgate_ANALYSIS.txt 2>&1; then
+     $PYTHON scripts/mlsys/analyze_lengthgate.py > logs/lgate_ANALYSIS.txt 2>&1; then
   log "ANALYSIS FAILED"; touch logs/lgate_FAILED; exit 1
 fi
 echo "[$(STAMP)] DONE" >> logs/lgate_ANALYSIS.txt

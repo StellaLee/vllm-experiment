@@ -71,7 +71,7 @@ done
 RC=0; for p in $PIDS; do wait $p || RC=1; done
 kill_ours
 log "analyzing"
-$PYTHON scripts/analyze_sharegpt_cl.py > logs/sharecl_ANALYSIS.txt 2>&1
+$PYTHON scripts/mlsys/analyze_sharegpt_cl.py > logs/sharecl_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE (rc=$RC)" >> logs/sharecl_ANALYSIS.txt
 touch logs/sharecl_ALLDONE
 log "done -> logs/sharecl_ANALYSIS.txt"

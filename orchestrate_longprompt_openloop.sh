@@ -65,7 +65,7 @@ done
 
 log "analyzing (open-loop; mono baseline + realized concurrency validity)"
 # core metric via the existing analyzer, over the -ol arm files
-BUDGETS="16384ol 2048ol 512ol" $PYTHON scripts/analyze_longprompt.py > logs/longpol_ANALYSIS.txt 2>&1
+BUDGETS="16384ol 2048ol 512ol" $PYTHON scripts/mlsys/analyze_longprompt.py > logs/longpol_ANALYSIS.txt 2>&1
 # validity gate: realized mean/max concurrency per arm (must be non-trivial for a valid run)
 $PYTHON - "$DATE" >> logs/longpol_ANALYSIS.txt 2>&1 <<'PY'
 import sys, json, glob

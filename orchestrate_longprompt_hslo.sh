@@ -5,7 +5,7 @@
 # sizes the prefill budget from MEASURED decode cost + a FEEDFORWARD prefill term, aiming to hit
 # chunk's TBT win (p99 near 2048, max bounded) WITHOUT static-512's +20% TTFT tax -- i.e. to land
 # in the interior instead of railing floor/ceiling like the four prior dynamic arms.
-# Requires scripts/hotpatch_hslo.py applied to the installed scheduler.py first.
+# Requires scripts/mlsys/hotpatch_hslo.py applied to the installed scheduler.py first.
 # Outputs logs/<date>-longp-bhslo-t1.jsonl + chunktrace, then analyzes ALL arms together.
 set -uo pipefail
 cd /root/pli/vllm-experiment
@@ -25,7 +25,7 @@ FLOOR=${FLOOR:-512}; START=${START:-16384}; SLO_MS=${SLO_MS:-50}; ALPHA_MIN=${AL
 ARM=bhslo; PORT=8050
 
 # Ensure the hslo controller is patched in (idempotent).
-$PYTHON scripts/hotpatch_hslo.py || { log "PATCH FAILED"; touch logs/longphslo_FAILED; exit 1; }
+$PYTHON scripts/mlsys/hotpatch_hslo.py || { log "PATCH FAILED"; touch logs/longphslo_FAILED; exit 1; }
 
 log "long-prompt HSLO arm: conc=$CONC whale_frac=$WHALE_FRAC whale=[$WHALE_MIN,$WHALE_MAX] floor=$FLOOR start=$START slo=${SLO_MS}ms alpha_min=$ALPHA_MIN"
 log "  [$ARM] server on GPUs 0,1 port=$PORT budget=16384(max) mode=hslo start=$START slo=${SLO_MS}ms"
@@ -53,7 +53,7 @@ $PYTHON src/replay_sharegpt.py --host localhost --port $PORT --model "$MODEL" \
 log "  [$ARM] done recs=$(grep -c . "$out" 2>/dev/null || echo 0) preempt=$(grep -c -i preempt logs/${DATE}-longp-${ARM}-server.log 2>/dev/null || echo 0)"
 kill "$SV" 2>/dev/null; sleep 8; kill -9 "$SV" 2>/dev/null; kill_ours
 log "analyzing (all arms)"
-BUDGETS="16384 2048 512 ours ffv1 ffv2 depth hslo" $PYTHON scripts/analyze_longprompt.py > logs/longphslo_ANALYSIS.txt 2>&1
+BUDGETS="16384 2048 512 ours ffv1 ffv2 depth hslo" $PYTHON scripts/mlsys/analyze_longprompt.py > logs/longphslo_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE" >> logs/longphslo_ANALYSIS.txt
 touch logs/longphslo_ALLDONE
 log "done -> logs/longphslo_ANALYSIS.txt"

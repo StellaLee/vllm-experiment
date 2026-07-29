@@ -58,7 +58,7 @@ run_arm(){ # budget
 RC=0
 for b in $BUDGETS; do run_arm "$b" || RC=1; done
 log "analyzing"
-BUDGETS="$BUDGETS" $PYTHON scripts/analyze_longprompt.py > logs/longp_ANALYSIS.txt 2>&1
+BUDGETS="$BUDGETS" $PYTHON scripts/mlsys/analyze_longprompt.py > logs/longp_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE (rc=$RC)" >> logs/longp_ANALYSIS.txt
 touch logs/longp_ALLDONE
 log "done -> logs/longp_ANALYSIS.txt"

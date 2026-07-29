@@ -50,7 +50,7 @@ run_ff(){ # arm variant
 run_ff bffv1 v1
 run_ff bffv2 v2
 log "analyzing (all arms)"
-BUDGETS="16384 2048 512 ours ffv1 ffv2" $PYTHON scripts/analyze_longprompt.py > logs/longpff_ANALYSIS.txt 2>&1
+BUDGETS="16384 2048 512 ours ffv1 ffv2" $PYTHON scripts/mlsys/analyze_longprompt.py > logs/longpff_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE" >> logs/longpff_ANALYSIS.txt
 touch logs/longpff_ALLDONE
 log "done -> logs/longpff_ANALYSIS.txt"

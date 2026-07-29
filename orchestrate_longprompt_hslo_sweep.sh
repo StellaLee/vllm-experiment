@@ -7,7 +7,7 @@
 # TTFT tax / TBT-p99 trade off across the target. warmup stays at start=16384 (SLO is the only var),
 # so the first-whale 6s max leak is EXPECTED to persist in every arm; the discriminator is p99 + the
 # controller dwell (does it hold 1024-2048 for a mid SLO instead of railing?).
-# Requires scripts/hotpatch_hslo.py (idempotent; reapplied here).
+# Requires scripts/mlsys/hotpatch_hslo.py (idempotent; reapplied here).
 set -uo pipefail
 cd /root/pli/vllm-experiment
 source scripts/env.sh >/dev/null 2>&1
@@ -26,7 +26,7 @@ FLOOR=${FLOOR:-512}; START=${START:-16384}; ALPHA_MIN=${ALPHA_MIN:-256}
 SLOS=${SLOS:-"200 600 1200"}
 PORT=8050
 
-$PYTHON scripts/hotpatch_hslo.py || { log "PATCH FAILED"; touch logs/longphslosweep_FAILED; exit 1; }
+$PYTHON scripts/mlsys/hotpatch_hslo.py || { log "PATCH FAILED"; touch logs/longphslosweep_FAILED; exit 1; }
 
 run_arm(){ # slo_ms
   local slo=$1 arm=bhslo$1
@@ -58,7 +58,7 @@ run_arm(){ # slo_ms
 
 for slo in $SLOS; do run_arm "$slo" || { log "arm $slo FAILED"; touch logs/longphslosweep_FAILED; }; done
 log "analyzing (baselines + hslo sweep)"
-BUDGETS="16384 2048 512 hslo hslo200 hslo600 hslo1200" $PYTHON scripts/analyze_longprompt.py > logs/longphslosweep_ANALYSIS.txt 2>&1
+BUDGETS="16384 2048 512 hslo hslo200 hslo600 hslo1200" $PYTHON scripts/mlsys/analyze_longprompt.py > logs/longphslosweep_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE" >> logs/longphslosweep_ANALYSIS.txt
 touch logs/longphslosweep_ALLDONE
 log "done -> logs/longphslosweep_ANALYSIS.txt"

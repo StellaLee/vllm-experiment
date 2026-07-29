@@ -75,7 +75,7 @@ run_arm 4,5 8023 ours  16384 slocvar & P3=$!
 RC=0; wait $P1||RC=1; wait $P2||RC=1; wait $P3||RC=1
 kill_ours
 log "analyzing"
-$PYTHON scripts/analyze_burstgpt.py > logs/burstgpt_one_ANALYSIS.txt 2>&1
+$PYTHON scripts/mlsys/analyze_burstgpt.py > logs/burstgpt_one_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE (rc=$RC)" >> logs/burstgpt_one_ANALYSIS.txt
 touch logs/burstgpt_one_ALLDONE
 log "done -> logs/burstgpt_one_ANALYSIS.txt"

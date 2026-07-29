@@ -63,7 +63,7 @@ done
 RC=0; for p in $PIDS; do wait $p || RC=1; done
 kill_ours
 log "analyzing"
-BUDGETS="$BUDGETS" $PYTHON scripts/analyze_chunk_sweep.py > logs/sweep_ANALYSIS.txt 2>&1
+BUDGETS="$BUDGETS" $PYTHON scripts/mlsys/analyze_chunk_sweep.py > logs/sweep_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE (rc=$RC)" >> logs/sweep_ANALYSIS.txt
 touch logs/sweep_ALLDONE
 log "done -> logs/sweep_ANALYSIS.txt"

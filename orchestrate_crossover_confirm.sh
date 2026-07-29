@@ -27,13 +27,13 @@ run_point(){  # $1=prefix  $2=cv2
   local pfx=$1 cv=$2
   log "=== WAVE ${pfx} (cv2=$cv): mono|chunk|ours concurrent ==="
   GPUS=0,1 PORT=8001 PREFIX=$pfx ARM=mono  BUDGET=16384 MODE=static  CV2=$cv PYTHON=$PYTHON MODEL=$MODEL \
-    bash scripts/run_arm_unit.sh > logs/confirm-${pfx}-mono.log  2>&1 &
+    bash scripts/mlsys/run_arm_unit.sh > logs/confirm-${pfx}-mono.log  2>&1 &
   local p1=$!
   GPUS=2,3 PORT=8002 PREFIX=$pfx ARM=chunk BUDGET=512   MODE=static  CV2=$cv PYTHON=$PYTHON MODEL=$MODEL \
-    bash scripts/run_arm_unit.sh > logs/confirm-${pfx}-chunk.log 2>&1 &
+    bash scripts/mlsys/run_arm_unit.sh > logs/confirm-${pfx}-chunk.log 2>&1 &
   local p2=$!
   GPUS=4,5 PORT=8003 PREFIX=$pfx ARM=ours  BUDGET=16384 MODE=slocvar CV2=$cv PYTHON=$PYTHON MODEL=$MODEL \
-    bash scripts/run_arm_unit.sh > logs/confirm-${pfx}-ours.log  2>&1 &
+    bash scripts/mlsys/run_arm_unit.sh > logs/confirm-${pfx}-ours.log  2>&1 &
   local p3=$!
   local rc=0
   wait $p1 || rc=1; wait $p2 || rc=1; wait $p3 || rc=1
@@ -47,7 +47,7 @@ run_point cross175 1.75 || ALLRC=1
 run_point cross225 2.25 || ALLRC=1
 
 log "analyzing full 5-point curve (>=1 points now n=8)"
-python scripts/analyze_crossover.py > logs/crossoverconf_ANALYSIS.txt 2>&1
+python scripts/mlsys/analyze_crossover.py > logs/crossoverconf_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE (waves rc=$ALLRC)" >> logs/crossoverconf_ANALYSIS.txt
 if [ $ALLRC -eq 0 ]; then touch logs/crossoverconf_ALLDONE; else touch logs/crossoverconf_ALLDONE; log "NOTE: some arm failed; analysis still written"; fi
 log "n=8 confirm done -> logs/crossoverconf_ANALYSIS.txt"

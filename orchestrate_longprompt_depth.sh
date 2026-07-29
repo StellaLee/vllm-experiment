@@ -47,7 +47,7 @@ $PYTHON src/replay_sharegpt.py --host localhost --port $PORT --model "$MODEL" \
 log "  [$ARM] done recs=$(grep -c . "$out" 2>/dev/null || echo 0) preempt=$(grep -c -i preempt logs/${DATE}-longp-${ARM}-server.log 2>/dev/null || echo 0)"
 kill "$SV" 2>/dev/null; sleep 8; kill -9 "$SV" 2>/dev/null; kill_ours
 log "analyzing (all arms)"
-BUDGETS="16384 2048 512 ours ffv1 ffv2 depth" $PYTHON scripts/analyze_longprompt.py > logs/longpdepth_ANALYSIS.txt 2>&1
+BUDGETS="16384 2048 512 ours ffv1 ffv2 depth" $PYTHON scripts/mlsys/analyze_longprompt.py > logs/longpdepth_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE" >> logs/longpdepth_ANALYSIS.txt
 touch logs/longpdepth_ALLDONE
 log "done -> logs/longpdepth_ANALYSIS.txt"

@@ -52,7 +52,7 @@ run_lpt 2048lpt512   2048  512
 
 log "re-analyzing full grid"
 SCHEDULE="$SCHED" ARMS="16384 512 2048 lengthgate 16384lpt512 16384lpt256 16384lpt2048 2048lpt512" SLO_TBT_MS=500 \
-  $PYTHON scripts/analyze_lengthgate.py > logs/lgate_ANALYSIS_v4.txt 2>&1
+  $PYTHON scripts/mlsys/analyze_lengthgate.py > logs/lgate_ANALYSIS_v4.txt 2>&1
 echo "[$(STAMP)] DONE" >> logs/lgate_ANALYSIS_v4.txt
 touch logs/lgate_grid_ALLDONE
 log "done -> logs/lgate_ANALYSIS_v4.txt"

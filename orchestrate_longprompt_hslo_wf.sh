@@ -7,7 +7,7 @@
 # first whale at 512 while alpha learns, so the max should drop toward static-2048's ~1200ms while
 # the median chunk still climbs to ~2048 under the 400ms SLO. If max bounds, hslo matches the
 # ORACLE static-2048 point using only an offline-computable SLO -- the paper's result.
-# Same whale setup + pad-seed 1001 (paired whales). Requires scripts/hotpatch_hslo.py (idempotent).
+# Same whale setup + pad-seed 1001 (paired whales). Requires scripts/mlsys/hotpatch_hslo.py (idempotent).
 set -uo pipefail
 cd /root/pli/vllm-experiment
 source scripts/env.sh >/dev/null 2>&1
@@ -25,7 +25,7 @@ MAX_PROMPT_CHARS=${MAX_PROMPT_CHARS:-50000}; PAD_MEAN=${PAD_MEAN:-800}; PAD_CV2=
 FLOOR=${FLOOR:-512}; START=${START:-512}; SLO_MS=${SLO_MS:-400}; ALPHA_MIN=${ALPHA_MIN:-256}
 ARM=bhslo400wf; PORT=8050
 
-$PYTHON scripts/hotpatch_hslo.py || { log "PATCH FAILED"; touch logs/longphslowf_FAILED; exit 1; }
+$PYTHON scripts/mlsys/hotpatch_hslo.py || { log "PATCH FAILED"; touch logs/longphslowf_FAILED; exit 1; }
 
 log "long-prompt HSLO warmup-floor arm: conc=$CONC slo=${SLO_MS}ms floor=$FLOOR START=$START(=floor) alpha_min=$ALPHA_MIN"
 log "  [$ARM] server GPUs 0,1 port=$PORT mode=hslo slo=${SLO_MS}ms start=$START"
@@ -53,7 +53,7 @@ $PYTHON src/replay_sharegpt.py --host localhost --port $PORT --model "$MODEL" \
 log "  [$ARM] done recs=$(grep -c . "$out" 2>/dev/null || echo 0) preempt=$(grep -c -i preempt logs/${DATE}-longp-${ARM}-server.log 2>/dev/null || echo 0)"
 kill "$SV" 2>/dev/null; sleep 8; kill -9 "$SV" 2>/dev/null; kill_ours
 log "analyzing (oracle statics + hslo sweep + warmup-floor)"
-BUDGETS="16384 2048 512 hslo200 hslo600 hslo1200 hslo400wf" $PYTHON scripts/analyze_longprompt.py > logs/longphslowf_ANALYSIS.txt 2>&1
+BUDGETS="16384 2048 512 hslo200 hslo600 hslo1200 hslo400wf" $PYTHON scripts/mlsys/analyze_longprompt.py > logs/longphslowf_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE" >> logs/longphslowf_ANALYSIS.txt
 touch logs/longphslowf_ALLDONE
 log "done -> logs/longphslowf_ANALYSIS.txt"

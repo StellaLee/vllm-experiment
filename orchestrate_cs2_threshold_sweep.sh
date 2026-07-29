@@ -80,7 +80,7 @@ for t in $THRESHOLDS; do run_threshold "$t" || RC=1; done
 log "analyzing"
 OUT_ANALYSIS="logs/cs2th_r${RATE}_n${NCONV}_ANALYSIS.txt"
 THRESHOLDS="$THRESHOLDS" CV2_LIST="$CV2_LIST" RATE="$RATE" NCONV="$NCONV" \
-  $PYTHON scripts/analyze_cs2_threshold_sweep.py > "$OUT_ANALYSIS" 2>&1
+  $PYTHON scripts/mlsys/analyze_cs2_threshold_sweep.py > "$OUT_ANALYSIS" 2>&1
 echo "[$(STAMP)] DONE (rc=$RC)" >> "$OUT_ANALYSIS"
 if [ "$RC" = 0 ]; then touch "logs/cs2th_r${RATE}_n${NCONV}_ALLDONE"; else touch "logs/cs2th_r${RATE}_n${NCONV}_FAILED"; fi
 log "done -> $OUT_ANALYSIS"

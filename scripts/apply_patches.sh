@@ -12,7 +12,7 @@ PYTHON=${PYTHON:-$(command -v python3)}
 echo "[1/2] base scheduler patch (ChunkSizeController depth + reorder/aging wiring)"
 $PYTHON scripts/patch_scheduler.py
 echo "[2/2] controller upgrade (adds CHUNK_MODE=slo mean + slotail p99)"
-$PYTHON scripts/hotpatch_slo_tail.py
+$PYTHON scripts/mlsys/hotpatch_slo_tail.py
 
 # Verify the full controller is present.
 SCHED=$($PYTHON - <<'PY'

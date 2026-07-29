@@ -25,11 +25,11 @@ log "controller 3-arm start (14B/TP2 mt=1024 cv2=0 rate=0.64 slocvar slo=50 cvar
 env CUDA_VISIBLE_DEVICES=0,1 PYTHON="$PYTHON" MODEL="$MODEL" \
     TP=2 RATE=0.64 MAX_TOKENS=1024 CV2=0 NUM_CONVS=80 TRIALS="1 2 3" \
     MONO_BUDGET=16384 CHUNK_BUDGET=512 FLOOR=512 SLO_MS=50 CVAR_PCTL=90 \
-    bash scripts/run_cs2_3arm.sh > logs/controller-run.log 2>&1
+    bash scripts/mlsys/run_cs2_3arm.sh > logs/controller-run.log 2>&1
 free_gpus >/dev/null 2>&1
 
 log "analyzing"
-python scripts/analyze_3arm.py > logs/controller_ANALYSIS.txt 2>&1
+python scripts/mlsys/analyze_3arm.py > logs/controller_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE" >> logs/controller_ANALYSIS.txt
 touch logs/controller_ALLDONE
 log "orchestrator done -> logs/controller_ANALYSIS.txt"

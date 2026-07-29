@@ -20,18 +20,24 @@ vllm-experiment/
 ├── scripts/                         # experiment orchestration (run on server)
 │   ├── setup.sh                     # one-time: clone BurstGPT, install deps, fetch datasets
 │   ├── start_server.sh              # start vLLM (Qwen2.5-0.5B, port 8000)
+│   ├── apply_patches.sh, patch_scheduler.py, patch_chunklog_info.py  # shared vLLM patches
 │   │
-│   ├── run_baseline.sh              # BurstGPT single-run baseline
-│   ├── run_qps_sweep.sh             # BurstGPT QPS sweep (0.5×/2×/4×, 0.5B)
-│   ├── run_2x_4x_sweep.sh           # BurstGPT 2×/4× partial sweep
-│   ├── run_qps7b_sweep.sh           # BurstGPT QPS sweep (1×/2×/4×/8×, 7B)
+│   ├── mlsys/                       # MLSys paper: chunked-prefill scheduling scripts
+│   │   ├── run_baseline.sh          # BurstGPT single-run baseline
+│   │   ├── run_qps_sweep.sh         # BurstGPT QPS sweep (0.5×/2×/4×, 0.5B)
+│   │   ├── run_2x_4x_sweep.sh       # BurstGPT 2×/4× partial sweep (at scripts/ root)
+│   │   ├── run_qps7b_sweep.sh       # BurstGPT QPS sweep (1×/2×/4×/8×, 7B)
+│   │   ├── run_sharegpt.sh          # ShareGPT multi-turn replay (0.5B)
+│   │   ├── run_kvcache_sweep.sh     # KV cache utilization sweep (0.3–0.9, 0.5B)
+│   │   ├── run_kvcache_7b_sweep.sh  # KV cache utilization sweep (0.7–0.9, 7B)
+│   │   ├── run_eviction_comparison.sh   # LRU vs TDF eviction (50 convs, legacy)
+│   │   ├── run_full_comparison.sh   # LRU vs TDF vs CF eviction (200 convs, canonical)
+│   │   └── ...                      # analyze_*/hotpatch_*/run_* for the longprompt/cs2/lengthgate lines of work
 │   │
-│   ├── run_sharegpt.sh              # ShareGPT multi-turn replay (0.5B)
-│   ├── run_kvcache_sweep.sh         # KV cache utilization sweep (0.3–0.9, 0.5B)
-│   ├── run_kvcache_7b_sweep.sh      # KV cache utilization sweep (0.7–0.9, 7B)
-│   │
-│   ├── run_eviction_comparison.sh   # LRU vs TDF eviction (50 convs, legacy)
-│   └── run_full_comparison.sh       # LRU vs TDF vs CF eviction (200 convs, canonical)
+│   └── pesim/                       # PES-IM paper: coincidence-factor / power-fleet modeling
+│       ├── power_logger.py, analyze_pesim_gate.py, analyze_power_shape*.py
+│       ├── coincidence_factor_model.py, cf_*.py, ramp_*.py    # CF/OU/bootstrap models
+│       └── plot_*.py                # figure generation for paper-pes-im/figs/
 │
 ├── src/                             # Python analysis and replay scripts
 │   ├── replay_sharegpt.py           # stream ShareGPT conversations against vLLM /generate
@@ -130,7 +136,7 @@ bash scripts/setup.sh
 bash scripts/start_server.sh
 
 # Terminal 2 — run an experiment
-bash scripts/run_baseline.sh
+bash scripts/mlsys/run_baseline.sh
 ```
 
 ## Experiments
@@ -141,9 +147,9 @@ Sends 50 requests from a BurstGPT trace at realistic inter-arrival times.
 Measures TTFT, latency, GPU power, and energy per request.
 
 ```bash
-bash scripts/run_baseline.sh
-bash scripts/run_qps_sweep.sh       # 0.5×, 2×, 4× BurstGPT QPS
-bash scripts/run_qps7b_sweep.sh     # same sweep with Coder-7B
+bash scripts/mlsys/run_baseline.sh
+bash scripts/mlsys/run_qps_sweep.sh       # 0.5×, 2×, 4× BurstGPT QPS
+bash scripts/mlsys/run_qps7b_sweep.sh     # same sweep with Coder-7B
 ```
 
 ### KV Cache Utilization Sweep
@@ -152,8 +158,8 @@ Runs ShareGPT multi-turn replay at different `gpu-memory-utilization` settings
 to measure how cache capacity affects TTFT at different turns.
 
 ```bash
-bash scripts/run_kvcache_sweep.sh       # 0.3, 0.5, 0.7, 0.9 (0.5B)
-bash scripts/run_kvcache_7b_sweep.sh    # 0.7, 0.8, 0.9 (Coder-7B)
+bash scripts/mlsys/run_kvcache_sweep.sh       # 0.3, 0.5, 0.7, 0.9 (0.5B)
+bash scripts/mlsys/run_kvcache_7b_sweep.sh    # 0.7, 0.8, 0.9 (Coder-7B)
 ```
 
 ### Eviction Policy Comparison
@@ -172,7 +178,7 @@ Requires applying the patches in `patches/` first.
 bash patches/apply_patches.sh
 
 # 2. Run the canonical 3-way comparison (200 conversations, ≥4 turns)
-bash scripts/run_full_comparison.sh
+bash scripts/mlsys/run_full_comparison.sh
 
 # Or run with a custom policy:
 EVICTION_POLICY=cf bash scripts/start_server.sh

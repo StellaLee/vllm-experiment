@@ -47,7 +47,7 @@ kill $SV 2>/dev/null; sleep 8; kill -9 $SV 2>/dev/null; kill_ours
 
 log "re-analyzing: mono / static-512 / static-2048 / lengthgate / mono+LPT"
 SCHEDULE="$SCHED" ARMS="16384 512 2048 lengthgate ${ARM}" SLO_TBT_MS=500 \
-  $PYTHON scripts/analyze_lengthgate.py > logs/lgate_ANALYSIS_v3.txt 2>&1
+  $PYTHON scripts/mlsys/analyze_lengthgate.py > logs/lgate_ANALYSIS_v3.txt 2>&1
 echo "[$(STAMP)] DONE" >> logs/lgate_ANALYSIS_v3.txt
 touch logs/lgate_lpt_ALLDONE
 log "done -> logs/lgate_ANALYSIS_v3.txt"

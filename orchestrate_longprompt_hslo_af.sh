@@ -26,8 +26,8 @@ FLOOR=${FLOOR:-512}; START=${START:-512}; SLO_MS=${SLO_MS:-400}; ALPHA_MIN=${ALP
 ALPHA_HW_MS=${ALPHA_HW_MS:-0.18}
 ARM=bhslo400af; PORT=8050
 
-$PYTHON scripts/hotpatch_hslo.py || { log "PATCH(base) FAILED"; touch logs/longphsloaf_FAILED; exit 1; }
-$PYTHON scripts/hotpatch_hslo_alphafloor.py || { log "PATCH(alphafloor) FAILED"; touch logs/longphsloaf_FAILED; exit 1; }
+$PYTHON scripts/mlsys/hotpatch_hslo.py || { log "PATCH(base) FAILED"; touch logs/longphsloaf_FAILED; exit 1; }
+$PYTHON scripts/mlsys/hotpatch_hslo_alphafloor.py || { log "PATCH(alphafloor) FAILED"; touch logs/longphsloaf_FAILED; exit 1; }
 
 log "long-prompt HSLO alpha-floor arm: slo=${SLO_MS}ms floor=$FLOOR START=$START alpha_hw=${ALPHA_HW_MS}ms/tok alpha_min_prefill=$ALPHA_MIN"
 log "  [$ARM] server GPUs 0,1 port=$PORT mode=hslo slo=${SLO_MS}ms start=$START alpha_hw=${ALPHA_HW_MS}"
@@ -56,7 +56,7 @@ $PYTHON src/replay_sharegpt.py --host localhost --port $PORT --model "$MODEL" \
 log "  [$ARM] done recs=$(grep -c . "$out" 2>/dev/null || echo 0) preempt=$(grep -c -i preempt logs/${DATE}-longp-${ARM}-server.log 2>/dev/null || echo 0)"
 kill "$SV" 2>/dev/null; sleep 8; kill -9 "$SV" 2>/dev/null; kill_ours
 log "analyzing (oracle statics + warmup-floor + alpha-floor)"
-BUDGETS="16384 2048 512 hslo400wf hslo400af" $PYTHON scripts/analyze_longprompt.py > logs/longphsloaf_ANALYSIS.txt 2>&1
+BUDGETS="16384 2048 512 hslo400wf hslo400af" $PYTHON scripts/mlsys/analyze_longprompt.py > logs/longphsloaf_ANALYSIS.txt 2>&1
 echo "[$(STAMP)] DONE" >> logs/longphsloaf_ANALYSIS.txt
 touch logs/longphsloaf_ALLDONE
 log "done -> logs/longphsloaf_ANALYSIS.txt"
