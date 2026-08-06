@@ -32,6 +32,14 @@ worth noting — the tooling the community uses to benchmark bursty serving is i
 **The 1024-token cap is notable**: BurstGPT's benchmark harness censors prompt length at 1024 — the
 exact decode/prefill-censoring artifact our paper is about, in a widely-used bursty-serving benchmark.
 
+**Correction (2026-07-30):** the "1024 cap" above is specific to the replay harness/matcher table
+used in *this* experiment (1024x1024 matcher table, 300-prompt pool), not the underlying BurstGPT
+dataset itself. Direct analysis of the raw `BurstGPT_1.csv` (1.43M real ChatGPT/GPT-4 requests)
+shows request lengths are NOT capped at 1024 -- real max is 29,665 tokens, p99=3,387 tokens. The
+earlier wording incorrectly generalized a harness-specific artifact to "BurstGPT" as a whole. The
+underlying observation (this harness's specific replay tool censors at 1024) may still be
+accurate for that tool; only the "BurstGPT itself is capped" generalization was wrong.
+
 **Result** (conv window, gap-capped arrivals, realized service Cs²=0.89, sub-saturation ~0.7 rps):
 
 | arm | TTFT-mean | ΔTTFT | TPOT-p95 | ΔTPOT-p95 |
