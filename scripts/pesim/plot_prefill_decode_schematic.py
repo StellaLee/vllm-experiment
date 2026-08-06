@@ -55,12 +55,22 @@ def main():
         ax.set_xlim(0, max(len(iters), 2) + 1)
         ax.set_xticks(idx if len(idx) <= 10 else range(0, len(idx) + 1, 5))
         ax.set_title(f"{title}\n{len(iters)} iteration(s) to finish this whale's prefill", fontsize=9)
+        # The decode segment (48 tok, ~max-num-seqs concurrent decode reqs) is real and really
+        # stacked on top of prefill -- but at only 0.3% of the 16384-token shared y-axis, it is
+        # sub-pixel and would be invisible without this callout (annotated rather than exaggerated,
+        # since faking its height would misrepresent the real batch-composition ratio).
+        callout_x = idx[0]
+        callout_y = prefill[0] + decode[0]
+        ax.annotate(f"+{decode[0]} decode tok/iter\n(too thin to see at this scale)",
+                    xy=(callout_x, callout_y), xytext=(0.97, 0.55), textcoords="axes fraction",
+                    ha="right", va="center", fontsize=7, color=DECODE_COLOR,
+                    arrowprops=dict(arrowstyle="->", color=DECODE_COLOR, lw=0.8))
 
     axes[0].set_ylabel("tokens in batch")
     axes[0].legend(fontsize=7, loc="upper right")
-    fig.suptitle(f"Scheduling a {WHALE_TOKENS}-token prompt: same total prefill work,\n"
-                 f"different wall-clock stretch (illustrative, from experiment parameters)", y=1.06, fontsize=10)
     fig.tight_layout()
+    fig.suptitle(f"Scheduling a {WHALE_TOKENS}-token prompt: same total prefill work,\n"
+                 f"different wall-clock stretch (illustrative, from experiment parameters)", y=1.14, fontsize=10)
     fig.savefig("fig_prefill_decode_mono_chunk.png", dpi=200, bbox_inches="tight")
     print("wrote fig_prefill_decode_mono_chunk.png")
     print(f"mono: {len(mono)} iteration(s)")
