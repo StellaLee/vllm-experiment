@@ -141,6 +141,36 @@ def fit_kappa(target_ramp, cal, dt, T_sim, warmup, n_mc, rng, lo=0.01, hi=50.0, 
     return mid, r_mid
 
 
+def fit_kappa_self_consistent(target_ramp, cal, dt, T_sim, n_mc, rng, safety=10.0, floor=50.0,
+                               lo=0.01, hi=50.0, tol=0.02, max_iter=25, max_outer=6):
+    """Fixed-point refinement of fit_kappa. fit_kappa's own bisection discards a fixed `warmup`
+    internally -- but if the resulting kappa implies a slow OU relaxation (tau=1/kappa)
+    comparable to or longer than that warmup, the "post-warmup" ramp measurement used DURING
+    fitting is itself still contaminated by the cold-start transient (a systematic drift adds
+    directly to the measured mean|dP/dt|), which biases the fit toward an even smaller kappa
+    than warranted -- a self-reinforcing bug, not just an analysis-time nuisance. Confirmed by
+    direct measurement: the real trace's own autocorrelation decorrelates in ~0.6s, while a
+    naively-fitted kappa (50s warmup) implied tau up to ~48s for chunk=512 in some conditions --
+    a ~50-80x mismatch, and the resulting aggregate (N=10,000) cold-start drift was found to be
+    the same ORDER OF MAGNITUDE as the reported peak-ramp statistic itself (~20,000 W/s vs.
+    ~13,000-23,000 W/s), not a rounding error.
+
+    Fix: iteratively grow warmup to `safety`/kappa (default 10 tau, >99.99% converged) and refit
+    kappa at that larger warmup, until warmup stops growing. Returns (kappa, ramp, warmup) --
+    callers MUST reuse the returned warmup (not a hardcoded constant) for any subsequent
+    simulation (single-server ramp checks and the N-server peak-ramp Monte Carlo alike), or the
+    same contamination reappears downstream even with a correctly-fitted kappa."""
+    warmup = floor
+    kappa, r = fit_kappa(target_ramp, cal, dt, T_sim, warmup, n_mc, rng, lo, hi, tol, max_iter)
+    for _ in range(max_outer):
+        needed = max(floor, safety / kappa)
+        if needed <= warmup * 1.05:
+            break
+        warmup = needed
+        kappa, r = fit_kappa(target_ramp, cal, dt, T_sim, warmup, n_mc, rng, lo, hi, tol, max_iter)
+    return kappa, r, warmup
+
+
 def ramp_coincidence_factor_continuous(N, cal, kappa, target_ramp, T_window, dt, n_mc, rng, warmup=50.0):
     """Continuous-model analogue of coincidence_factor_model.ramp_coincidence_factor: same
     warmup-discard discipline (the earlier two-state model's own bug was a synchronized
