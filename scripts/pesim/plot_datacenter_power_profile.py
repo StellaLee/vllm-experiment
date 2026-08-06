@@ -17,13 +17,10 @@ variance) rather than a constant. The corrected model's reserve-procurement numb
 a point of the original (Table~\\ref{tab:reserve}), so the headline is not materially changed --
 but the methodology is now free of two identified, falsifiable-and-falsified assumptions.
 
-Two panels, sharing the same time axis:
-  (a) Level -- the y-axis is necessarily zoomed. Because occupancy is NOT matched between
-      policies in this corrected model (chunk's duty cycle is genuinely higher), chunk's level
-      sits measurably above mono's here -- unlike the earlier (incorrect) figure, which showed
-      them as indistinguishable by construction.
-  (b) Ramp rate dP/dt -- the differentiated signal the paper's reserve-procurement claim is
-      about. Chunk=512's oscillation is visibly smaller in amplitude throughout.
+Single panel: ramp rate dP/dt -- the differentiated signal the paper's reserve-procurement
+claim is about. Chunk=512's oscillation is visibly smaller in amplitude throughout. (The level
+panel from an earlier version of this figure was dropped -- ramp rate is the quantity the
+paper's argument actually rests on.)
 
 Usage:
     python scripts/pesim/plot_datacenter_power_profile.py --out paper-pes-im/figs/fig_datacenter_power_profile.png
@@ -75,21 +72,10 @@ def main():
     D_chunk_w = D_chunk_w[i0:]
 
     t = np.arange(D_mono_w.shape[0]) * dt
-    D_mono = D_mono_w / 1e6  # W -> MW
-    D_chunk = D_chunk_w / 1e6
 
     ramp_mono = np.diff(D_mono_w) / dt / 1000.0    # W/s -> kW/s
     ramp_chunk = np.diff(D_chunk_w) / dt / 1000.0
     t_ramp = t[1:]
-
-    N_Pmax_mono = N * cal_mono["mu_max"] / 1e6
-    N_Pb_mono = N * cal_mono["mu_b"] / 1e6
-    full_range = N_Pmax_mono - N_Pb_mono
-    shown_lo = min(D_mono.min(), D_chunk.min())
-    shown_hi = max(D_mono.max(), D_chunk.max())
-    pad = 0.15 * (shown_hi - shown_lo)
-    shown_frac = (shown_hi - shown_lo) / full_range * 100
-    level_diff_pct = (D_chunk.mean() / D_mono.mean() - 1) * 100
 
     max_ramp_mono = np.abs(ramp_mono).max() * 1000  # back to W/s for stats
     max_ramp_chunk = np.abs(ramp_chunk).max() * 1000
@@ -98,41 +84,26 @@ def main():
     max_reduction = (1 - max_ramp_chunk / max_ramp_mono) * 100
     mean_reduction = (1 - mean_ramp_chunk / mean_ramp_mono) * 100
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6.2, 4.8), sharex=True,
-                                   gridspec_kw={"height_ratios": [1, 0.85], "hspace": 0.45})
+    fig, ax2 = plt.subplots(1, 1, figsize=(6.2, 2.8))
 
-    ax1.plot(t, D_mono, color=MONO, linewidth=1.2)
-    ax1.plot(t, D_chunk, color=CHUNK, linewidth=1.2)
-    ax1.text(0.03, 0.06, "mono", color=MONO, fontsize=9.5, weight="bold", transform=ax1.transAxes)
-    ax1.text(0.03, 0.90, "chunk=512", color=CHUNK, fontsize=9.5, weight="bold",
-             transform=ax1.transAxes)
-    ax1.set_ylim(shown_lo - pad, shown_hi + pad)
-    ax1.set_ylabel("aggregate power\n(MW)", fontsize=9.5)
-    ax1.set_title(f"(a) Level: zoomed to $\\approx${shown_frac:.2f}% of the full range -- "
-                  f"chunk $\\approx${level_diff_pct:.0f}% higher (unequal duty cycle)", fontsize=9.3)
-    ax1.tick_params(labelsize=8.5)
-
-    ax2.plot(t_ramp, ramp_mono, color=MONO, linewidth=0.7, alpha=0.9)
-    ax2.plot(t_ramp, ramp_chunk, color=CHUNK, linewidth=0.7, alpha=0.9)
+    ax2.plot(t_ramp, ramp_mono, color=MONO, linewidth=0.7, alpha=0.9, label="mono")
+    ax2.plot(t_ramp, ramp_chunk, color=CHUNK, linewidth=0.7, alpha=0.9, label="chunk=512")
     ax2.axhline(0, color=INK, linewidth=0.5, alpha=0.4)
     ax2.set_ylabel("ramp rate $dP/dt$\n(kW/s)", fontsize=9.5)
     ax2.set_xlabel("time (s)", fontsize=9.5)
-    ax2.set_title(f"(b) Ramp rate: chunk=512 visibly damped "
-                  f"(max {max_reduction:.0f}% lower, mean {mean_reduction:.0f}% lower)",
-                  fontsize=9.3)
+    ax2.set_title(f"Simulated data-center-scale aggregate ramp rate ($N{{=}}{N:,}$): "
+                  f"chunk=512 visibly damped\n(max {max_reduction:.0f}% lower, mean {mean_reduction:.0f}% lower)",
+                  fontsize=10)
     ax2.tick_params(labelsize=8.5)
     ax2.set_xlim(0, t[-1])
+    ax2.legend(fontsize=8, loc="upper right")
 
-    fig.suptitle(f"Simulated data-center-scale aggregate power profile ($N{{=}}{N:,}$)",
-                 fontsize=10.5, y=0.99)
     fig.tight_layout()
     fig.savefig(args.out, dpi=200, bbox_inches="tight")
     print(f"wrote {args.out}")
     print(f"N={N}: mono max|ramp|={max_ramp_mono:.1f} W/s mean={mean_ramp_mono:.1f} W/s")
     print(f"       chunk=512 max|ramp|={max_ramp_chunk:.1f} W/s mean={mean_ramp_chunk:.1f} W/s")
     print(f"       max reduction={max_reduction:.1f}%  mean reduction={mean_reduction:.1f}%")
-    print(f"       level: chunk {level_diff_pct:+.1f}% vs mono (duty cycle {cal_chunk['p_duty']:.3f} vs {cal_mono['p_duty']:.3f})")
-    print(f"shown y-range (level) is {shown_frac:.3f}% of full N*(P_max-P_b)={full_range:.4f} MW (mono ref)")
 
 
 if __name__ == "__main__":
