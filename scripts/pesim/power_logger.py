@@ -11,9 +11,19 @@ measured run starts.
 
 Usage:
   power_logger.py --gpus 0 --interval-ms 50 --output logs/power_trace.csv
+  power_logger.py --gpus 0,1 --sum-gpus --interval-ms 50 --output logs/power_trace.csv
 
 Runs until SIGTERM/SIGINT, flushing every row immediately (so a kill mid-run
 loses at most one partial sample, never buffered data).
+
+--sum-gpus (for tensor-parallel runs spanning multiple GPUs): collapses all
+--gpus into ONE row per sample (power/energy summed across GPUs, temp = max),
+instead of one row per GPU per sample. Output CSV schema is then identical to
+a single-GPU trace (gpu_index becomes the literal --gpus string, e.g. "0+1"),
+so every existing downstream analyze_*/cf_*/plot_* script -- which assumes one
+power_w value per timestamp -- works unchanged on a TP>1 trace with no
+per-script multi-GPU-awareness needed. Without this flag (default), behavior
+is unchanged: one row per GPU per sample, as before.
 """
 import argparse
 import csv
@@ -36,6 +46,9 @@ def main():
     ap.add_argument("--gpus", default="0", help="comma-separated GPU indices")
     ap.add_argument("--interval-ms", type=int, default=50)
     ap.add_argument("--output", required=True)
+    ap.add_argument("--sum-gpus", action="store_true",
+                     help="write one summed row per sample instead of one row per GPU "
+                          "(for TP>1 runs; see module docstring)")
     args = ap.parse_args()
 
     gpu_idxs = [int(x) for x in args.gpus.split(",")]
@@ -54,6 +67,7 @@ def main():
         f.flush()
         while not _stop:
             t = time.time()
+            samples = []
             for i, h in handles.items():
                 try:
                     power_w = pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0
@@ -62,7 +76,17 @@ def main():
                 except pynvml.NVMLError as e:
                     print(f"[power_logger] NVML error on gpu {i}: {e}", file=sys.stderr)
                     continue
-                w.writerow([f"{t:.6f}", i, f"{power_w:.2f}", energy_mj, temp_c])
+                samples.append((i, power_w, energy_mj, temp_c))
+            if args.sum_gpus:
+                if samples:
+                    power_sum = sum(s[1] for s in samples)
+                    energy_sum = sum(s[2] for s in samples)
+                    temp_max = max(s[3] for s in samples)
+                    w.writerow([f"{t:.6f}", args.gpus.replace(",", "+"),
+                                f"{power_sum:.2f}", energy_sum, temp_max])
+            else:
+                for i, power_w, energy_mj, temp_c in samples:
+                    w.writerow([f"{t:.6f}", i, f"{power_w:.2f}", energy_mj, temp_c])
             f.flush()
             time.sleep(interval_s)
 

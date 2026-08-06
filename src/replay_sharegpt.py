@@ -246,6 +246,10 @@ def main():
                     help="Model name as registered with the server")
     ap.add_argument("--dataset", required=True, help="ShareGPT JSON file (list of conversations)")
     ap.add_argument("--num-convs", type=int, default=50, help="Conversations to replay")
+    ap.add_argument("--conv-offset", type=int, default=0,
+                    help="Start index into the filtered conversation pool (mod pool size). "
+                         "Lets different trials draw non-overlapping conversation slices "
+                         "instead of always replaying the same first --num-convs items.")
     ap.add_argument("--max-turns", type=int, default=4, help="Max turns per conversation")
     ap.add_argument("--max-tokens", type=int, default=128)
     ap.add_argument("--concurrency", type=int, default=1,
@@ -327,8 +331,12 @@ def main():
     if not convs:
         raise SystemExit("ERROR: no valid conversations found matching --min-turns filter.")
 
-    convs = convs[:args.num_convs]
-    print(f"[replay] filtered to {len(convs)} conversations (min_turns={args.min_turns})")
+    off = args.conv_offset % len(convs) if len(convs) > 0 else 0
+    if off + args.num_convs <= len(convs):
+        convs = convs[off:off + args.num_convs]
+    else:
+        convs = convs[off:] + convs[:args.num_convs - (len(convs) - off)]
+    print(f"[replay] filtered to {len(convs)} conversations (min_turns={args.min_turns}, offset={args.conv_offset})")
 
     if args.phase_schedule:
         print(f"[replay] {len(convs)} conversations | max_turns={args.max_turns} | "

@@ -17,7 +17,9 @@ NAME = os.environ.get("NAME", "pesim_gate")
 BUDGETS = os.environ.get("BUDGETS", "16384 2048 512").split()
 TRIALS = os.environ.get("TRIALS", "1 2 3").split()
 LOGDIR = os.environ.get("LOGDIR", "logs")
-THRESH_W = 420.0
+THRESH_W = float(os.environ.get("THRESH_W", 420.0))  # see analyze_power_shape.py's note --
+# override for setups whose power scale differs from the single-GPU 7B calibration (e.g. TP
+# sums multiple GPUs' power, so baseline/peak sit far above 420W there).
 WHALE_THRESH_CHARS = int(os.environ.get("WHALE_THRESH_CHARS", 40000))
 WINDOW_PAD_S = 1.0  # widen whale windows by this much on each side to catch the transition
 

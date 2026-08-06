@@ -11,7 +11,9 @@ NAME = os.environ.get("NAME", "pesim_gate")
 BUDGETS = os.environ.get("BUDGETS", "16384 2048 512").split()
 TRIALS = os.environ.get("TRIALS", "1 2 3").split()
 LOGDIR = os.environ.get("LOGDIR", "logs")
-THRESH_W = 420.0  # "near-ceiling" threshold
+THRESH_W = float(os.environ.get("THRESH_W", 420.0))  # "near-ceiling" threshold; override for
+# setups whose power scale differs from the single-GPU 7B calibration this default was fit to
+# (e.g. multi-GPU TP sums the whole group's power, so baseline/peak sit far above 420W there).
 
 
 def load_power(path):
