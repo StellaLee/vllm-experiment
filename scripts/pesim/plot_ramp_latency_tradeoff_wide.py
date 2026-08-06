@@ -50,29 +50,30 @@ def main():
         whale_ttft_p99.append(pctl(wt, 99))
         short_tbt_p99.append(pctl(st, 99))
 
-    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.0))
+    fig, axes = plt.subplots(1, 2, figsize=(7.2, 2.8), constrained_layout=True)
 
     ax = axes[0]
     ramp_vals = [RAMP_W_S[b] for b in BUDGETS]
     l1, = ax.plot(LABELS, ramp_vals, "o-", color="#4c72b0", label="ramp rate (W/s)")
-    ax.set_ylabel("mean ramp rate (W/s)", color="#4c72b0")
-    ax.tick_params(axis="y", labelcolor="#4c72b0")
+    ax.set_ylabel("mean ramp rate (W/s)", color="#4c72b0", fontsize=8.5)
+    ax.tick_params(axis="y", labelcolor="#4c72b0", labelsize=8)
+    ax.tick_params(axis="x", labelsize=8)
     ax2 = ax.twinx()
     l2, = ax2.plot(LABELS, short_tbt_p99, "s--", color="#55a868", label="short-req TBT p99 (ms)")
-    ax2.set_ylabel("short-request TBT p99 (ms)", color="#55a868")
-    ax2.tick_params(axis="y", labelcolor="#55a868")
-    ax.set_title("(a) Power smoothing tracks short-req\ntail-latency protection", fontsize=9)
+    ax2.set_ylabel("short-request TBT p99 (ms)", color="#55a868", fontsize=8.5)
+    ax2.tick_params(axis="y", labelcolor="#55a868", labelsize=8)
+    ax.set_title("(a) Power smoothing tracks short-req\ntail-latency protection", fontsize=10)
     ax.legend(handles=[l1, l2], fontsize=7, loc="center left")
 
     ax = axes[1]
     ax.plot(LABELS, whale_ttft_mean, "o-", color="#c44e52", label="whale TTFT mean")
     ax.plot(LABELS, whale_ttft_p99, "s--", color="#dd8452", label="whale TTFT p99")
-    ax.set_ylabel("whale TTFT (ms)")
-    ax.set_title("(b) ...at a whale-TTFT cost", fontsize=9)
+    ax.set_ylabel("whale TTFT (ms)", fontsize=8.5)
+    ax.tick_params(axis="both", labelsize=8)
+    ax.set_title("(b) ...at a whale-TTFT cost", fontsize=10)
     ax.legend(fontsize=7)
 
-    fig.suptitle("Ramp-rate benefit vs. latency: the other side of the tradeoff\n(widened distribution, closed-loop)", y=1.05)
-    fig.tight_layout()
+    fig.suptitle("Ramp-rate benefit vs. latency (widened distribution, closed-loop)", fontsize=10.5)
     fig.savefig("/Users/li/Documents/vllm-experiment/paper-pes-im/figs/fig_ramp_latency_tradeoff.png", dpi=200, bbox_inches="tight")
     print("wrote fig_ramp_latency_tradeoff.png")
     print("whale_ttft_mean:", list(zip(BUDGETS, [round(v) for v in whale_ttft_mean])))
