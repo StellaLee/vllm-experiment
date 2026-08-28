@@ -10,7 +10,7 @@ __pycache__/
 *.pyo
 
 # Large dataset files (downloaded by setup.sh)
-data/sharegpt_v3.json
+data/
 .venv/
 
 # Paper
@@ -20,9 +20,6 @@ paper-pes-im/
 # macOS
 .DS_Store
 **/.DS_Store
-
-# Data
-data/
 
 # Documents
 findings/
