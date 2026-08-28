@@ -14,7 +14,7 @@ data/sharegpt_v3.json
 .venv/
 
 # Paper
-paper/
+paper-mlsys/
 paper-pes-im/
 
 # macOS
@@ -23,3 +23,8 @@ paper-pes-im/
 
 # Data
 data/
+
+# Documents
+findings/
+docs/
+

@@ -100,8 +100,8 @@ constant.
 - The whale-vs-short disaggregation was ad hoc, applied post hoc to data collected for a
   pooled comparison — not a designed comparison. A dedicated rerun with disaggregation and
   2–3 trials (especially anchoring the low-load wf=05/conc=20 point) is the natural next step.
-- Feeds directly into `paper/tex/sections/058-tradeoff.tex` (§5.8) and
-  `paper/paper.md` §5.8.
+- Feeds directly into `paper-mlsys/tex/sections/058-tradeoff.tex` (§5.8) and
+  `paper-mlsys/paper.md` §5.8.
 
 ---
 
@@ -236,7 +236,7 @@ choice about which failure mode you'd rather have, not a single dial with one "b
 
 **Caveats:** single trial, both MAXTOK arms; whale n=8–9, thin as always. Threshold=512 numbers
 reused from the earlier update in this file (same underlying data, not rerun). Feeds
-`paper/tex/sections/056-genuine-term-demonstrated.tex` (§5.6) and `058-tradeoff.tex` (§5.8) —
+`paper-mlsys/tex/sections/056-genuine-term-demonstrated.tex` (§5.6) and `058-tradeoff.tex` (§5.8) —
 this is the first place in the project where both mechanisms are compared head-to-head on an
 identical workload.
 

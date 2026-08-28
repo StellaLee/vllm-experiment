@@ -1,5 +1,10 @@
 # Literature Review — Draft for Paper Section
 
+**SUPERSEDED 2026-08-26 — see `docs/related-work.md` instead.** This file was written
+for the abandoned three-layer eviction+reordering+chunk-controller paper direction
+(pre-pivot). The current paper's competitor set and novelty framing are different;
+`related-work.md` is the up-to-date map. Kept here for historical reference only.
+
 **Last updated:** 2026-07-07  
 **Purpose:** Starting point for the Related Work section. Covers all papers read in full or in detail. Includes per-paper mechanism summaries, overlap analysis, and positioning statement.
 

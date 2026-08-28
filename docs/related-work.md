@@ -1,123 +1,132 @@
 # Related Work & Novelty Assessment
 
-**Last updated:** 2026-07-06  
-**Purpose:** Map existing literature against our contributions; identify what's novel and what needs repositioning.
+**Last updated:** 2026-08-26
+**Supersedes:** the 2026-07-06 version of this file (and `literature-review-draft.md`,
+now marked superseded), which mapped positioning for the abandoned three-layer
+eviction+reordering+chunk-controller paper. This version maps positioning for the
+current paper (`paper-mlsys/paper.md`, "When Prefix-Aware Serving Wins Are Real—and
+When They're Benchmarking Artifacts"): the genuine-vs-artifact methodology critique,
+the whale-scale boundary condition for chunking's decode-protection win, the
+per-request adaptive-cap controller, and the decode-protection/admission-sharing
+tradeoff (§5.8).
+
+**Purpose:** track what's already cited in the live tex vs. what a 2026-08-26 literature
+pass surfaced that isn't cited yet, so nothing a reviewer would raise gets missed.
 
 ---
 
-## Papers That Overlap Our Work
+## Already cited in the live paper
 
-### Eviction Policy (CF contribution)
+These are correctly positioned in `paper-mlsys/tex/sections/02-background.tex` and
+`07-protocol.tex` — listed here only so this doc is a complete map, not because they
+need rework.
 
-**[Recency/Frequency Adaptive KV Caching](https://arxiv.org/pdf/2606.21238)**  
-arXiv:2606.21238 · June 2026  
-Proposes a hybrid eviction policy that dynamically balances recency and frequency rather than pure LRU — exactly the same idea as our CF policy. Reports +10.8% KV cache hit rate and −12.6% TTFT over vanilla vLLM.  
-**Risk: direct overlap. CF eviction alone is not publishable novelty.**
-
----
-
-### Prefix-Aware Scheduling (reordering contribution)
-
-**[PRISM: Fast Online LLM Serving via Scheduling-Memory Co-design](https://arxiv.org/pdf/2605.08581)**  
-arXiv:2605.08581 · May 2026  
-Co-designs a query-aware scheduler (QAS) with a demand-aware radix tree (DART), explicitly aligning request admission with prefix KV retention. Reports −23–37% P99 TTFT. The closest single paper to our overall work.  
-**Risk: high. Covers scheduling + eviction co-design; needed as a strong baseline.**
-
-**[Requests of a Feather Must Flock Together](https://arxiv.org/pdf/2605.06046)**  
-arXiv:2605.06046 · May 2026  
-FEATHER: RL-based scheduler that groups prefix-homogeneous requests; reports 2–10× throughput. More sophisticated than our greedy per-step sort, but the core insight (group requests by prefix similarity) is the same.  
-**Risk: medium. Our reordering is simpler; frame as "RL is unnecessary — greedy suffices at single-node scale."**
-
-**[AlignedServe: Prefix-aware Batching](https://arxiv.org/pdf/2605.23389)**  
-arXiv:2605.23389 · May 2026  
-Groups requests by similar prefix length to eliminate iteration-level bubbles in a disaggregated architecture.  
-**Risk: low-medium. Focuses on batching structure, not per-step queue resorting.**
-
-**[CacheWise: KVCache Management for LLM Coding Agents](https://arxiv.org/pdf/2606.16824)**  
-arXiv:2606.16824 · June 2026  
-Combines prefix-aware scheduling with reuse-aware eviction for coding agent workloads. Two-layer co-design closest to our eviction + reordering combination, but domain-specific (coding agents).  
-**Risk: medium. Covers two of our three layers; no chunk controller; no decode-starvation analysis.**
+| Paper | Cite key | Role in our positioning |
+|---|---|---|
+| Sarathi-Serve (arXiv:2403.02310) | `agrawal2024sarathi` | Our chunking mechanism is a dynamic generalization of its fixed budget; our `static-512` baseline *is* Sarathi's recommended setting. §7.1 shows the dynamic controller doesn't beat this baseline in the decode-bound open-loop regime. |
+| PRISM (arXiv:2605.08581) | `prism` | Closest prior prefix-aware scheduler (QAS). §7.1: PRISM's own open-loop TTFT gain is a *caching* effect (orthogonal to the artifact we study), and its cold-lane reservation independently corroborates our conservation-law account. |
+| Preble (ICLR 2025) | `preble` | Cited as evidence the research frontier already evaluates correctly (open-loop / trace replay), unlike common benchmark-harness defaults. |
+| vLLM `benchmark_serving` | `vllmbench` | The concrete tool whose `--request-rate inf` default *is* the synchronized-start herd we show produces an artifact win. |
+| "Beyond Prediction: Tail-Aware Scheduling for LLM Inference" (arXiv:2606.18431) | `tailaware` | **Bib entry was a placeholder (`{TODO}` author, unverified title) — fixed as part of this pass; real title/author confirmed.** Cited as the broader tail-aware-scheduling family sharing the same arrival-model exposure our protocol addresses. |
 
 ---
 
-### Dynamic Chunk Control
+## Found in the 2026-08-26 literature pass, not yet cited — action needed
 
-**[Sarathi-Serve: Chunked Prefill](https://arxiv.org/pdf/2403.02310)**  
-arXiv:2403.02310 · 2024  
-Original chunked prefill paper; static chunk size. The mandatory baseline for our chunk sizing work.
+### 1. Fairness-Aware and Latency-Controllable Scheduling for Chunked-Prefill LLM Serving (arXiv:2606.09061)
 
-**[Niyama: Breaking the Silos of LLM Inference Serving](https://arxiv.org/pdf/2503.22562)**  
-arXiv:2503.22562 · March 2025  
-Dynamic chunking to maximise chunk size while meeting request deadlines (SLO-aware).  
-**Risk: low. Deadline-driven; our controller responds to decode queue depth, not deadlines.**
+**The tightest overlap by title and mechanism.** Replaces static chunk budgets with
+Latency-Prediction-Based Request Scheduling (LPRS) and Active Prefill Control (APC) —
+a target-time-driven controller that actively regulates prefill concurrency, plus an
+aging-based fairness policy. Reports >10% mean E2E latency reduction over FCFS and
+P99 tail reduction over static budgets.
 
-**[Beyond Greedy Chunking: SLO-Aware Sliding-Window Scheduling](https://arxiv.org/pdf/2606.05933)**  
-arXiv:2606.05933 · June 2026  
-SLO-aware dynamic chunk adjustment with a sliding-window scheduler.  
-**Risk: low-medium. SLO-driven; our bang-bang controller is load-driven and specifically responds to reordering-induced starvation.**
+**Distinction from our work:**
+- Their controller is *latency-prediction-based* (needs a target-time estimate per
+  request); ours is a *per-request length cap* (§5.7) requiring no prediction, and a
+  separate step-budget controller (§5)  — neither needs a latency target.
+- They report no benchmarking-methodology critique — no closed-loop-vs-open-loop
+  artifact analysis. Our core claim (the herd win is a synchronized-start artifact)
+  is untouched by this paper.
+- They report no whale-scale/rarity boundary condition (§ nowhale finding) and no
+  decode-protection-vs-admission-sharing tradeoff (§5.8). Their evaluation doesn't
+  disaggregate a bursty long-tail population from a short-request majority the way
+  ours does.
+- **Risk: high — if a reviewer finds one paper to compare us against, it's this one.**
+  Must cite and explicitly distinguish in §7.1.
+
+### 2. From Tokens to Layers: Redefining Stall-Free Scheduling for MoE Serving with Layered Prefill (arXiv:2510.08055, accepted MLSys 2026)
+
+States "chunked prefill... effective at stabilizing TBT" as an *established baseline
+fact* in its own introduction, then targets a different problem (MoE expert-weight
+reload overhead from chunking, via layer-granularity scheduling instead of
+token-granularity). Not a competitor on our axis (single-dense-model, prefill/decode
+interleaving), but important because:
+- It confirms the *base* claim ("chunking stabilizes TBT") is now conventional
+  wisdom at MLSys, not a claim we can present as novel on its own — we already do
+  not lead with this (our contribution is the artifact/boundary/tradeoff triad), but
+  this paper is good evidence for that framing choice and worth citing as such.
+- **Action: cite as evidence the field treats TBT-stabilization as established,
+  motivating why our contribution must be the methodology/boundary/tradeoff findings
+  and not the base mechanism.**
+
+### 3. CascadeInfer: Length-Aware Scheduling of LLM Serving with Low Latency and Load Balancing (arXiv:2512.19179)
+
+Already uses "whale"/"minnow" terminology for long/short requests — so that
+vocabulary is not ours to claim as novel. Partitions serving *instances* into
+length-specialized groups and migrates KV cache across them at the fleet/routing
+layer.
+
+**Distinction from our work:** mechanically orthogonal — instance-level physical
+separation of whale/short traffic vs. our single-instance temporal interleaving via
+chunk budget. A deployment could plausibly use both together (route whales to
+dedicated instances *and* chunk within an instance for the whale/short mix that still
+lands together). Worth one sentence in §7.1 to preempt "why not just route whales
+elsewhere" as a reviewer question — the answer is CascadeInfer requires provisioning
+dedicated whale capacity; our mechanism works within a single shared instance at zero
+extra hardware, the same argument already made for chunking vs. disaggregation.
+
+### 4. Beyond Greedy Chunking / SlidingServe (arXiv:2606.05933)
+
+Already discussed in the (now-superseded) `literature-review-draft.md` from the old
+paper direction, but **never actually cited in the live tex** — a real gap since it's
+adaptive chunk sizing driven by TBT-slack-to-deadline, the most directly comparable
+prior adaptive-chunking mechanism to our dynamic controller (§5) and adaptive cap
+(§5.7).
+
+**Distinction from our work:** SlidingServe requires per-request SLO deadlines as
+input (ternary search over TBT slack to a target); our dynamic controller (§5) uses
+decode-queue/iteration-latency feedback with no deadline input, and our adaptive cap
+(§5.7) uses only the request's own prefill length — neither needs a workload- or
+request-level SLO to be specified in advance. SlidingServe is not evaluated for a
+closed-loop-artifact effect or a whale-scale boundary condition.
 
 ---
 
-## What Remains Genuinely Novel
+## Novelty framing (current paper, current competitor set)
 
-### 1. The three-way coupling and TPOT-protection mechanism
+| Dimension | Us | Sarathi-Serve | PRISM | Fairness-Aware (2606.09061) | SlidingServe | CascadeInfer | Layered Prefill |
+|---|---|---|---|---|---|---|---|
+| Chunked prefill / TBT stabilization | ✓ | ✓ (static) | ✗ | ✓ (predicted) | ✓ (SLO-slack) | ✗ | ✓ (layer-granular) |
+| Closed-loop-artifact critique | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| Whale-scale/rarity boundary condition characterized | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ (assumes, doesn't characterize the boundary) | ✗ |
+| Per-request adaptive cap, no SLO/prediction input | ✓ | ✗ | ✗ | ✗ (needs prediction) | ✗ (needs deadline) | ✗ | ✗ |
+| Decode-protection vs. admission-sharing tradeoff reported | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
-No existing paper combines all three layers or identifies the specific failure-mode chain:
-
-> reordering → decode starvation → TPOT degradation  
-> chunk controller → detects growing decode queue → shrinks budget → absorbs penalty  
-> combined → Pareto-dominant over any single intervention
-
-CacheWise is closest (scheduling + eviction) but has no chunk controller and no decode-starvation analysis. PRISM co-designs scheduling + eviction but has no adaptive chunk budget. Neither reports super-additivity.
-
-### 2. Super-additivity experimental confirmation
-
-Combined condition (PREFIX_REORDER=1 + DYNAMIC_CHUNK=1) outperforms every single-intervention condition on every metric in both workloads:
-- ShareGPT TTFT p50: −30.2% (> reorder-only −26.2% > dynamic-only −20.5%)
-- ShareGPT TPOT p95: −11.6% (reorder-only was +34.7% — fully reversed)
-- ShareGPT throughput: +19.5%
-- BurstGPT: every metric improves vs. baseline
-
-### 3. Saddle-point finding on chunk size
-
-The vLLM 2048 default is suboptimal in both directions on ShareGPT — both 256 and 4096 improve TTFT — meaning no static value dominates across workloads. This is a clean empirical motivation for adaptive control that no prior paper has stated directly.
-
-### 4. Decode-starvation as the explicit coupling mechanism
-
-The TPOT degradation caused by reordering is precisely the failure mode the chunk controller is designed to address. This feedback loop (intervention A creates a problem that intervention B solves) is the paper's structural argument. Existing co-design papers (PRISM, CacheWise) optimise the two components jointly without this causal framing.
+**No prior paper combines the artifact critique, the boundary-condition
+characterization, and the tradeoff finding.** That three-part combination — not
+"chunking protects TBT" alone, which is now conventional wisdom (Layered Prefill) —
+is the paper's actual novelty claim.
 
 ---
 
-## Revised Paper Positioning
+## Action items for `paper-mlsys/`
 
-| Original claim | Status | Revised framing |
-|----------------|--------|----------------|
-| "CF eviction improves KV cache hit rate" | Overlapped by 2606.21238 | Cite as motivation; drop as standalone contribution |
-| "Prefix reordering reduces TTFT" | Partially overlapped by PRISM, FEATHER | "Greedy per-step reordering at single-node scale is sufficient — no RL, no disaggregation required" |
-| "Dynamic chunk controller adapts to load" | Partially overlapped by Niyama, 2606.05933 | Keep; the decode-starvation response is new |
-| "Three interventions are complementary" | **Not covered** | **This is the paper's core claim** |
-
-**Surviving thesis:** *Existing systems optimise scheduling and eviction independently. We show that scheduling-induced TPOT degradation creates a feedback loop that only a decode-aware chunk controller can break, and that the three interventions together are super-additive in a way no single-intervention system has measured.*
-
----
-
-## Baseline Requirements for Main Track
-
-To beat PRISM and CacheWise as baselines (required for MLSys main track):
-
-1. Reproduce PRISM's QAS + DART on our hardware (or use their reported numbers)
-2. Show combined condition outperforms PRISM on TTFT while also improving TPOT
-3. Show CacheWise's two-layer approach is strictly dominated by our three-layer system
-4. Argue that greedy reordering + bang-bang chunk control is lower-complexity than PRISM's radix-tree co-design
-
----
-
-## Papers to Read in Full
-
-Priority order:
-
-1. PRISM (arXiv:2605.08581) — must understand their QAS mechanism precisely
-2. CacheWise (arXiv:2606.16824) — must understand their scheduling + eviction interaction
-3. FEATHER (arXiv:2605.06046) — understand RL formulation; argue why greedy suffices
-4. 2606.21238 — understand their ARC-based eviction; map to our CF policy
-5. Beyond Greedy Chunking (arXiv:2606.05933) — understand SLO framing vs. our load framing
+1. `tex/refs.bib`: fix `tailaware` entry (real author list, currently `{TODO}`); add
+   `fairnesslatency` (2606.09061), `layeredprefill` (2510.08055), `cascadeinfer`
+   (2512.19179), `slidingserve` (2606.05933).
+2. `tex/sections/07-protocol.tex` §7.1: add a paragraph distinguishing from
+   Fairness-Aware/SlidingServe (adaptive-chunking family) and one sentence on
+   CascadeInfer (why not just route whales elsewhere).
+3. Re-run the "papers to read in full" pass before submission — Fairness-Aware
+   (2606.09061) specifically, since it's the highest-risk overlap.

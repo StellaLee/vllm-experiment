@@ -28,7 +28,7 @@ time needed there).
       output. Both halves of the tradeoff (clean win at low load, broadening cost at high
       load) replicate; wf=15 shows visibly more trial-to-trial variance than wf=05, itself a
       coherent finding (closer to saturation).
-- [x] Folded replicated numbers (mean ± std over 3 trials) back into `paper/paper.md` and all
+- [x] Folded replicated numbers (mean ± std over 3 trials) back into `paper-mlsys/paper.md` and all
       three tex sections (056/057/058), plus `08-limitations.tex` and the punch-list
       cross-check. Recompiled clean (no undefined refs). All three replications share one
       workload seed across trials — isolates serving/timing noise, not workload-draw
