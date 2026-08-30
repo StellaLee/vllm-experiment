@@ -1,0 +1,73 @@
+"""aiohttp reverse proxy: the router's network-facing service. Wires Router (routing
+decisions), NvmlPowerReader (power telemetry), and a tokenizer together, and transparently
+forwards the OpenAI-compatible streaming /v1/completions request/response so the existing
+benchmark harness (src/replay_sharegpt.py) needs no changes -- it just points at this
+proxy's host:port instead of a replica's directly (spec S3.1, Global Constraints)."""
+import asyncio
+
+from aiohttp import web, ClientSession, ClientTimeout
+from transformers import AutoTokenizer
+
+from replica_state import ReplicaConfig, ReplicaState
+from router_core import Router
+from power_nvml import NvmlPowerReader
+from ramp import update_ramp_state
+
+
+def build_replica_states(replica_specs: list) -> list:
+    """replica_specs: list of dicts with keys matching ReplicaConfig's fields."""
+    return [ReplicaState(config=ReplicaConfig(**spec)) for spec in replica_specs]
+
+
+async def power_poll_loop(states: list, reader: NvmlPowerReader, interval_s: float):
+    while True:
+        for state in states:
+            power_w, ts = reader.read(state.config.gpu_index)
+            update_ramp_state(state, power_w, ts)
+        await asyncio.sleep(interval_s)
+
+
+def make_app(states: list, policy: str, model_name: str):
+    router = Router(states, policy)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    by_id = {s.config.replica_id: s for s in states}
+
+    async def handle_completions(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        token_ids = tokenizer.encode(body["prompt"])
+        replica_id = router.route(token_ids)
+        target = by_id[replica_id].config
+
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        url = f"http://{target.host}:{target.port}/v1/completions"
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=None)) as session:
+                async with session.post(url, json=body) as upstream:
+                    async for chunk in upstream.content.iter_any():
+                        await resp.write(chunk)
+        finally:
+            router.complete(replica_id)
+        await resp.write_eof()
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/completions", handle_completions)
+    app["states"] = states
+    app["router"] = router
+    return app
+
+
+def run(replica_specs: list, policy: str, model_name: str, host: str, port: int,
+        power_interval_s: float = 0.5) -> None:
+    states = build_replica_states(replica_specs)
+    gpu_indices = [s.config.gpu_index for s in states]
+    reader = NvmlPowerReader(gpu_indices)
+    app = make_app(states, policy, model_name)
+
+    async def _on_startup(app):
+        app["power_task"] = asyncio.create_task(
+            power_poll_loop(states, reader, power_interval_s))
+
+    app.on_startup.append(_on_startup)
+    web.run_app(app, host=host, port=port)
