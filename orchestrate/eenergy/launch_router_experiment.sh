@@ -6,10 +6,14 @@
 # Usage:
 #   POLICY=drf N_REPLICAS=4 MODEL=/model/... RAMP_CEILING_W_PER_S=100.0 \
 #     orchestrate/eenergy/launch_router_experiment.sh
+#
+# GPU_OFFSET (default 0): first GPU index to use; replicas take GPU_OFFSET..GPU_OFFSET+N-1.
+# Set this to dodge GPUs another process already occupies on a shared box.
 set -euo pipefail
 
 POLICY=${POLICY:?set POLICY=round_robin|lmetric|drf}
 N_REPLICAS=${N_REPLICAS:-4}
+GPU_OFFSET=${GPU_OFFSET:-0}
 MODEL=${MODEL:?set MODEL=/path/to/model}
 BASE_PORT=${BASE_PORT:-8001}
 ROUTER_PORT=${ROUTER_PORT:-9000}
@@ -28,16 +32,17 @@ ASSIGNMENT_LOG=${ASSIGNMENT_LOG:-logs/eenergy_assignment_${POLICY}.csv}
 REPLICA_SPECS=""
 PIDS=()
 for i in $(seq 0 $((N_REPLICAS - 1))); do
+  gpu=$((GPU_OFFSET + i))
   port=$((BASE_PORT + i))
-  echo "Launching replica $i on GPU $i, port $port"
-  CUDA_VISIBLE_DEVICES=$i python3 -m vllm.entrypoints.openai.api_server \
+  echo "Launching replica $i on GPU $gpu, port $port"
+  CUDA_VISIBLE_DEVICES=$gpu python3 -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" --port "$port" --dtype auto \
     --max-num-batched-tokens "$TOKEN_BUDGET" --max-num-seqs "$MAX_NUM_SEQS" &
   PIDS+=($!)
   if [ -z "$REPLICA_SPECS" ]; then
-    REPLICA_SPECS="127.0.0.1:${port}:${i}:${TOKEN_BUDGET}:${MAX_NUM_SEQS}:${RAMP_CEILING_W_PER_S}"
+    REPLICA_SPECS="127.0.0.1:${port}:${gpu}:${TOKEN_BUDGET}:${MAX_NUM_SEQS}:${RAMP_CEILING_W_PER_S}"
   else
-    REPLICA_SPECS="${REPLICA_SPECS},127.0.0.1:${port}:${i}:${TOKEN_BUDGET}:${MAX_NUM_SEQS}:${RAMP_CEILING_W_PER_S}"
+    REPLICA_SPECS="${REPLICA_SPECS},127.0.0.1:${port}:${gpu}:${TOKEN_BUDGET}:${MAX_NUM_SEQS}:${RAMP_CEILING_W_PER_S}"
   fi
 done
 
@@ -48,7 +53,7 @@ for i in $(seq 0 $((N_REPLICAS - 1))); do
 done
 
 echo "Starting power_logger.py sidecar -> ${POWER_TRACE}"
-GPU_LIST=$(seq -s, 0 $((N_REPLICAS - 1)))
+GPU_LIST=$(seq -s, "$GPU_OFFSET" $((GPU_OFFSET + N_REPLICAS - 1)))
 python3 scripts/pesim/power_logger.py --gpus "$GPU_LIST" --interval-ms 50 --output "$POWER_TRACE" &
 POWER_PID=$!
 
