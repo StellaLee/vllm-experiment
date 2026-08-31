@@ -172,6 +172,33 @@ def test_complete_without_is_whale_stays_backward_compatible():
     assert r.whale_tracker.active_whale_count(chosen) == 0
 
 
+def test_pressure_switch_matches_lmetric_when_fleet_is_not_pressured():
+    states_a = _states()
+    r_a = Router(states_a, policy="pressure_switch")
+    long_prompt = list(range(64))
+    r_a.route(long_prompt)
+    r_a.complete("r0")
+    chosen_a = r_a.route(long_prompt)
+
+    states_b = _states()
+    r_b = Router(states_b, policy="lmetric")
+    r_b.route(long_prompt)
+    r_b.complete("r0")
+    chosen_b = r_b.route(long_prompt)
+
+    assert chosen_a == chosen_b == "r0"  # cache-affinity wins, identical to plain LMETRIC
+
+
+def test_pressure_switch_routes_away_from_over_ceiling_replica_even_with_cache_advantage():
+    states = _states()
+    states[0].cached_block_hashes = set()
+    states[0].ramp_rate_w_per_s = 150.0  # r0: over its ramp ceiling -- fleet is pressured
+    states[1].ramp_rate_w_per_s = 0.0    # r1: full power headroom
+    r = Router(states, policy="pressure_switch")
+    chosen = r.route(token_ids=[1, 2, 3])
+    assert chosen == "r1"  # DRF's decision, not LMETRIC's (LMETRIC is blind to power)
+
+
 def test_drf_distributes_tied_requests_instead_of_piling_onto_one_replica():
     """Regression test for the 2026-08-31 load-imbalance bug: an un-cacheable workload (a
     fresh, never-seen token_ids every call) makes every candidate's dominant share tie at

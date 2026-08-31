@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
                                  "scripts", "eenergy", "router"))
 from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, pick_drf,  # noqa: E402
                       pick_p2c_whale, pick_whale_argmin, share_power, pick_constrained_lmetric,
-                      dominant_share_vector)
+                      dominant_share_vector, pick_pressure_switch, fleet_pressured)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -261,6 +261,46 @@ def test_constrained_lmetric_tie_breaking_rotates():
 def test_constrained_lmetric_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_constrained_lmetric([])
+
+
+def test_fleet_pressured_false_when_no_candidate_over_ceiling():
+    r0 = _cand("r0", ramp_rate_w_per_s=50.0, ramp_ceiling_w_per_s=100.0)
+    r1 = _cand("r1", ramp_rate_w_per_s=100.0, ramp_ceiling_w_per_s=100.0)  # exactly at ceiling
+    assert fleet_pressured([r0, r1]) is False
+
+
+def test_fleet_pressured_true_when_any_candidate_over_ceiling():
+    r0 = _cand("r0", ramp_rate_w_per_s=50.0, ramp_ceiling_w_per_s=100.0)
+    r1 = _cand("r1", ramp_rate_w_per_s=150.0, ramp_ceiling_w_per_s=100.0)  # over ceiling
+    assert fleet_pressured([r0, r1]) is True
+
+
+def test_pressure_switch_matches_lmetric_when_fleet_is_not_pressured():
+    r0 = _cand("r0", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)
+    r1 = _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=50.0, ramp_ceiling_w_per_s=100.0)
+    assert pick_pressure_switch([r0, r1]) == pick_lmetric([r0, r1]) == "r1"
+
+
+def test_pressure_switch_matches_drf_when_fleet_is_pressured():
+    # r0 is best on LMETRIC score (lowest new_tokens*in_flight_after) but is ALSO the
+    # over-ceiling replica -- DRF's dominant share correctly steers away from it while
+    # LMETRIC, blind to power, would pick it anyway. pressure_switch must follow DRF here.
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, ramp_rate_w_per_s=150.0, ramp_ceiling_w_per_s=100.0)  # over ceiling
+    r1 = _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=20.0, ramp_ceiling_w_per_s=100.0)
+    assert pick_lmetric([r0, r1]) == "r0"  # sanity: LMETRIC would pick r0
+    assert pick_pressure_switch([r0, r1]) == pick_drf([r0, r1]) == "r1"
+
+
+def test_pressure_switch_tie_breaking_rotates_in_both_regimes():
+    tied = [_cand("r0"), _cand("r1"), _cand("r2")]  # all tied, fleet not pressured (ramp=0)
+    assert pick_pressure_switch(tied, tie_start=0) == "r0"
+    assert pick_pressure_switch(tied, tie_start=1) == "r1"
+    assert pick_pressure_switch(tied, tie_start=2) == "r2"
+
+
+def test_pressure_switch_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_pressure_switch([])
 
 
 def test_p2c_whale_with_real_rng_distributes_across_replicas():

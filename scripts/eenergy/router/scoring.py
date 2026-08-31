@@ -148,6 +148,34 @@ def pick_constrained_lmetric(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def fleet_pressured(candidates: list) -> bool:
+    """True iff ANY replica in the fleet currently exceeds its own calibrated ramp ceiling
+    (share_power > 1.0) -- a global, directly-observable signal already computed for every
+    candidate on every decision, no new telemetry needed. Feeds pick_pressure_switch's mode
+    select; not itself a routing decision."""
+    return any(share_power(c) > 1.0 for c in candidates)
+
+
+def pick_pressure_switch(candidates: list, tie_start: int = 0) -> str:
+    """Fleet-state-triggered policy switching, not a new scoring formula: route via DRF
+    (lexicographic tie-break, see dominant_share_vector) whenever the fleet is CURRENTLY in a
+    power-pressure window (fleet_pressured), else route via plain LMETRIC. Mirrors the
+    sibling mlsys project's whale-aware budget controller (token_budget = 512 if
+    whale_active else 16384) -- switch between two independently-validated mechanisms on
+    directly-observed global state rather than trying to make one scoring formula do both
+    jobs at once (the failure mode of p2c_whale, whale_argmin, and constrained_lmetric).
+
+    Deliberately fleet-wide, not per-candidate: a single pressured replica anywhere changes
+    the policy for THIS decision, even if the request wouldn't have landed on that replica
+    under LMETRIC anyway -- the point is to avoid growing the pressure window while it's
+    open, not merely to dodge the one hot replica."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    if fleet_pressured(candidates):
+        return pick_drf(candidates, tie_start)
+    return pick_lmetric(candidates, tie_start)
+
+
 def pick_whale_argmin(candidates: list, is_whale: bool, tie_start: int = 0) -> str:
     """Ablation for pick_p2c_whale: isolates whether P2C's 2-of-N sampling is the reason it
     doesn't beat DRF's coincidence-frequency figure (spec: DRF sees full 6-candidate ramp
