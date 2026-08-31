@@ -4,7 +4,6 @@ forwards the OpenAI-compatible streaming /v1/completions request/response so the
 benchmark harness (src/replay_sharegpt.py) needs no changes -- it just points at this
 proxy's host:port instead of a replica's directly (spec S3.1, Global Constraints)."""
 import asyncio
-import os
 import time
 
 from aiohttp import web, ClientSession, ClientTimeout
@@ -42,11 +41,13 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
     by_id = {s.config.replica_id: s for s in states}
     assignment_log = None
     if assignment_log_path:
-        write_header = not os.path.exists(assignment_log_path) or os.path.getsize(assignment_log_path) == 0
-        assignment_log = open(assignment_log_path, "a")
-        if write_header:
-            assignment_log.write("wall_time,replica_id,gpu_index\n")
-            assignment_log.flush()
+        # Truncate, not append: each run_router.py invocation is a fresh process (one per
+        # condition run), so a stale log from an earlier attempt at the same policy must
+        # not silently accumulate underneath this run's rows -- matches how the harness's
+        # --output and power_logger.py's own CSV writer both start clean each invocation.
+        assignment_log = open(assignment_log_path, "w")
+        assignment_log.write("wall_time,replica_id,gpu_index\n")
+        assignment_log.flush()
 
     async def handle_completions(request: web.Request) -> web.StreamResponse:
         body = await request.json()
