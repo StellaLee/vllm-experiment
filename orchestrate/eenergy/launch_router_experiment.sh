@@ -11,7 +11,7 @@
 # Set this to dodge GPUs another process already occupies on a shared box.
 set -euo pipefail
 
-POLICY=${POLICY:?set POLICY=round_robin|lmetric|drf|p2c_whale}
+POLICY=${POLICY:?set POLICY=round_robin|lmetric|drf|p2c_whale|whale_argmin}
 N_REPLICAS=${N_REPLICAS:-4}
 GPU_OFFSET=${GPU_OFFSET:-0}
 MODEL=${MODEL:?set MODEL=/path/to/model}

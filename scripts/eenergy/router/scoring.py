@@ -97,3 +97,20 @@ def pick_p2c_whale(candidates: list, is_whale: bool, rng, tie_start: int = 0) ->
     sampled = rng.sample(candidates, 2)
     best = min(sampled, key=lambda c: c.active_whale_count_after)
     return best.replica_id
+
+
+def pick_whale_argmin(candidates: list, is_whale: bool, tie_start: int = 0) -> str:
+    """Ablation for pick_p2c_whale: isolates whether P2C's 2-of-N sampling is the reason it
+    doesn't beat DRF's coincidence-frequency figure (spec: DRF sees full 6-candidate ramp
+    state on every decision; P2C only samples 2). Same whale-only design as pick_p2c_whale
+    (non-whale traffic delegates to pick_lmetric, unchanged), but whale requests compare
+    EVERY candidate's active_whale_count_after -- full visibility, no sampling, no
+    randomness needed. If this closes the coincidence-frequency gap to DRF, the gap was a
+    sampling-size artifact, not a fundamental property of anticipatory whale-count routing;
+    if it doesn't, the gap is more fundamental than sample size."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    if not is_whale:
+        return pick_lmetric(candidates, tie_start)
+    best = min(_rotate(candidates, tie_start), key=lambda c: c.active_whale_count_after)
+    return best.replica_id

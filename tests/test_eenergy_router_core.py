@@ -113,6 +113,31 @@ def test_p2c_whale_complete_decrements_whale_tracker():
     assert r.whale_tracker.active_whale_count(chosen) == 0
 
 
+def test_whale_argmin_sees_global_minimum_whale_count_not_just_two_sampled():
+    """Ablation for the coincidence-frequency question: whale_argmin has no rng at all --
+    if it still doesn't beat DRF's coincidence figure once measured on hardware, the gap
+    isn't a sampling-size artifact."""
+    cfgs = [
+        ReplicaConfig(replica_id="r0", host="h", port=1, gpu_index=0,
+                       token_budget=1000, max_num_seqs=10, ramp_ceiling_w_per_s=100.0),
+        ReplicaConfig(replica_id="r1", host="h", port=2, gpu_index=1,
+                       token_budget=1000, max_num_seqs=10, ramp_ceiling_w_per_s=100.0),
+        ReplicaConfig(replica_id="r2", host="h", port=3, gpu_index=2,
+                       token_budget=1000, max_num_seqs=10, ramp_ceiling_w_per_s=100.0),
+    ]
+    states = [ReplicaState(config=c) for c in cfgs]
+    r = Router(states, policy="whale_argmin")  # no rng needed -- deterministic
+    whale_tokens = list(range(WHALE_TOKEN_THRESHOLD + 1))
+
+    # load up r0 and r1 with active whales; r2 stays empty -- global argmin must find r2
+    # even though it's not "sampled" (there's no sampling in this policy at all)
+    r.route(whale_tokens)  # r0 (tie_start=0)
+    second = r.route(whale_tokens)
+    assert second != "r0"  # r0 already has 1 active whale, so it's no longer the minimum
+    third = r.route(whale_tokens)
+    assert third == "r2"  # r2 is the only replica with 0 active whales left
+
+
 def test_complete_without_is_whale_stays_backward_compatible():
     r = Router(_states(), policy="round_robin")
     chosen = r.route(token_ids=[1])

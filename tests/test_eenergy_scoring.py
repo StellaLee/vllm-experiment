@@ -6,7 +6,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                  "scripts", "eenergy", "router"))
 from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, pick_drf,  # noqa: E402
-                      pick_p2c_whale)
+                      pick_p2c_whale, pick_whale_argmin)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -147,6 +147,41 @@ def test_p2c_whale_raises_on_empty_candidates():
         pick_p2c_whale([], is_whale=True, rng=_FakeRng([]))
     with pytest.raises(ValueError):
         pick_p2c_whale([], is_whale=False, rng=_FakeRng([]))
+
+
+def test_whale_argmin_non_whale_request_delegates_to_lmetric():
+    r0 = _cand("r0", new_tokens=1000, in_flight_after=5, active_whale_count_after=1)
+    r1 = _cand("r1", new_tokens=10, in_flight_after=2, active_whale_count_after=5)
+    assert pick_whale_argmin([r0, r1], is_whale=False) == pick_lmetric([r0, r1])
+
+
+def test_whale_argmin_picks_global_minimum_whale_count_not_just_two_sampled():
+    # unlike pick_p2c_whale, this must see r2's global-minimum whale count even though it's
+    # neither "sampled" -- the whole point of the ablation is full visibility, no sampling.
+    r0 = _cand("r0", active_whale_count_after=2)
+    r1 = _cand("r1", active_whale_count_after=1)
+    r2 = _cand("r2", active_whale_count_after=0)
+    assert pick_whale_argmin([r0, r1, r2], is_whale=True) == "r2"
+
+
+def test_whale_argmin_ignores_lmetric_score_for_whale_requests():
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, active_whale_count_after=3)
+    r1 = _cand("r1", new_tokens=100, in_flight_after=10, active_whale_count_after=0)
+    assert pick_whale_argmin([r0, r1], is_whale=True) == "r1"
+
+
+def test_whale_argmin_tie_breaking_rotates():
+    tied = [_cand("r0"), _cand("r1"), _cand("r2")]  # all tied at 0 active whales
+    assert pick_whale_argmin(tied, is_whale=True, tie_start=0) == "r0"
+    assert pick_whale_argmin(tied, is_whale=True, tie_start=1) == "r1"
+    assert pick_whale_argmin(tied, is_whale=True, tie_start=2) == "r2"
+
+
+def test_whale_argmin_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_whale_argmin([], is_whale=True)
+    with pytest.raises(ValueError):
+        pick_whale_argmin([], is_whale=False)
 
 
 def test_p2c_whale_with_real_rng_distributes_across_replicas():
