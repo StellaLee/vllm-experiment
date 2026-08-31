@@ -23,3 +23,10 @@ def test_build_replica_states_from_specs():
 def test_format_assignment_record_is_csv_row():
     line = format_assignment_record(1788140425.123456, "r3", 5)
     assert line == "1788140425.123456,r3,5\n"
+
+
+def test_build_replica_states_default_telemetry_bs_is_zero():
+    specs = [dict(replica_id="r0", host="127.0.0.1", port=8001, gpu_index=0,
+                  token_budget=16384, max_num_seqs=64, ramp_ceiling_w_per_s=100.0)]
+    states = build_replica_states(specs)
+    assert states[0].telemetry_bs == 0

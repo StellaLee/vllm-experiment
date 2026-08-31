@@ -23,3 +23,4 @@ class ReplicaState:
     last_power_w: float = 0.0
     last_power_ts: float = 0.0
     ramp_rate_w_per_s: float = 0.0
+    telemetry_bs: int = 0        # running+waiting from vLLM's own /metrics (bs_source="telemetry")

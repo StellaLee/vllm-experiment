@@ -199,6 +199,41 @@ def test_pressure_switch_routes_away_from_over_ceiling_replica_even_with_cache_a
     assert chosen == "r1"  # DRF's decision, not LMETRIC's (LMETRIC is blind to power)
 
 
+def test_bs_source_local_is_the_default_and_matches_prior_behavior():
+    """Regression: bs_source defaults to 'local' (load_tracker), byte-identical to the
+    Router's behavior before bs_source existed at all."""
+    states = _states()
+    r = Router(states, policy="lmetric")
+    long_prompt = list(range(64))
+    r.route(long_prompt)
+    r.complete("r0")
+    chosen = r.route(long_prompt)
+    assert chosen == "r0"  # cache-affinity wins, same as the pre-existing lmetric test
+
+
+def test_bs_source_telemetry_uses_state_telemetry_bs_not_load_tracker():
+    states = _states()
+    # r0 has zero dispatch/complete history (load_tracker says 0) but telemetry says it's
+    # already busy; r1 is the reverse. bs_source="telemetry" must follow telemetry, not
+    # load_tracker, or this test can't distinguish the two sources.
+    states[0].telemetry_bs = 20   # heavily loaded per real engine telemetry
+    states[1].telemetry_bs = 0    # idle per real engine telemetry
+    r = Router(states, policy="lmetric", bs_source="telemetry")
+    chosen = r.route(token_ids=[1, 2, 3])  # uncacheable, so new_tokens ties -- only BS decides
+    assert chosen == "r1"
+
+
+def test_bs_source_telemetry_still_updates_load_tracker_and_whale_tracker():
+    """load_tracker/whale_tracker keep tracking regardless of bs_source -- just not read for
+    the routing decision in telemetry mode. Cheap, and keeps whale bookkeeping consistent."""
+    states = _states()
+    r = Router(states, policy="lmetric", bs_source="telemetry")
+    chosen = r.route(token_ids=[1])
+    assert r.load_tracker.in_flight(chosen) == 1
+    r.complete(chosen)
+    assert r.load_tracker.in_flight(chosen) == 0
+
+
 def test_drf_distributes_tied_requests_instead_of_piling_onto_one_replica():
     """Regression test for the 2026-08-31 load-imbalance bug: an un-cacheable workload (a
     fresh, never-seen token_ids every call) makes every candidate's dominant share tie at

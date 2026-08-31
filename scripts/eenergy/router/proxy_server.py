@@ -13,6 +13,7 @@ from replica_state import ReplicaConfig, ReplicaState
 from router_core import Router, WHALE_TOKEN_THRESHOLD
 from power_nvml import NvmlPowerReader
 from ramp import update_ramp_state
+from bs_telemetry import fetch_running_waiting
 
 
 def build_replica_states(replica_specs: list) -> list:
@@ -35,8 +36,26 @@ async def power_poll_loop(states: list, reader: NvmlPowerReader, interval_s: flo
         await asyncio.sleep(interval_s)
 
 
-def make_app(states: list, policy: str, model_name: str, assignment_log_path: str = None):
-    router = Router(states, policy)
+async def bs_poll_loop(states: list, model_name: str, interval_s: float):
+    """Background poller for bs_source="telemetry": reads each replica's real
+    running+waiting count off its own /metrics endpoint. On a fetch failure, keeps the
+    replica's last known telemetry_bs rather than snapping it to 0 -- a transient scrape
+    miss shouldn't make a busy replica suddenly look empty and get flooded."""
+    async with ClientSession(timeout=ClientTimeout(total=interval_s)) as session:
+        while True:
+            for state in states:
+                try:
+                    running, waiting = await fetch_running_waiting(
+                        session, state.config.host, state.config.port, model_name)
+                    state.telemetry_bs = running + waiting
+                except Exception:
+                    pass
+            await asyncio.sleep(interval_s)
+
+
+def make_app(states: list, policy: str, model_name: str, assignment_log_path: str = None,
+             bs_source: str = "local"):
+    router = Router(states, policy, bs_source=bs_source)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     by_id = {s.config.replica_id: s for s in states}
     assignment_log = None
@@ -80,15 +99,19 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
 
 
 def run(replica_specs: list, policy: str, model_name: str, host: str, port: int,
-        power_interval_s: float = 0.5, assignment_log_path: str = None) -> None:
+        power_interval_s: float = 0.5, assignment_log_path: str = None,
+        bs_source: str = "local", bs_poll_interval_s: float = 0.5) -> None:
     states = build_replica_states(replica_specs)
     gpu_indices = [s.config.gpu_index for s in states]
     reader = NvmlPowerReader(gpu_indices)
-    app = make_app(states, policy, model_name, assignment_log_path)
+    app = make_app(states, policy, model_name, assignment_log_path, bs_source=bs_source)
 
     async def _on_startup(app):
         app["power_task"] = asyncio.create_task(
             power_poll_loop(states, reader, power_interval_s))
+        if bs_source == "telemetry":
+            app["bs_task"] = asyncio.create_task(
+                bs_poll_loop(states, model_name, bs_poll_interval_s))
 
     app.on_startup.append(_on_startup)
     web.run_app(app, host=host, port=port)

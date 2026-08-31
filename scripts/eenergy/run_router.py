@@ -16,6 +16,11 @@ Env:
                             gpu_index -- one row per routed request, for post-hoc per-replica
                             power-pressure-window classification (sharper than the fleet-wide
                             any-GPU fallback).
+  ROUTER_BS_SOURCE          local (default) | telemetry -- local uses the router's own
+                            dispatch/complete bookkeeping (load_tracker.py); telemetry reads
+                            each replica's real running+waiting count off its own vLLM
+                            /metrics endpoint (bs_telemetry.py) via a background poller.
+  ROUTER_BS_POLL_INTERVAL_S  default 0.5. Only used when ROUTER_BS_SOURCE=telemetry.
 """
 import os
 import sys
@@ -44,7 +49,10 @@ def main() -> int:
     port = int(os.environ.get("ROUTER_PORT", "9000"))
     power_interval_s = float(os.environ.get("ROUTER_POWER_INTERVAL_S", "0.5"))
     assignment_log_path = os.environ.get("ROUTER_ASSIGNMENT_LOG") or None
-    run(replica_specs, policy, model_name, host, port, power_interval_s, assignment_log_path)
+    bs_source = os.environ.get("ROUTER_BS_SOURCE", "local")
+    bs_poll_interval_s = float(os.environ.get("ROUTER_BS_POLL_INTERVAL_S", "0.5"))
+    run(replica_specs, policy, model_name, host, port, power_interval_s, assignment_log_path,
+        bs_source, bs_poll_interval_s)
     return 0
 
 

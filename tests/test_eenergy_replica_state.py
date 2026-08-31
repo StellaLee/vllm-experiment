@@ -20,6 +20,7 @@ def test_replica_state_defaults_and_independent_mutable_fields():
     s1 = ReplicaState(config=cfg)
     s2 = ReplicaState(config=cfg)
     assert s1.in_flight == 0
+    assert s1.telemetry_bs == 0
     assert s1.cached_block_hashes == set()
     s1.cached_block_hashes.add(123)
     assert s2.cached_block_hashes == set(), "default set must not be shared across instances"

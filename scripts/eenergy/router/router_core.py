@@ -20,11 +20,14 @@ WHALE_TOKEN_THRESHOLD = 4000
 
 
 class Router:
-    def __init__(self, replica_states: list, policy: str, rng=None):
+    def __init__(self, replica_states: list, policy: str, rng=None, bs_source: str = "local"):
         if policy not in _POLICIES:
             raise ValueError(f"unknown policy: {policy!r}, expected one of {_POLICIES}")
+        if bs_source not in ("local", "telemetry"):
+            raise ValueError(f"unknown bs_source: {bs_source!r}, expected 'local' or 'telemetry'")
         self.replica_states = replica_states
         self.policy = policy
+        self.bs_source = bs_source
         self.rng = rng if rng is not None else random.Random()
         self.load_tracker = LoadTracker()
         self.whale_tracker = WhaleTracker()
@@ -35,7 +38,10 @@ class Router:
         candidates = []
         for state in self.replica_states:
             new_tokens = new_tokens_if_routed(token_ids, state.cached_block_hashes)
-            in_flight_after = self.load_tracker.in_flight_if_dispatched(state.config.replica_id)
+            if self.bs_source == "telemetry":
+                in_flight_after = state.telemetry_bs + 1
+            else:
+                in_flight_after = self.load_tracker.in_flight_if_dispatched(state.config.replica_id)
             active_whale_count_after = self.whale_tracker.active_whale_count_if_dispatched(
                 state.config.replica_id)
             candidates.append(Candidate(
