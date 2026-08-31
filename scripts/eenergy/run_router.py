@@ -11,6 +11,10 @@ Env:
   ROUTER_HOST             default 0.0.0.0
   ROUTER_PORT              default 9000
   ROUTER_POWER_INTERVAL_S   default 0.5
+  ROUTER_ASSIGNMENT_LOG     default unset (no logging). CSV path: wall_time,replica_id,
+                            gpu_index -- one row per routed request, for post-hoc per-replica
+                            power-pressure-window classification (sharper than the fleet-wide
+                            any-GPU fallback).
 """
 import os
 import sys
@@ -38,7 +42,8 @@ def main() -> int:
     host = os.environ.get("ROUTER_HOST", "0.0.0.0")
     port = int(os.environ.get("ROUTER_PORT", "9000"))
     power_interval_s = float(os.environ.get("ROUTER_POWER_INTERVAL_S", "0.5"))
-    run(replica_specs, policy, model_name, host, port, power_interval_s)
+    assignment_log_path = os.environ.get("ROUTER_ASSIGNMENT_LOG") or None
+    run(replica_specs, policy, model_name, host, port, power_interval_s, assignment_log_path)
     return 0
 
 

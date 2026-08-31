@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                  "scripts", "eenergy", "router"))
-from proxy_server import build_replica_states  # noqa: E402
+from proxy_server import build_replica_states, format_assignment_record  # noqa: E402
 
 
 def test_build_replica_states_from_specs():
@@ -18,3 +18,8 @@ def test_build_replica_states_from_specs():
     assert states[0].config.replica_id == "r0"
     assert states[1].config.port == 8002
     assert states[0].in_flight == 0
+
+
+def test_format_assignment_record_is_csv_row():
+    line = format_assignment_record(1788140425.123456, "r3", 5)
+    assert line == "1788140425.123456,r3,5\n"

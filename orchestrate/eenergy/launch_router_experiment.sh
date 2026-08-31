@@ -23,6 +23,7 @@ MAX_NUM_SEQS=${MAX_NUM_SEQS:-64}
 # ROUTER_POWER_INTERVAL_S changes materially -- see scripts/eenergy/README.md.
 RAMP_CEILING_W_PER_S=${RAMP_CEILING_W_PER_S:-450.0}
 POWER_TRACE=${POWER_TRACE:-logs/eenergy_power_trace_${POLICY}.csv}
+ASSIGNMENT_LOG=${ASSIGNMENT_LOG:-logs/eenergy_assignment_${POLICY}.csv}
 
 REPLICA_SPECS=""
 PIDS=()
@@ -51,9 +52,10 @@ GPU_LIST=$(seq -s, 0 $((N_REPLICAS - 1)))
 python3 scripts/pesim/power_logger.py --gpus "$GPU_LIST" --interval-ms 50 --output "$POWER_TRACE" &
 POWER_PID=$!
 
-echo "Starting router (policy=$POLICY) on port $ROUTER_PORT"
+echo "Starting router (policy=$POLICY) on port $ROUTER_PORT -> assignment log: ${ASSIGNMENT_LOG}"
 ROUTER_POLICY="$POLICY" ROUTER_REPLICAS="$REPLICA_SPECS" ROUTER_MODEL_NAME="$MODEL" \
-  ROUTER_PORT="$ROUTER_PORT" python3 scripts/eenergy/run_router.py &
+  ROUTER_PORT="$ROUTER_PORT" ROUTER_ASSIGNMENT_LOG="$ASSIGNMENT_LOG" \
+  python3 scripts/eenergy/run_router.py &
 ROUTER_PID=$!
 
 echo "Router ready on port ${ROUTER_PORT}. Point the benchmark harness at it, e.g.:"

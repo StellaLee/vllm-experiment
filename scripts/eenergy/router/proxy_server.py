@@ -4,6 +4,8 @@ forwards the OpenAI-compatible streaming /v1/completions request/response so the
 benchmark harness (src/replay_sharegpt.py) needs no changes -- it just points at this
 proxy's host:port instead of a replica's directly (spec S3.1, Global Constraints)."""
 import asyncio
+import os
+import time
 
 from aiohttp import web, ClientSession, ClientTimeout
 from transformers import AutoTokenizer
@@ -19,6 +21,13 @@ def build_replica_states(replica_specs: list) -> list:
     return [ReplicaState(config=ReplicaConfig(**spec)) for spec in replica_specs]
 
 
+def format_assignment_record(ts: float, replica_id: str, gpu_index: int) -> str:
+    """One CSV line for the per-request replica-assignment log: which physical GPU actually
+    served each request, so post-hoc analysis can classify a request's power-pressure window
+    by ITS OWN replica instead of the coarser fleet-wide (any-GPU) fallback."""
+    return f"{ts:.6f},{replica_id},{gpu_index}\n"
+
+
 async def power_poll_loop(states: list, reader: NvmlPowerReader, interval_s: float):
     while True:
         for state in states:
@@ -27,16 +36,26 @@ async def power_poll_loop(states: list, reader: NvmlPowerReader, interval_s: flo
         await asyncio.sleep(interval_s)
 
 
-def make_app(states: list, policy: str, model_name: str):
+def make_app(states: list, policy: str, model_name: str, assignment_log_path: str = None):
     router = Router(states, policy)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     by_id = {s.config.replica_id: s for s in states}
+    assignment_log = None
+    if assignment_log_path:
+        write_header = not os.path.exists(assignment_log_path) or os.path.getsize(assignment_log_path) == 0
+        assignment_log = open(assignment_log_path, "a")
+        if write_header:
+            assignment_log.write("wall_time,replica_id,gpu_index\n")
+            assignment_log.flush()
 
     async def handle_completions(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         token_ids = tokenizer.encode(body["prompt"])
         replica_id = router.route(token_ids)
         target = by_id[replica_id].config
+        if assignment_log:
+            assignment_log.write(format_assignment_record(time.time(), replica_id, target.gpu_index))
+            assignment_log.flush()
 
         resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
         await resp.prepare(request)
@@ -59,11 +78,11 @@ def make_app(states: list, policy: str, model_name: str):
 
 
 def run(replica_specs: list, policy: str, model_name: str, host: str, port: int,
-        power_interval_s: float = 0.5) -> None:
+        power_interval_s: float = 0.5, assignment_log_path: str = None) -> None:
     states = build_replica_states(replica_specs)
     gpu_indices = [s.config.gpu_index for s in states]
     reader = NvmlPowerReader(gpu_indices)
-    app = make_app(states, policy, model_name)
+    app = make_app(states, policy, model_name, assignment_log_path)
 
     async def _on_startup(app):
         app["power_task"] = asyncio.create_task(
