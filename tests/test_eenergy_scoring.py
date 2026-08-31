@@ -6,7 +6,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                  "scripts", "eenergy", "router"))
 from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, pick_drf,  # noqa: E402
-                      pick_p2c_whale, pick_whale_argmin, share_power, pick_constrained_lmetric)
+                      pick_p2c_whale, pick_whale_argmin, share_power, pick_constrained_lmetric,
+                      dominant_share_vector)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -81,6 +82,27 @@ def test_pick_functions_raise_on_empty_candidates():
         pick_drf([])
     with pytest.raises(ValueError):
         pick_round_robin([], -1)
+
+
+def test_dominant_share_vector_is_sorted_descending_and_first_element_matches_dominant_share():
+    c = _cand("r0", new_tokens=80, in_flight_after=1, token_budget=100,
+              max_num_seqs=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)
+    vec = dominant_share_vector(c)
+    assert vec == (0.8, 0.1, 0.0)
+    assert vec[0] == dominant_share(c)
+
+
+def test_drf_lexicographic_tiebreak_uses_load_when_dominant_compute_share_ties():
+    """Regression test for the 2026-08-31 diagnosed DRF tail-latency bug: an early,
+    un-cacheable whale makes Share_compute identical AND dominant across every candidate
+    (much larger than load/power at that point) -- the OLD scalar-max dominant_share ties
+    all three candidates and falls back to an arbitrary rotation, ignoring real load
+    differences. Proper (lexicographic) DRF must pick the lowest-load candidate among the
+    tied-dominant ones instead."""
+    r0 = _cand("r0", new_tokens=90, token_budget=100, in_flight_after=8, max_num_seqs=10)  # compute=0.9 (dom), load=0.8
+    r1 = _cand("r1", new_tokens=90, token_budget=100, in_flight_after=2, max_num_seqs=10)  # compute=0.9 (dom), load=0.2 (least loaded)
+    r2 = _cand("r2", new_tokens=90, token_budget=100, in_flight_after=5, max_num_seqs=10)  # compute=0.9 (dom), load=0.5
+    assert pick_drf([r0, r1, r2]) == "r1"
 
 
 def test_drf_tie_breaking_rotates_instead_of_always_picking_first_candidate():

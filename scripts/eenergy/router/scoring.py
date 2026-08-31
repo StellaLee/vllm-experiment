@@ -68,17 +68,35 @@ def dominant_share(c) -> float:
     return max(share_compute, share_load, share_power(c))
 
 
+def dominant_share_vector(c) -> tuple:
+    """Full (compute, load, power) share vector, sorted descending. dominant_share(c) is
+    always vec[0] -- this is a strict refinement for tie-breaking, not a different metric.
+
+    Real DRF (Ghodsi et al., NSDI 2011; Mesos's own reference implementation) breaks ties
+    by comparing the full sorted share vector lexicographically -- first the dominant
+    share, then the next-highest, and so on -- not by falling back to an arbitrary
+    rotation. Using only the scalar max (as an earlier version of pick_drf did) is a real
+    deviation from the textbook mechanism: whenever one dimension dominates identically
+    across every candidate (e.g. an early, un-cacheable whale makes Share_compute tied and
+    dominant for everyone), the scalar max can't see differences in the OTHER dimensions
+    at all, discarding exactly the information (e.g. load) that should decide the tie."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    return tuple(sorted((share_compute, share_load, share_power(c)), reverse=True))
+
+
 def pick_drf(candidates: list, tie_start: int = 0) -> str:
-    """Condition 3 (ours). Route to the replica with the lowest resulting dominant share
-    across the three independently-normalized resources -- Dominant Resource Fairness
-    (Ghodsi et al., NSDI 2011), adapted to an online per-request routing setting (spec
-    S3.1, with the honest scope caveat that DRF's original theorem is proven for a static
-    allocation game, not this streaming setting). tie_start rotates which candidate wins
-    ties (see _rotate) -- Router advances it every call so ties distribute across replicas
-    over time instead of piling onto one replica."""
+    """Condition 3 (ours). Route to the replica with the lexicographically lowest sorted
+    share vector across the three independently-normalized resources -- Dominant Resource
+    Fairness (Ghodsi et al., NSDI 2011), adapted to an online per-request routing setting
+    (spec S3.1, with the honest scope caveat that DRF's original theorem is proven for a
+    static allocation game, not this streaming setting). tie_start rotates which candidate
+    wins the (now rare) case of a FULL tie across all three shares (see _rotate) -- Router
+    advances it every call so those residual ties distribute across replicas over time
+    instead of piling onto one replica."""
     if not candidates:
         raise ValueError("no candidates to route to")
-    best = min(_rotate(candidates, tie_start), key=dominant_share)
+    best = min(_rotate(candidates, tie_start), key=dominant_share_vector)
     return best.replica_id
 
 
