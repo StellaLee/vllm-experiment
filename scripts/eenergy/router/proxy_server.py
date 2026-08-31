@@ -10,7 +10,7 @@ from aiohttp import web, ClientSession, ClientTimeout
 from transformers import AutoTokenizer
 
 from replica_state import ReplicaConfig, ReplicaState
-from router_core import Router
+from router_core import Router, WHALE_TOKEN_THRESHOLD
 from power_nvml import NvmlPowerReader
 from ramp import update_ramp_state
 
@@ -52,6 +52,7 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
     async def handle_completions(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         token_ids = tokenizer.encode(body["prompt"])
+        is_whale = len(token_ids) > WHALE_TOKEN_THRESHOLD
         replica_id = router.route(token_ids)
         target = by_id[replica_id].config
         if assignment_log:
@@ -67,7 +68,7 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
                     async for chunk in upstream.content.iter_any():
                         await resp.write(chunk)
         finally:
-            router.complete(replica_id)
+            router.complete(replica_id, is_whale)
         await resp.write_eof()
         return resp
 

@@ -14,6 +14,7 @@ class Candidate:
     max_num_seqs: int
     ramp_rate_w_per_s: float
     ramp_ceiling_w_per_s: float
+    active_whale_count_after: int = 0  # active whales at this replica if dispatched here
 
 
 def pick_round_robin(candidates: list, last_index: int):
@@ -71,4 +72,28 @@ def pick_drf(candidates: list, tie_start: int = 0) -> str:
     if not candidates:
         raise ValueError("no candidates to route to")
     best = min(_rotate(candidates, tie_start), key=dominant_share)
+    return best.replica_id
+
+
+def pick_p2c_whale(candidates: list, is_whale: bool, rng, tie_start: int = 0) -> str:
+    """Whale-only Power of Two Choices (Mitzenmacher, "The Power of Two Choices in
+    Randomized Load Balancing", 1996/2001): sampling 2 random candidates and picking the
+    less-loaded one gives an exponential improvement in expected max load over random
+    placement, with no cross-resource weight and no per-decision power telemetry needed --
+    load here is active whale count, known from admission-time request length alone.
+
+    Non-whale requests (the overwhelming majority of traffic) delegate straight to
+    pick_lmetric, unchanged -- this policy only touches routing for whale-classified
+    requests, so normal-traffic TTFT/TBT/utilization should be identical to the LMETRIC
+    condition. Whale requests ignore LMETRIC's score entirely and compare only the 2 sampled
+    candidates' active_whale_count_after -- deliberately O(1) work per decision, not an
+    argmin over the whole fleet (that would be a different, non-P2C mechanism)."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    if not is_whale:
+        return pick_lmetric(candidates, tie_start)
+    if len(candidates) == 1:
+        return candidates[0].replica_id
+    sampled = rng.sample(candidates, 2)
+    best = min(sampled, key=lambda c: c.active_whale_count_after)
     return best.replica_id

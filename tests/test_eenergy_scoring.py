@@ -5,13 +5,27 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                  "scripts", "eenergy", "router"))
-from scoring import Candidate, pick_round_robin, pick_lmetric, dominant_share, pick_drf  # noqa: E402
+from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, pick_drf,  # noqa: E402
+                      pick_p2c_whale)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
-           max_num_seqs=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0):
+           max_num_seqs=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0,
+           active_whale_count_after=0):
     return Candidate(replica_id, new_tokens, in_flight_after, token_budget,
-                      max_num_seqs, ramp_rate_w_per_s, ramp_ceiling_w_per_s)
+                      max_num_seqs, ramp_rate_w_per_s, ramp_ceiling_w_per_s,
+                      active_whale_count_after)
+
+
+class _FakeRng:
+    """Deterministic stand-in for random.Random -- .sample() always returns a fixed,
+    caller-specified pair regardless of input, so pick_p2c_whale's comparison logic can be
+    tested without depending on real randomness."""
+    def __init__(self, fixed_sample):
+        self.fixed_sample = fixed_sample
+
+    def sample(self, population, k):
+        return self.fixed_sample
 
 
 def test_round_robin_cycles_through_candidates_in_order():
@@ -94,3 +108,54 @@ def test_tie_breaking_does_not_override_a_genuine_winner():
     for start in range(3):
         assert pick_drf(cands, tie_start=start) == "r1"
         assert pick_lmetric(cands, tie_start=start) == "r1"
+
+
+def test_p2c_whale_non_whale_request_delegates_to_lmetric():
+    # whale-count would favor r0 (0 active whales) but LMETRIC clearly favors r1 -- a
+    # non-whale request must ignore whale count entirely and match plain LMETRIC.
+    r0 = _cand("r0", new_tokens=1000, in_flight_after=5, active_whale_count_after=1)
+    r1 = _cand("r1", new_tokens=10, in_flight_after=2, active_whale_count_after=5)
+    assert pick_p2c_whale([r0, r1], is_whale=False, rng=_FakeRng([r0, r1])) == "r1"
+    assert pick_p2c_whale([r0, r1], is_whale=False, rng=_FakeRng([r0, r1])) == pick_lmetric([r0, r1])
+
+
+def test_p2c_whale_picks_lower_whale_count_among_the_two_sampled():
+    # LMETRIC score would favor r0 here (lower new_tokens*in_flight) -- a whale request must
+    # ignore LMETRIC entirely and use whichever of the SAMPLED pair has fewer active whales.
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, active_whale_count_after=3)
+    r1 = _cand("r1", new_tokens=100, in_flight_after=10, active_whale_count_after=0)
+    assert pick_p2c_whale([r0, r1], is_whale=True, rng=_FakeRng([r0, r1])) == "r1"
+
+
+def test_p2c_whale_only_compares_the_two_sampled_candidates_not_the_whole_pool():
+    # r2 has the global-minimum whale count, but the fake rng only samples r0/r1 -- the
+    # decision must be confined to the sampled pair (the actual point of power-of-two-choices:
+    # it's O(1) work per decision, not a full argmin over every replica).
+    r0 = _cand("r0", active_whale_count_after=2)
+    r1 = _cand("r1", active_whale_count_after=1)
+    r2 = _cand("r2", active_whale_count_after=0)
+    assert pick_p2c_whale([r0, r1, r2], is_whale=True, rng=_FakeRng([r0, r1])) == "r1"
+
+
+def test_p2c_whale_single_candidate_returns_it_without_sampling():
+    r0 = _cand("r0", active_whale_count_after=7)
+    assert pick_p2c_whale([r0], is_whale=True, rng=_FakeRng([])) == "r0"
+
+
+def test_p2c_whale_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_p2c_whale([], is_whale=True, rng=_FakeRng([]))
+    with pytest.raises(ValueError):
+        pick_p2c_whale([], is_whale=False, rng=_FakeRng([]))
+
+
+def test_p2c_whale_with_real_rng_distributes_across_replicas():
+    """Not a fake-rng unit test -- exercises the actual random.Random path end to end to
+    confirm repeated whale routing under tied whale counts doesn't collapse onto one replica
+    (the same class of bug fixed for pick_lmetric/pick_drf, this time by sampling itself
+    rather than a rotation cursor)."""
+    import random
+    cands = [_cand("r0"), _cand("r1"), _cand("r2")]  # all tied at 0 active whales
+    rng = random.Random(42)
+    chosen = {pick_p2c_whale(cands, is_whale=True, rng=rng) for _ in range(30)}
+    assert chosen == {"r0", "r1", "r2"}

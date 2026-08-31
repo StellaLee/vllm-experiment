@@ -4,7 +4,7 @@ environment variables so it composes cleanly with orchestrate/eenergy/*.sh, matc
 repo's existing env-var-driven convention (see scripts/mlsys/hotpatch_*.py).
 
 Env:
-  ROUTER_POLICY        round_robin | lmetric | drf   (required)
+  ROUTER_POLICY        round_robin | lmetric | drf | p2c_whale   (required)
   ROUTER_REPLICAS       comma-separated host:port:gpu_index:token_budget:max_num_seqs:ramp_ceiling_w_per_s
                          e.g. "127.0.0.1:8001:0:16384:64:100.0,127.0.0.1:8002:1:16384:64:100.0"
   ROUTER_MODEL_NAME      HF model name/path for the tokenizer (required)

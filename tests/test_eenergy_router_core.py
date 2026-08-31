@@ -5,8 +5,17 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                  "scripts", "eenergy", "router"))
-from router_core import Router  # noqa: E402
+from router_core import Router, WHALE_TOKEN_THRESHOLD  # noqa: E402
 from replica_state import ReplicaConfig, ReplicaState  # noqa: E402
+
+
+class _FirstKRng:
+    """Deterministic stand-in for random.Random -- .sample() always returns the first k
+    elements in the order given (Router builds candidates in replica_states order), so
+    router_core-level tests can reason about which replica gets sampled without needing to
+    pre-construct the Candidate objects Router builds internally."""
+    def sample(self, population, k):
+        return population[:k]
 
 
 def _states():
@@ -59,6 +68,56 @@ def test_route_then_complete_updates_load_tracker_round_trip():
     assert r.load_tracker.in_flight(chosen) == 1
     r.complete(chosen)
     assert r.load_tracker.in_flight(chosen) == 0
+
+
+def test_whale_token_threshold_is_a_positive_admission_time_cutoff():
+    assert WHALE_TOKEN_THRESHOLD > 0
+
+
+def test_p2c_whale_non_whale_request_matches_plain_lmetric_behavior():
+    long_prompt = list(range(64))  # 4 full 16-token blocks, but well under the whale threshold
+    states_p2c = _states()
+    r_p2c = Router(states_p2c, policy="p2c_whale", rng=_FirstKRng())
+    r_p2c.route(long_prompt)
+    r_p2c.complete("r0")
+    chosen_p2c = r_p2c.route(long_prompt)
+
+    states_lmetric = _states()
+    r_lmetric = Router(states_lmetric, policy="lmetric")
+    r_lmetric.route(long_prompt)
+    r_lmetric.complete("r0")
+    chosen_lmetric = r_lmetric.route(long_prompt)
+
+    assert chosen_p2c == chosen_lmetric == "r0"  # cache-affinity wins, same as plain LMETRIC
+
+
+def test_p2c_whale_whale_request_uses_active_whale_count_not_lmetric_score():
+    states = _states()
+    r = Router(states, policy="p2c_whale", rng=_FirstKRng())
+    whale_tokens = list(range(WHALE_TOKEN_THRESHOLD + 1))
+
+    # give r0 an active whale already (worse whale count) but a cache advantage LMETRIC would
+    # normally prefer (0 new tokens) -- P2C-whale must ignore the cache advantage entirely
+    r.route(whale_tokens)  # r0 wins the first (tied) dispatch under _FirstKRng, gets cached
+    second = r.route(whale_tokens)  # r0: 1 active whale + full cache hit; r1: 0 active whales
+    assert second == "r1"
+
+
+def test_p2c_whale_complete_decrements_whale_tracker():
+    states = _states()
+    r = Router(states, policy="p2c_whale", rng=_FirstKRng())
+    whale_tokens = list(range(WHALE_TOKEN_THRESHOLD + 1))
+    chosen = r.route(whale_tokens)
+    assert r.whale_tracker.active_whale_count(chosen) == 1
+    r.complete(chosen, is_whale=True)
+    assert r.whale_tracker.active_whale_count(chosen) == 0
+
+
+def test_complete_without_is_whale_stays_backward_compatible():
+    r = Router(_states(), policy="round_robin")
+    chosen = r.route(token_ids=[1])
+    r.complete(chosen)  # no is_whale arg -- must not raise, must not touch whale_tracker
+    assert r.whale_tracker.active_whale_count(chosen) == 0
 
 
 def test_drf_distributes_tied_requests_instead_of_piling_onto_one_replica():
