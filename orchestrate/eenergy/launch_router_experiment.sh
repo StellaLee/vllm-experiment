@@ -15,7 +15,13 @@ BASE_PORT=${BASE_PORT:-8001}
 ROUTER_PORT=${ROUTER_PORT:-9000}
 TOKEN_BUDGET=${TOKEN_BUDGET:-16384}
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-64}
-RAMP_CEILING_W_PER_S=${RAMP_CEILING_W_PER_S:?set RAMP_CEILING_W_PER_S (calibrated per spec open item)}
+# Calibrated 2026-08-31 on this 8x4090 box: burst of 24 concurrent 45k-char prefills against
+# one idle replica, power sampled at the router's actual poll cadence (500ms). Steady-state
+# ramp is near-zero (p50=0.1 W/s); the idle->loaded transition itself is the whole signal
+# (p99=212 W/s, p99.9/max=433 W/s, observed 62W->235W->449W across two consecutive polls).
+# 450 W/s ~= observed max with slight headroom. Re-calibrate if replica count, model size, or
+# ROUTER_POWER_INTERVAL_S changes materially -- see scripts/eenergy/README.md.
+RAMP_CEILING_W_PER_S=${RAMP_CEILING_W_PER_S:-450.0}
 POWER_TRACE=${POWER_TRACE:-logs/eenergy_power_trace_${POLICY}.csv}
 
 REPLICA_SPECS=""
