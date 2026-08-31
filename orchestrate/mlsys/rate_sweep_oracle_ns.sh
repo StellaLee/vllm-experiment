@@ -36,15 +36,15 @@ revert_pristine(){
   cp "${SCHED_PY}.pristine" "$SCHED_PY"
 }
 
-run_replay(){ # $1=ARM, remaining=server extra CLI flags
-  local ARM=$1; shift
+run_replay(){ # $1=ARM  $2=extra CLI flags for api_server (single string, may be empty)  $3...=env VAR=VAL pairs
+  local ARM=$1; local EXTRA_CLI=$2; shift 2
   local FB="logs/${DATE}-lgate-b${ARM}"
   rm -f "${FB}-t1.jsonl" "${FB}-oracletrace.csv"
-  log "[$ARM] starting server ($*)"
+  log "[$ARM] starting server (env: $* | cli: $EXTRA_CLI)"
   env CUDA_VISIBLE_DEVICES=0,1 PREFIX_REORDER=0 DYNAMIC_CHUNK=0 "$@" \
     $PYTHON -m vllm.entrypoints.openai.api_server --model "$MODEL" --port $PORT \
     --max-num-seqs 128 --max-num-batched-tokens 16384 --max-model-len 16384 \
-    --tensor-parallel-size 2 --gpu-memory-utilization 0.90 > ${FB}-server.log 2>&1 &
+    --tensor-parallel-size 2 --gpu-memory-utilization 0.90 $EXTRA_CLI > ${FB}-server.log 2>&1 &
   local SV=$!
   local UP=0
   for i in $(seq 1 120); do sleep 5
@@ -69,16 +69,16 @@ run_replay(){ # $1=ARM, remaining=server extra CLI flags
 revert_pristine
 
 # mono: no threshold flag at all
-run_replay "nsmono"
+run_replay "nsmono" "" || { log "nsmono FAILED"; touch logs/ratesweep_oraclens_FAILED; exit 1; }
 
 # static-512: native flag, no hotpatch
-run_replay "nsstatic512" --long-prefill-token-threshold 512
+run_replay "nsstatic512" "--long-prefill-token-threshold 512" || { log "nsstatic512 FAILED"; touch logs/ratesweep_oraclens_FAILED; exit 1; }
 
 # oracle: hotpatch + env-gated switch
 $PYTHON scripts/hotpatch_oracle_lpt.py || { log "PATCH FAILED"; touch logs/ratesweep_oraclens_FAILED; exit 1; }
 FB_ORACLE="logs/${DATE}-lgate-bnsoracle-oracletrace.csv"
-run_replay "nsoracle" ORACLE_LPT=1 ORACLE_LO_S=$LO_S ORACLE_HI_S=$HI_S \
-  ORACLE_LO_THRESH=0 ORACLE_HI_THRESH=512 ORACLE_TRACE="$FB_ORACLE"
+run_replay "nsoracle" "" ORACLE_LPT=1 ORACLE_LO_S=$LO_S ORACLE_HI_S=$HI_S \
+  ORACLE_LO_THRESH=0 ORACLE_HI_THRESH=512 ORACLE_TRACE="$FB_ORACLE" || { log "nsoracle FAILED"; touch logs/ratesweep_oraclens_FAILED; exit 1; }
 
 $PYTHON -c "
 import csv

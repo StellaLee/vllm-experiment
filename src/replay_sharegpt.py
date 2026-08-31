@@ -87,7 +87,7 @@ def sample_pad_len(ci, turn_num, args, force_whale=None):
     return int(getattr(args, "pad_chars", 0) or 0)
 
 
-def stream_request(host, port, prompt, max_tokens, model):
+def stream_request(host, port, prompt, max_tokens, model, request_timeout=120):
     """POST to /v1/completions with stream=True. Returns (ttft_s, total_s, output_tokens).
 
     OpenAI SSE format:
@@ -115,7 +115,7 @@ def stream_request(host, port, prompt, max_tokens, model):
     chunk_times = []  # monotonic arrival time of each non-empty text chunk (for ITL/TBT)
     completion_tokens = None
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=request_timeout) as resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line or line == "data: [DONE]":
@@ -154,6 +154,48 @@ def stream_request(host, port, prompt, max_tokens, model):
     # per-request MEAN TPOT smooths over.
     itls = [chunk_times[k] - chunk_times[k - 1] for k in range(1, len(chunk_times))]
     return ttft, total, output_tokens, tokens_exact, itls
+
+
+def replay_trace_request(seq, prompt_tokens, response_tokens, args, records, records_lock, print_lock):
+    """Fire one request built from a real-trace row (BurstGPT: arrival_s already consumed by
+    the caller's sleep). No ShareGPT text -- prompt is unique filler scaled to prompt_tokens
+    via --chars-per-token, so vLLM's own tokenizer sees a real prompt of ~prompt_tokens length
+    (server-side whale detection in the hotpatch controllers reads vLLM's actual tokenization,
+    not this estimate, so exactness here only needs to be reasonably close, not exact).
+    max_tokens is the trace's own response_tokens, clamped to [1, --trace-max-tokens]."""
+    n_chars = max(1, int(prompt_tokens * args.chars_per_token))
+    uniq = f"[req {seq}] "
+    unit = uniq + "The quick brown fox jumps over the lazy dog. "
+    prompt = (unit * (n_chars // len(unit) + 1))[:n_chars]
+    max_tokens = max(1, min(response_tokens, args.trace_max_tokens))
+
+    try:
+        ttft, total, output_tokens, tokens_exact, itls = stream_request(
+            args.host, args.port, prompt, max_tokens, args.model, args.request_timeout)
+        decode_s = total - (ttft or 0)
+        tpot = round(decode_s / (output_tokens - 1), 5) if output_tokens > 1 else None
+        record = {
+            "conv_id": seq,
+            "turn": 1,
+            "history_turns": 0,
+            "prompt_tokens_approx": len(prompt.split()),
+            "pad_chars": n_chars,
+            "output_tokens": output_tokens,
+            "tokens_exact": tokens_exact,
+            "ttft": round(ttft, 4) if ttft is not None else None,
+            "tpot": tpot,
+            "tbt_ms": [round(x * 1000, 2) for x in itls],
+            "latency": round(total, 4),
+            "ts": time.time(),
+        }
+        with records_lock:
+            records.append(record)
+        ttft_str = f"{ttft:.3f}" if ttft is not None else "N/A"
+        with print_lock:
+            print(f"  [trace {seq}] prompt_tok~{prompt_tokens} ttft={ttft_str}s lat={total:.3f}s")
+    except RuntimeError as e:
+        with print_lock:
+            print(f"  [trace {seq}] SKIP: {e}")
 
 
 def build_prompt(history, new_human):
@@ -195,7 +237,7 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock, force
             prompt = pad + "\n\n" + prompt
 
         try:
-            ttft, total, output_tokens, tokens_exact, itls = stream_request(args.host, args.port, prompt, args.max_tokens, args.model)
+            ttft, total, output_tokens, tokens_exact, itls = stream_request(args.host, args.port, prompt, args.max_tokens, args.model, args.request_timeout)
             gpt_placeholder = f"[turn {turn_num+1} response]"
             if i + 1 < len(turns) and turns[i + 1].get("from") == "gpt":
                 gpt_placeholder = turns[i + 1]["value"].strip()[:256]
@@ -244,7 +286,19 @@ def main():
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--model", default="/model/ModelScope/Qwen/Qwen2.5-Coder-7B-Instruct",
                     help="Model name as registered with the server")
-    ap.add_argument("--dataset", required=True, help="ShareGPT JSON file (list of conversations)")
+    ap.add_argument("--dataset", default=None, help="ShareGPT JSON file (list of conversations). "
+                    "Not required when --trace-csv is set.")
+    ap.add_argument("--trace-csv", default=None,
+                    help="Real-trace mode: CSV with header arrival_s,prompt_tokens,response_tokens "
+                         "(see scripts/mlsys/make_burstgpt_trace.py). Requests fire at the given "
+                         "arrival offsets with filler-only prompts scaled to prompt_tokens and "
+                         "max_tokens=response_tokens. Overrides --dataset/--phase-schedule/etc.")
+    ap.add_argument("--chars-per-token", type=float, default=3.235,
+                    help="Calibration ratio for generating filler prompt text of a target token "
+                         "length in --trace-csv mode.")
+    ap.add_argument("--trace-max-tokens", type=int, default=2048,
+                    help="Clamp ceiling on max_tokens in --trace-csv mode (protects against a "
+                         "pathologically long real response_tokens value dominating a trial).")
     ap.add_argument("--num-convs", type=int, default=50, help="Conversations to replay")
     ap.add_argument("--conv-offset", type=int, default=0,
                     help="Start index into the filtered conversation pool (mod pool size). "
@@ -252,6 +306,11 @@ def main():
                          "instead of always replaying the same first --num-convs items.")
     ap.add_argument("--max-turns", type=int, default=4, help="Max turns per conversation")
     ap.add_argument("--max-tokens", type=int, default=128)
+    ap.add_argument("--request-timeout", type=float, default=120,
+                    help="Per-request socket timeout in seconds passed to urlopen. Raise "
+                         "this above 120 when testing genuinely elevated (but sustainable) "
+                         "load, so real queueing delay is measured instead of being "
+                         "censored at the default 120s ceiling.")
     ap.add_argument("--concurrency", type=int, default=1,
                     help="Parallel conversations (closed-loop). Ignored when --rate is set.")
     ap.add_argument("--rate", type=float, default=None,
@@ -311,6 +370,41 @@ def main():
                          "(front), preserving the real question. 0=off. Set below "
                          "(max-model-len - max-tokens) * ~4 chars/token.")
     args = ap.parse_args()
+
+    if args.trace_csv:
+        import csv as _csv
+        with open(args.trace_csv) as f:
+            trace_rows = [(float(r["arrival_s"]), int(r["prompt_tokens"]), int(r["response_tokens"]))
+                          for r in _csv.DictReader(f)]
+        print(f"[replay] trace-csv mode: {len(trace_rows)} real-trace arrivals from {args.trace_csv}")
+        records = []
+        records_lock = threading.Lock()
+        print_lock = threading.Lock()
+        threads = []
+        t_start = time.monotonic()
+        for seq, (t_arr, prompt_tokens, response_tokens) in enumerate(trace_rows):
+            dt = t_arr - (time.monotonic() - t_start)
+            if dt > 0:
+                time.sleep(dt)
+            th = threading.Thread(
+                target=replay_trace_request,
+                args=(seq, prompt_tokens, response_tokens, args, records, records_lock, print_lock),
+                daemon=True,
+            )
+            threads.append(th)
+            th.start()
+        for th in threads:
+            th.join()
+        records.sort(key=lambda r: r["conv_id"])
+        os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+        with open(args.output, "w") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+        print(f"[replay] {len(records)} records -> {args.output}")
+        return
+
+    if not args.dataset:
+        raise SystemExit("ERROR: --dataset is required unless --trace-csv is set.")
 
     with open(args.dataset) as f:
         raw = json.load(f)
