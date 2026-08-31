@@ -6,7 +6,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                  "scripts", "eenergy", "router"))
 from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, pick_drf,  # noqa: E402
-                      pick_p2c_whale, pick_whale_argmin)
+                      pick_p2c_whale, pick_whale_argmin, share_power, pick_constrained_lmetric)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -182,6 +182,63 @@ def test_whale_argmin_raises_on_empty_candidates():
         pick_whale_argmin([], is_whale=True)
     with pytest.raises(ValueError):
         pick_whale_argmin([], is_whale=False)
+
+
+def test_share_power_negative_ramp_does_not_count_as_pressure():
+    c = _cand("r0", ramp_rate_w_per_s=-50.0, ramp_ceiling_w_per_s=10.0)
+    assert share_power(c) == 0.0
+
+
+def test_share_power_matches_dominant_shares_power_term():
+    c = _cand("r0", ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0)
+    assert share_power(c) == 0.8
+
+
+def test_constrained_lmetric_matches_plain_lmetric_when_nothing_is_over_ceiling():
+    # r0 has the best LMETRIC score AND is within its power ceiling -- must win, same as
+    # plain LMETRIC would pick, since the constraint isn't binding for anyone here.
+    r0 = _cand("r0", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=5.0, ramp_ceiling_w_per_s=100.0)
+    r1 = _cand("r1", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)
+    assert pick_constrained_lmetric([r0, r1]) == pick_lmetric([r0, r1]) == "r0"
+
+
+def test_constrained_lmetric_excludes_a_candidate_over_ceiling_even_with_the_best_lmetric_score():
+    # r0 would win on pure LMETRIC score, but it's over its ramp ceiling (share_power > 1.0)
+    # -- the constraint must exclude it, leaving r1 as the only feasible choice.
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, ramp_rate_w_per_s=150.0, ramp_ceiling_w_per_s=100.0)
+    r1 = _cand("r1", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)
+    assert pick_lmetric([r0, r1]) == "r0"  # sanity: plain LMETRIC would pick r0
+    assert pick_constrained_lmetric([r0, r1]) == "r1"
+
+
+def test_constrained_lmetric_exactly_at_ceiling_counts_as_feasible():
+    # share_power == 1.0 exactly (not > 1.0) must still be feasible -- the constraint is
+    # "not exceeding" the ceiling, not "strictly below" it.
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, ramp_rate_w_per_s=100.0, ramp_ceiling_w_per_s=100.0)
+    r1 = _cand("r1", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)
+    assert pick_constrained_lmetric([r0, r1]) == "r0"
+
+
+def test_constrained_lmetric_falls_back_to_least_infeasible_when_nothing_is_feasible():
+    # every candidate exceeds its ceiling -- must pick whichever is LEAST over (lowest
+    # share_power), not silently fall back to plain LMETRIC (which would defeat the whole
+    # point of the constraint in exactly the moment it matters most).
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, ramp_rate_w_per_s=500.0, ramp_ceiling_w_per_s=100.0)  # share=5.0
+    r1 = _cand("r1", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=150.0, ramp_ceiling_w_per_s=100.0)  # share=1.5
+    assert pick_lmetric([r0, r1]) == "r0"  # sanity: plain LMETRIC would pick r0 (bad choice here)
+    assert pick_constrained_lmetric([r0, r1]) == "r1"  # least-bad on power, not LMETRIC's pick
+
+
+def test_constrained_lmetric_tie_breaking_rotates():
+    tied = [_cand("r0"), _cand("r1"), _cand("r2")]  # all tied, all feasible (ramp=0)
+    assert pick_constrained_lmetric(tied, tie_start=0) == "r0"
+    assert pick_constrained_lmetric(tied, tie_start=1) == "r1"
+    assert pick_constrained_lmetric(tied, tie_start=2) == "r2"
+
+
+def test_constrained_lmetric_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_constrained_lmetric([])
 
 
 def test_p2c_whale_with_real_rng_distributes_across_replicas():

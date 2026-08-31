@@ -8,9 +8,9 @@ from cache_mirror import new_tokens_if_routed, record_cached
 from load_tracker import LoadTracker
 from whale_tracker import WhaleTracker
 from scoring import (Candidate, pick_round_robin, pick_lmetric, pick_drf, pick_p2c_whale,
-                      pick_whale_argmin)
+                      pick_whale_argmin, pick_constrained_lmetric)
 
-_POLICIES = ("round_robin", "lmetric", "drf", "p2c_whale", "whale_argmin")
+_POLICIES = ("round_robin", "lmetric", "drf", "p2c_whale", "whale_argmin", "constrained_lmetric")
 
 # Admission-time whale classification cutoff (prompt tokens), reused from this project's
 # existing whale-aware-controller convention (scripts/mlsys/hotpatch_whale_aware_budget.py)
@@ -63,8 +63,11 @@ class Router:
         elif self.policy == "p2c_whale":
             replica_id = pick_p2c_whale(candidates, is_whale, self.rng, self._tie_cursor)
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
-        else:
+        elif self.policy == "whale_argmin":
             replica_id = pick_whale_argmin(candidates, is_whale, self._tie_cursor)
+            self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
+        else:
+            replica_id = pick_constrained_lmetric(candidates, self._tie_cursor)
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
 
         self.load_tracker.on_dispatch(replica_id)

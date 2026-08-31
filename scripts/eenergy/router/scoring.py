@@ -50,15 +50,22 @@ def pick_lmetric(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def share_power(c) -> float:
+    """Fraction of a replica's calibrated ramp ceiling currently in use. A negative ramp
+    rate (power decreasing) never counts as pressure -- a routing decision can only ever
+    push the RECEIVING replica's power up, never down, so only positive ramp is a
+    decision-relevant hazard. Shared by dominant_share (DRF) and pick_constrained_lmetric
+    (the hard-constraint filter) so both read the exact same power signal."""
+    return max(c.ramp_rate_w_per_s, 0.0) / c.ramp_ceiling_w_per_s
+
+
 def dominant_share(c) -> float:
     """Share_compute, Share_load, Share_power for one candidate, each normalized to that
     replica's own configured capacity (no cross-resource weight); returns the max, i.e. the
-    dominant share (spec S3.1). A negative ramp rate (power decreasing) never counts as
-    pressure."""
+    dominant share (spec S3.1)."""
     share_compute = c.new_tokens / c.token_budget
     share_load = c.in_flight_after / c.max_num_seqs
-    share_power = max(c.ramp_rate_w_per_s, 0.0) / c.ramp_ceiling_w_per_s
-    return max(share_compute, share_load, share_power)
+    return max(share_compute, share_load, share_power(c))
 
 
 def pick_drf(candidates: list, tie_start: int = 0) -> str:
@@ -96,6 +103,30 @@ def pick_p2c_whale(candidates: list, is_whale: bool, rng, tie_start: int = 0) ->
         return candidates[0].replica_id
     sampled = rng.sample(candidates, 2)
     best = min(sampled, key=lambda c: c.active_whale_count_after)
+    return best.replica_id
+
+
+def pick_constrained_lmetric(candidates: list, tie_start: int = 0) -> str:
+    """Constrained-LMETRIC: optimize LMETRIC's score subject to a hard feasibility
+    constraint (share_power <= 1.0, i.e. not currently exceeding the calibrated ramp
+    ceiling) -- the V-to-infinity limit of Lyapunov drift-plus-penalty (Neely, *Stochastic
+    Network Optimization*, 2010): that framework's [O(1/V), O(V)] objective-vs-violation
+    tradeoff curve has one endpoint that needs no tunable weight, because there's nothing
+    left to tune once V is fixed at the limit. Reduces to plain LMETRIC exactly whenever no
+    replica is over its ramp ceiling (the common case, since the ceiling rarely binds) --
+    unlike DRF's dominant_share, which lets power compete with compute/load on every
+    decision even at a marginal, non-dangerous share.
+
+    If EVERY candidate is simultaneously infeasible (no replica currently safe), falls back
+    to whichever is LEAST infeasible (lowest share_power) rather than silently reverting to
+    plain LMETRIC -- that fallback would defeat the constraint in exactly the moment it's
+    supposed to matter most."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    feasible = [c for c in candidates if share_power(c) <= 1.0]
+    if feasible:
+        return pick_lmetric(feasible, tie_start)
+    best = min(_rotate(candidates, tie_start), key=share_power)
     return best.replica_id
 
 

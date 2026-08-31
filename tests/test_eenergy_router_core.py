@@ -62,6 +62,33 @@ def test_drf_routes_away_from_replica_with_high_ramp_even_if_cache_favors_it():
     assert chosen == "r1"
 
 
+def test_constrained_lmetric_excludes_replica_over_ramp_ceiling_even_with_cache_advantage():
+    states = _states()
+    states[0].cached_block_hashes = set()
+    states[0].ramp_rate_w_per_s = 150.0  # r0: over its ramp ceiling (share_power=1.5)
+    states[1].ramp_rate_w_per_s = 0.0    # r1: full power headroom
+    r = Router(states, policy="constrained_lmetric")
+    chosen = r.route(token_ids=[1, 2, 3])
+    assert chosen == "r1"
+
+
+def test_constrained_lmetric_matches_plain_lmetric_when_no_one_is_over_ceiling():
+    states_a = _states()
+    r_a = Router(states_a, policy="constrained_lmetric")
+    long_prompt = list(range(64))
+    r_a.route(long_prompt)
+    r_a.complete("r0")
+    chosen_a = r_a.route(long_prompt)
+
+    states_b = _states()
+    r_b = Router(states_b, policy="lmetric")
+    r_b.route(long_prompt)
+    r_b.complete("r0")
+    chosen_b = r_b.route(long_prompt)
+
+    assert chosen_a == chosen_b == "r0"  # cache-affinity wins, identical to plain LMETRIC
+
+
 def test_route_then_complete_updates_load_tracker_round_trip():
     r = Router(_states(), policy="round_robin")
     chosen = r.route(token_ids=[1])
