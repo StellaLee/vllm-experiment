@@ -23,7 +23,7 @@ PIDS=()
 for i in $(seq 0 $((N_REPLICAS - 1))); do
   port=$((BASE_PORT + i))
   echo "Launching replica $i on GPU $i, port $port"
-  CUDA_VISIBLE_DEVICES=$i python3 -m vllm.entrypoints.api_server \
+  CUDA_VISIBLE_DEVICES=$i python3 -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" --port "$port" --dtype auto \
     --max-num-batched-tokens "$TOKEN_BUDGET" --max-num-seqs "$MAX_NUM_SEQS" &
   PIDS+=($!)
