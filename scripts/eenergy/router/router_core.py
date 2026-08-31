@@ -33,6 +33,9 @@ class Router:
         self.whale_tracker = WhaleTracker()
         self._rr_index = -1
         self._tie_cursor = 0
+        self.last_new_tokens = None  # P-token actually used for the most recent route() call --
+                                      # exposed so callers (proxy_server's assignment log) can
+                                      # audit the KV$-hit discount against reality post-hoc
 
     def _build_candidates(self, token_ids: list) -> list:
         candidates = []
@@ -80,6 +83,7 @@ class Router:
             replica_id = pick_pressure_switch(candidates, self._tie_cursor)
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
 
+        self.last_new_tokens = next(c.new_tokens for c in candidates if c.replica_id == replica_id)
         self.load_tracker.on_dispatch(replica_id)
         self.whale_tracker.on_dispatch(replica_id, is_whale)
         for state in self.replica_states:

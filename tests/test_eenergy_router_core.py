@@ -234,6 +234,20 @@ def test_bs_source_telemetry_still_updates_load_tracker_and_whale_tracker():
     assert r.load_tracker.in_flight(chosen) == 0
 
 
+def test_route_exposes_the_chosen_candidates_new_tokens_for_logging():
+    """Router.route() must expose the P-token value it actually used for the chosen replica
+    -- otherwise there's no way to audit, post-hoc, whether the KV$-hit discount was honest
+    once real cache hits start occurring (the assignment log wires this up next)."""
+    states = _states()
+    r = Router(states, policy="lmetric")
+    long_prompt = list(range(64))  # 4 full 16-token blocks, all new on a cold replica
+    r.route(long_prompt)
+    assert r.last_new_tokens == 64  # cold: no cache hit anywhere, full prompt length
+    r.complete("r0")
+    r.route(long_prompt)  # same prompt again: r0 now has it fully cached
+    assert r.last_new_tokens == 0  # full cache hit
+
+
 def test_drf_distributes_tied_requests_instead_of_piling_onto_one_replica():
     """Regression test for the 2026-08-31 load-imbalance bug: an un-cacheable workload (a
     fresh, never-seen token_ids every call) makes every candidate's dominant share tie at
