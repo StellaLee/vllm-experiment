@@ -17,6 +17,7 @@ class Router:
         self.policy = policy
         self.load_tracker = LoadTracker()
         self._rr_index = -1
+        self._tie_cursor = 0
 
     def _build_candidates(self, token_ids: list) -> list:
         candidates = []
@@ -39,9 +40,11 @@ class Router:
         if self.policy == "round_robin":
             replica_id, self._rr_index = pick_round_robin(candidates, self._rr_index)
         elif self.policy == "lmetric":
-            replica_id = pick_lmetric(candidates)
+            replica_id = pick_lmetric(candidates, self._tie_cursor)
+            self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
         else:
-            replica_id = pick_drf(candidates)
+            replica_id = pick_drf(candidates, self._tie_cursor)
+            self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
 
         self.load_tracker.on_dispatch(replica_id)
         for state in self.replica_states:

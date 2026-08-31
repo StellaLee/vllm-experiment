@@ -67,3 +67,30 @@ def test_pick_functions_raise_on_empty_candidates():
         pick_drf([])
     with pytest.raises(ValueError):
         pick_round_robin([], -1)
+
+
+def test_drf_tie_breaking_rotates_instead_of_always_picking_first_candidate():
+    """Regression test for the 2026-08-31 load-imbalance bug: an un-cacheable workload makes
+    every fresh candidate's dominant share identical (e.g. all-zero), and an unrotated
+    min() would then always return candidates[0] -- piling every request onto one replica.
+    tie_start must rotate which candidate wins the tie."""
+    tied = [_cand("r0"), _cand("r1"), _cand("r2")]  # all identical -> dominant_share ties at 0.0
+    assert pick_drf(tied, tie_start=0) == "r0"
+    assert pick_drf(tied, tie_start=1) == "r1"
+    assert pick_drf(tied, tie_start=2) == "r2"
+    assert pick_drf(tied, tie_start=3) == "r0"  # wraps
+
+
+def test_lmetric_tie_breaking_rotates_instead_of_always_picking_first_candidate():
+    tied = [_cand("r0"), _cand("r1"), _cand("r2")]  # all score 0 -> tie
+    assert pick_lmetric(tied, tie_start=0) == "r0"
+    assert pick_lmetric(tied, tie_start=1) == "r1"
+    assert pick_lmetric(tied, tie_start=2) == "r2"
+
+
+def test_tie_breaking_does_not_override_a_genuine_winner():
+    # r1 is strictly best regardless of rotation -- tie_start must not distort real decisions
+    cands = [_cand("r0", new_tokens=90), _cand("r1", new_tokens=1), _cand("r2", new_tokens=50)]
+    for start in range(3):
+        assert pick_drf(cands, tie_start=start) == "r1"
+        assert pick_lmetric(cands, tie_start=start) == "r1"

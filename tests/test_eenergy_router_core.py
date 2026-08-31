@@ -36,7 +36,7 @@ def test_lmetric_prefers_replica_with_cached_prefix():
     states = _states()
     r = Router(states, policy="lmetric")
     long_prompt = list(range(64))  # 4 full 16-token blocks
-    r.route(long_prompt)  # both replicas start empty/idle; min() picks first candidate (r0)
+    r.route(long_prompt)  # both replicas start empty/idle; tie_start=0 picks first candidate (r0)
     r.complete("r0")
     # route the SAME prompt again: r0 now has it cached (0 new tokens), r1 doesn't
     second = r.route(long_prompt)
@@ -59,3 +59,18 @@ def test_route_then_complete_updates_load_tracker_round_trip():
     assert r.load_tracker.in_flight(chosen) == 1
     r.complete(chosen)
     assert r.load_tracker.in_flight(chosen) == 0
+
+
+def test_drf_distributes_tied_requests_instead_of_piling_onto_one_replica():
+    """Regression test for the 2026-08-31 load-imbalance bug: an un-cacheable workload (a
+    fresh, never-seen token_ids every call) makes every candidate's dominant share tie at
+    0.0 on every single call. Router must distribute those ties across replicas over
+    repeated calls, not always dispatch to the same one."""
+    states = _states()
+    r = Router(states, policy="drf")
+    chosen = set()
+    for i in range(4):
+        rid = r.route(token_ids=[1000 + i])  # distinct, never-cached prompt each time
+        chosen.add(rid)
+        r.complete(rid)
+    assert chosen == {"r0", "r1"}

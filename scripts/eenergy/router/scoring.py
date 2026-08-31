@@ -27,13 +27,25 @@ def pick_round_robin(candidates: list, last_index: int):
     return candidates[next_index].replica_id, next_index
 
 
-def pick_lmetric(candidates: list) -> str:
+def _rotate(candidates: list, start: int) -> list:
+    """Rotate candidates so tie-breaking (Python's min() keeps the first minimal element)
+    doesn't always favor the same replica -- under a workload where a resource dimension is
+    near-identical across fresh candidates (e.g. an un-cacheable prefill making every
+    replica's P-token equal), ties are constant and an unrotated min() piles every tied
+    request onto candidates[0], collapsing load balance across the whole fleet."""
+    n = len(candidates)
+    start = start % n
+    return candidates[start:] + candidates[:start]
+
+
+def pick_lmetric(candidates: list, tie_start: int = 0) -> str:
     """Condition 2. Score = P-token x BS, route to the minimum (Zhang et al., "Simple is
     Better: Multiplication May Be All You Need for LLM Request Scheduling", OSDI'26,
-    arXiv:2603.15202)."""
+    arXiv:2603.15202). tie_start rotates which candidate wins ties (see _rotate) --
+    Router advances it every call so ties distribute across replicas over time."""
     if not candidates:
         raise ValueError("no candidates to route to")
-    best = min(candidates, key=lambda c: c.new_tokens * c.in_flight_after)
+    best = min(_rotate(candidates, tie_start), key=lambda c: c.new_tokens * c.in_flight_after)
     return best.replica_id
 
 
@@ -48,13 +60,15 @@ def dominant_share(c) -> float:
     return max(share_compute, share_load, share_power)
 
 
-def pick_drf(candidates: list) -> str:
+def pick_drf(candidates: list, tie_start: int = 0) -> str:
     """Condition 3 (ours). Route to the replica with the lowest resulting dominant share
     across the three independently-normalized resources -- Dominant Resource Fairness
     (Ghodsi et al., NSDI 2011), adapted to an online per-request routing setting (spec
     S3.1, with the honest scope caveat that DRF's original theorem is proven for a static
-    allocation game, not this streaming setting)."""
+    allocation game, not this streaming setting). tie_start rotates which candidate wins
+    ties (see _rotate) -- Router advances it every call so ties distribute across replicas
+    over time instead of piling onto one replica."""
     if not candidates:
         raise ValueError("no candidates to route to")
-    best = min(candidates, key=dominant_share)
+    best = min(_rotate(candidates, tie_start), key=dominant_share)
     return best.replica_id
