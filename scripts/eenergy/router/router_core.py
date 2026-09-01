@@ -20,7 +20,8 @@ WHALE_TOKEN_THRESHOLD = 4000
 
 
 class Router:
-    def __init__(self, replica_states: list, policy: str, rng=None, bs_source: str = "local"):
+    def __init__(self, replica_states: list, policy: str, rng=None, bs_source: str = "local",
+                 whale_token_threshold: int = WHALE_TOKEN_THRESHOLD):
         if policy not in _POLICIES:
             raise ValueError(f"unknown policy: {policy!r}, expected one of {_POLICIES}")
         if bs_source not in ("local", "telemetry"):
@@ -28,6 +29,7 @@ class Router:
         self.replica_states = replica_states
         self.policy = policy
         self.bs_source = bs_source
+        self.whale_token_threshold = whale_token_threshold
         self.rng = rng if rng is not None else random.Random()
         self.load_tracker = LoadTracker()
         self.whale_tracker = WhaleTracker()
@@ -36,6 +38,10 @@ class Router:
         self.last_new_tokens = None  # P-token actually used for the most recent route() call --
                                       # exposed so callers (proxy_server's assignment log) can
                                       # audit the KV$-hit discount against reality post-hoc
+        self.last_is_whale = None  # is_whale decided for the most recent route() call --
+                                    # exposed so callers can log/complete() consistently with
+                                    # whatever whale_token_threshold this Router was built with,
+                                    # instead of recomputing against a possibly different value
 
     def _build_candidates(self, token_ids: list) -> list:
         candidates = []
@@ -61,7 +67,8 @@ class Router:
 
     def route(self, token_ids: list) -> str:
         candidates = self._build_candidates(token_ids)
-        is_whale = len(token_ids) > WHALE_TOKEN_THRESHOLD
+        is_whale = len(token_ids) > self.whale_token_threshold
+        self.last_is_whale = is_whale
         if self.policy == "round_robin":
             replica_id, self._rr_index = pick_round_robin(candidates, self._rr_index)
         elif self.policy == "lmetric":

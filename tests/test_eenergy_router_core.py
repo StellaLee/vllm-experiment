@@ -165,6 +165,34 @@ def test_whale_argmin_sees_global_minimum_whale_count_not_just_two_sampled():
     assert third == "r2"  # r2 is the only replica with 0 active whales left
 
 
+def test_custom_whale_token_threshold_overrides_default():
+    """Lets a workload with genuine but smaller size variance than the synthetic
+    whale-injection workload (e.g. real BurstGPT traffic, max ~4k tokens vs. the
+    13.6-15.5k-token whales this project's default 4000 threshold was calibrated
+    against) still engage whale-aware routing at its own natural scale."""
+    states = _states()
+    r = Router(states, policy="whale_argmin", whale_token_threshold=10)
+    above = list(range(11))  # 11 tokens: not a whale under the default 4000, but is one here
+
+    r.route(above)  # r0 gets 1 active whale (tie_start=0)
+    chosen = r.route(above)
+    assert chosen == "r1"  # whale_argmin avoids r0's active whale
+
+
+def test_default_whale_token_threshold_matches_module_constant():
+    states = _states()
+    r = Router(states, policy="round_robin")
+    assert r.whale_token_threshold == WHALE_TOKEN_THRESHOLD
+
+
+def test_route_exposes_last_is_whale_for_logging():
+    r = Router(_states(), policy="round_robin")
+    r.route(token_ids=list(range(WHALE_TOKEN_THRESHOLD + 1)))
+    assert r.last_is_whale is True
+    r.route(token_ids=[1, 2, 3])
+    assert r.last_is_whale is False
+
+
 def test_complete_without_is_whale_stays_backward_compatible():
     r = Router(_states(), policy="round_robin")
     chosen = r.route(token_ids=[1])

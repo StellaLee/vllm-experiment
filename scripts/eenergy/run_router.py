@@ -21,12 +21,20 @@ Env:
                             each replica's real running+waiting count off its own vLLM
                             /metrics endpoint (bs_telemetry.py) via a background poller.
   ROUTER_BS_POLL_INTERVAL_S  default 0.5. Only used when ROUTER_BS_SOURCE=telemetry.
+  ROUTER_WHALE_TOKEN_THRESHOLD  default 4000 (WHALE_TOKEN_THRESHOLD in router_core.py).
+                            Admission-time prompt-token cutoff for p2c_whale/whale_argmin's
+                            whale-aware routing. The default was calibrated against this
+                            project's synthetic whale-injection workload (13.6-15.5k-token
+                            whales); a workload with genuine but smaller size variance (e.g.
+                            real BurstGPT traffic, max ~4k tokens) needs a lower value to make
+                            that machinery engage at its own natural scale.
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "router"))
 from proxy_server import run  # noqa: E402
+from router_core import WHALE_TOKEN_THRESHOLD  # noqa: E402
 
 
 def _parse_replicas(spec: str) -> list:
@@ -51,8 +59,10 @@ def main() -> int:
     assignment_log_path = os.environ.get("ROUTER_ASSIGNMENT_LOG") or None
     bs_source = os.environ.get("ROUTER_BS_SOURCE", "local")
     bs_poll_interval_s = float(os.environ.get("ROUTER_BS_POLL_INTERVAL_S", "0.5"))
+    whale_token_threshold = int(os.environ.get("ROUTER_WHALE_TOKEN_THRESHOLD",
+                                                 str(WHALE_TOKEN_THRESHOLD)))
     run(replica_specs, policy, model_name, host, port, power_interval_s, assignment_log_path,
-        bs_source, bs_poll_interval_s)
+        bs_source, bs_poll_interval_s, whale_token_threshold)
     return 0
 
 

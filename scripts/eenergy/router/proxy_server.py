@@ -58,8 +58,9 @@ async def bs_poll_loop(states: list, model_name: str, interval_s: float):
 
 
 def make_app(states: list, policy: str, model_name: str, assignment_log_path: str = None,
-             bs_source: str = "local"):
-    router = Router(states, policy, bs_source=bs_source)
+             bs_source: str = "local", whale_token_threshold: int = WHALE_TOKEN_THRESHOLD):
+    router = Router(states, policy, bs_source=bs_source,
+                     whale_token_threshold=whale_token_threshold)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     by_id = {s.config.replica_id: s for s in states}
     assignment_log = None
@@ -75,8 +76,8 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
     async def handle_completions(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         token_ids = tokenizer.encode(body["prompt"])
-        is_whale = len(token_ids) > WHALE_TOKEN_THRESHOLD
         replica_id = router.route(token_ids)
+        is_whale = router.last_is_whale
         target = by_id[replica_id].config
         if assignment_log:
             assignment_log.write(format_assignment_record(
@@ -106,11 +107,13 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
 
 def run(replica_specs: list, policy: str, model_name: str, host: str, port: int,
         power_interval_s: float = 0.5, assignment_log_path: str = None,
-        bs_source: str = "local", bs_poll_interval_s: float = 0.5) -> None:
+        bs_source: str = "local", bs_poll_interval_s: float = 0.5,
+        whale_token_threshold: int = WHALE_TOKEN_THRESHOLD) -> None:
     states = build_replica_states(replica_specs)
     gpu_indices = [s.config.gpu_index for s in states]
     reader = NvmlPowerReader(gpu_indices)
-    app = make_app(states, policy, model_name, assignment_log_path, bs_source=bs_source)
+    app = make_app(states, policy, model_name, assignment_log_path, bs_source=bs_source,
+                    whale_token_threshold=whale_token_threshold)
 
     async def _on_startup(app):
         app["power_task"] = asyncio.create_task(
