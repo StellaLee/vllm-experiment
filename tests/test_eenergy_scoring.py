@@ -8,7 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, pick_drf,  # noqa: E402
                       pick_p2c_whale, pick_whale_argmin, share_power, pick_constrained_lmetric,
                       dominant_share_vector, pick_pressure_switch, fleet_pressured,
-                      dominant_share_vector_power_priority, pick_drf_power_tiebreak)
+                      dominant_share_vector_power_priority, pick_drf_power_tiebreak,
+                      lmetric_power_score, pick_lmetric_power)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -145,6 +146,46 @@ def test_drf_power_tiebreak_matches_plain_drf_when_dominant_shares_dont_tie():
     r1 = _cand("r1", new_tokens=50, in_flight_after=5, token_budget=100,
                max_num_seqs=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)   # dom=0.5
     assert pick_drf([r0, r1]) == pick_drf_power_tiebreak([r0, r1]) == "r1"
+
+
+def test_lmetric_power_score_is_tokens_times_bs_times_one_plus_share_power():
+    """Score = new_tokens x in_flight_after x (1 + share_power) -- LMETRIC's own
+    multiplicative form (Zhang et al., OSDI'26), extended with a continuous power penalty
+    instead of DRF's max()-of-shares (which lets one dimension silence the other two, the
+    root cause diagnosed for every DRF tie-break failure mode this session)."""
+    c = _cand("r0", new_tokens=10, in_flight_after=5, ramp_rate_w_per_s=5.0, ramp_ceiling_w_per_s=10.0)
+    # power = 5/10 = 0.5 -> score = 10 * 5 * 1.5 = 75.0
+    assert lmetric_power_score(c) == 75.0
+
+
+def test_lmetric_power_matches_lmetric_when_no_power_pressure():
+    """Under zero ramp everywhere (share_power=0 for every candidate), (1+share_power)=1
+    for everyone -- the formula collapses to plain LMETRIC exactly. This is the light-load
+    prediction: should inherit LMETRIC's known-good light-load behavior for free, unlike
+    drf_power_tiebreak which regressed on the light cache-hit workload."""
+    cands = [
+        _cand("r0", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r2", new_tokens=50, in_flight_after=50, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+    ]
+    assert pick_lmetric_power(cands) == pick_lmetric(cands) == "r1"
+
+
+def test_lmetric_power_prefers_lower_power_replica_when_raw_lmetric_score_ties():
+    """The illustrative case the design targets: r0 and r1 have IDENTICAL raw
+    new_tokens*in_flight_after (100 each), so plain LMETRIC can't tell them apart and ties
+    (picks the first by rotation). r0 has real power pressure, r1 doesn't -- the
+    multiplicative penalty must differentiate them even though the underlying LMETRIC
+    scheduling term never would, without needing any separate tie-break rule at all."""
+    r0 = _cand("r0", new_tokens=10, in_flight_after=10, ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0)  # power=0.8, score=100*1.8=180
+    r1 = _cand("r1", new_tokens=10, in_flight_after=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)  # power=0.0, score=100*1.0=100
+    assert pick_lmetric([r0, r1]) == "r0"  # plain LMETRIC ties on raw score, picks first by rotation
+    assert pick_lmetric_power([r0, r1]) == "r1"  # power-aware avoids the pressured replica
+
+
+def test_lmetric_power_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_lmetric_power([])
 
 
 def test_drf_tie_breaking_rotates_instead_of_always_picking_first_candidate():

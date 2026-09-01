@@ -50,6 +50,36 @@ def pick_lmetric(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def lmetric_power_score(c) -> float:
+    """LMETRIC's own multiplicative form (Zhang et al., OSDI'26, arXiv:2603.15202),
+    extended with a continuous power penalty: new_tokens x in_flight_after x
+    (1 + share_power). Route to the minimum -- no separate tie-break rule needed at all,
+    unlike DRF's max()-of-shares family (dominant_share / dominant_share_vector /
+    dominant_share_vector_power_priority), where whichever dimension is currently largest
+    silences the other two entirely (the root cause diagnosed this session for every DRF
+    tie-break failure mode: compute silencing power for whales, load silencing power by
+    accident of magnitude, power silencing load under light load once "fixed" to check it
+    first). A product never does that -- every factor always contributes something,
+    proportionally, regardless of which is numerically biggest. (1 + share_power) is bounded
+    and always positive: a replica at its ramp ceiling (share_power=1) scores 2x worse than
+    an otherwise-identical replica with zero ramp; one with real headroom is barely
+    penalized. A lightweight, always-on, continuous cousin of Neely's Lyapunov
+    drift-plus-penalty (Stochastic Network Optimization, 2010) -- already cited here for
+    constrained_lmetric's hard V-to-infinity feasibility cutoff -- but smooth instead of a
+    discrete on/off boundary, so there's no threshold to misfire near."""
+    return c.new_tokens * c.in_flight_after * (1.0 + share_power(c))
+
+
+def pick_lmetric_power(candidates: list, tie_start: int = 0) -> str:
+    """Route to the candidate with the minimum lmetric_power_score. tie_start rotates which
+    candidate wins residual exact ties (see _rotate), matching every other picker's
+    convention."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=lmetric_power_score)
+    return best.replica_id
+
+
 def share_power(c) -> float:
     """Fraction of a replica's calibrated ramp ceiling currently in use. A negative ramp
     rate (power decreasing) never counts as pressure -- a routing decision can only ever

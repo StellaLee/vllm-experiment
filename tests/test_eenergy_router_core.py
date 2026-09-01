@@ -76,6 +76,20 @@ def test_drf_power_tiebreak_routes_away_from_replica_with_high_ramp_even_if_cach
     assert chosen == "r1"
 
 
+def test_lmetric_power_avoids_pressured_replica_even_when_raw_lmetric_score_ties():
+    """Integration-level smoke test mirroring the scoring-level test: two candidates with
+    identical raw new_tokens*in_flight_after but different power pressure -- lmetric_power
+    must differentiate them via the continuous penalty, with no separate tie-break rule."""
+    states = _states()  # ramp_ceiling_w_per_s=100.0 (see _states())
+    states[0].ramp_rate_w_per_s = 80.0  # r0: power=0.8
+    states[1].ramp_rate_w_per_s = 0.0   # r1: power=0.0
+    r = Router(states, policy="lmetric_power")
+    r.load_tracker.on_dispatch("r0")  # make BS identical: both replicas at in_flight_after=1
+    r.load_tracker.on_dispatch("r1")  # (0 in-flight before this route() call would be +1 each)
+    chosen = r.route(token_ids=[1] * 10)
+    assert chosen == "r1"
+
+
 def test_constrained_lmetric_excludes_replica_over_ramp_ceiling_even_with_cache_advantage():
     states = _states()
     states[0].cached_block_hashes = set()
