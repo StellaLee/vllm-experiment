@@ -85,6 +85,34 @@ def dominant_share_vector(c) -> tuple:
     return tuple(sorted((share_compute, share_load, share_power(c)), reverse=True))
 
 
+def dominant_share_vector_power_priority(c) -> tuple:
+    """Tie-break vector for pick_drf_power_tiebreak: (dominant_share, share_power,
+    share_load) -- a fixed resource PRIORITY order, not dominant_share_vector's magnitude
+    sort. dominant_share_vector sorts the three shares purely by numeric size, so whichever
+    of {load, power} happens to be numerically larger at that moment wins the tie-break --
+    an accident of scale, not a deliberate choice that power should matter more for this
+    project's ramp-protection goal. This variant always compares power second, regardless of
+    its size relative to load, so a tied dominant share breaks toward the replica with less
+    power pressure, not just less of whichever of {load, power} happens to be bigger."""
+    share_load = c.in_flight_after / c.max_num_seqs
+    sp = share_power(c)
+    return (dominant_share(c), sp, share_load)
+
+
+def pick_drf_power_tiebreak(candidates: list, tie_start: int = 0) -> str:
+    """DRF variant: same primary criterion as pick_drf (route to the replica with the
+    lowest dominant share), but breaks ties using dominant_share_vector_power_priority's
+    fixed (power, then load) resource order instead of dominant_share_vector's magnitude
+    sort. Targets the diagnosed mechanism (findings.md, 2026-09-01) where Share_power gets
+    accidentally outranked by Share_load in ties purely because load happens to be
+    numerically larger at that moment -- not because power is less relevant to what this
+    project is actually trying to protect."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=dominant_share_vector_power_priority)
+    return best.replica_id
+
+
 def pick_drf(candidates: list, tie_start: int = 0) -> str:
     """Condition 3 (ours). Route to the replica with the lexicographically lowest sorted
     share vector across the three independently-normalized resources -- Dominant Resource

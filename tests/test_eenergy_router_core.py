@@ -62,6 +62,20 @@ def test_drf_routes_away_from_replica_with_high_ramp_even_if_cache_favors_it():
     assert chosen == "r1"
 
 
+def test_drf_power_tiebreak_routes_away_from_replica_with_high_ramp_even_if_cache_favors_it():
+    """Integration-level smoke test: drf_power_tiebreak's primary criterion (route to lowest
+    dominant share) is unchanged from plain drf -- when shares don't tie, the two must agree.
+    Tie-break-specific behavior is covered at the scoring-function level
+    (test_eenergy_scoring.py)."""
+    states = _states()
+    states[0].cached_block_hashes = set()  # r0: no cache advantage
+    states[0].ramp_rate_w_per_s = 95.0     # but r0 is near its ramp ceiling (dom share 0.95)
+    states[1].ramp_rate_w_per_s = 0.0      # r1 has full power headroom
+    r = Router(states, policy="drf_power_tiebreak")
+    chosen = r.route(token_ids=[1, 2, 3])
+    assert chosen == "r1"
+
+
 def test_constrained_lmetric_excludes_replica_over_ramp_ceiling_even_with_cache_advantage():
     states = _states()
     states[0].cached_block_hashes = set()

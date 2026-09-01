@@ -7,7 +7,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
                                  "scripts", "eenergy", "router"))
 from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, pick_drf,  # noqa: E402
                       pick_p2c_whale, pick_whale_argmin, share_power, pick_constrained_lmetric,
-                      dominant_share_vector, pick_pressure_switch, fleet_pressured)
+                      dominant_share_vector, pick_pressure_switch, fleet_pressured,
+                      dominant_share_vector_power_priority, pick_drf_power_tiebreak)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -103,6 +104,47 @@ def test_drf_lexicographic_tiebreak_uses_load_when_dominant_compute_share_ties()
     r1 = _cand("r1", new_tokens=90, token_budget=100, in_flight_after=2, max_num_seqs=10)  # compute=0.9 (dom), load=0.2 (least loaded)
     r2 = _cand("r2", new_tokens=90, token_budget=100, in_flight_after=5, max_num_seqs=10)  # compute=0.9 (dom), load=0.5
     assert pick_drf([r0, r1, r2]) == "r1"
+
+
+def test_dominant_share_vector_power_priority_puts_power_before_load():
+    """dominant_share_vector's tie-break is a pure magnitude sort -- whichever of
+    {load, power} happens to be numerically larger wins the tie-break, by accident of scale,
+    not because the project actually wants load prioritized over power. This variant fixes
+    the tie-break's resource ORDER: (dominant_share, power, load), always -- power gets first
+    chance to break a tie regardless of which one is numerically bigger."""
+    c = _cand("r0", new_tokens=80, in_flight_after=7, token_budget=100,
+              max_num_seqs=10, ramp_rate_w_per_s=3.0, ramp_ceiling_w_per_s=10.0)
+    # compute=0.8 (dom), load=0.7, power=0.3 -- magnitude sort would put load (0.7) before
+    # power (0.3); resource-priority order always puts power second regardless.
+    vec = dominant_share_vector_power_priority(c)
+    assert vec == (0.8, 0.3, 0.7)
+    assert vec[0] == dominant_share(c)
+
+
+def test_drf_power_tiebreak_prefers_lower_power_over_lower_load_when_compute_ties():
+    """The illustrative case the fix targets: two candidates tied on dominant compute share.
+    r0 has MORE load but LESS power pressure; r1 has LESS load but MORE power pressure.
+    Magnitude-sort tie-break (plain pick_drf) picks whichever's second-largest share is
+    smaller regardless of which resource it is -- here that happens to pick r1 (favors low
+    load, ignores that r1 is worse on power). Power-priority tie-break must pick r0 instead
+    (favors low power, this project's actual protection target), even though r0 has 3.5x
+    r1's load."""
+    r0 = _cand("r0", new_tokens=90, token_budget=100, in_flight_after=7, max_num_seqs=10,
+               ramp_rate_w_per_s=3.0, ramp_ceiling_w_per_s=10.0)  # compute=0.9(dom), load=0.7, power=0.3
+    r1 = _cand("r1", new_tokens=90, token_budget=100, in_flight_after=2, max_num_seqs=10,
+               ramp_rate_w_per_s=5.0, ramp_ceiling_w_per_s=10.0)  # compute=0.9(dom), load=0.2, power=0.5
+    assert pick_drf([r0, r1]) == "r1"  # existing magnitude-sort tie-break: favors low load
+    assert pick_drf_power_tiebreak([r0, r1]) == "r0"  # power-priority tie-break: favors low power
+
+
+def test_drf_power_tiebreak_matches_plain_drf_when_dominant_shares_dont_tie():
+    """Same primary criterion as pick_drf (route to minimum dominant share) -- only the
+    tie-break order changes, so when there's no tie the two must agree."""
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, token_budget=100,
+               max_num_seqs=10, ramp_rate_w_per_s=95.0, ramp_ceiling_w_per_s=100.0)  # dom=0.95
+    r1 = _cand("r1", new_tokens=50, in_flight_after=5, token_budget=100,
+               max_num_seqs=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)   # dom=0.5
+    assert pick_drf([r0, r1]) == pick_drf_power_tiebreak([r0, r1]) == "r1"
 
 
 def test_drf_tie_breaking_rotates_instead_of_always_picking_first_candidate():
