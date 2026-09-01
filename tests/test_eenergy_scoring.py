@@ -10,7 +10,8 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       dominant_share_vector, pick_pressure_switch, fleet_pressured,
                       dominant_share_vector_power_priority, pick_drf_power_tiebreak,
                       lmetric_power_score, pick_lmetric_power,
-                      lmetric_power_convex_score, pick_lmetric_power_convex)
+                      lmetric_power_convex_score, pick_lmetric_power_convex,
+                      pick_whale_argmin_power_switch)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -435,6 +436,40 @@ def test_pressure_switch_tie_breaking_rotates_in_both_regimes():
 def test_pressure_switch_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_pressure_switch([])
+
+
+def test_whale_argmin_power_switch_matches_whale_argmin_non_whale_when_not_pressured():
+    """Default mode: fleet not pressured (every share_power <= 1.0) -- non-whale request
+    delegates through whale_argmin to plain LMETRIC, unchanged."""
+    r0 = _cand("r0", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)
+    r1 = _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=50.0, ramp_ceiling_w_per_s=100.0)
+    assert pick_whale_argmin_power_switch([r0, r1], is_whale=False) == pick_whale_argmin([r0, r1], is_whale=False) == "r1"
+
+
+def test_whale_argmin_power_switch_matches_whale_argmin_whale_case_when_not_pressured():
+    """Default mode, whale request: fewest active_whale_count wins, same as plain
+    whale_argmin -- ignores the tied-LMETRIC-favoring candidate the same way whale_argmin
+    does."""
+    r0 = _cand("r0", new_tokens=90, token_budget=100, in_flight_after=1, ramp_rate_w_per_s=0.0,
+               ramp_ceiling_w_per_s=100.0, active_whale_count_after=2)
+    r1 = _cand("r1", new_tokens=90, token_budget=100, in_flight_after=1, ramp_rate_w_per_s=0.0,
+               ramp_ceiling_w_per_s=100.0, active_whale_count_after=0)
+    assert pick_whale_argmin_power_switch([r0, r1], is_whale=True) == pick_whale_argmin([r0, r1], is_whale=True) == "r1"
+
+
+def test_whale_argmin_power_switch_matches_drf_power_tiebreak_when_fleet_pressured():
+    """Pressured mode: switches to drf_power_tiebreak regardless of is_whale -- even a
+    non-whale request must follow the power-aware DRF routing while the fleet is pressured,
+    the same 'fleet-wide, not per-candidate' semantics pressure_switch already documents."""
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, ramp_rate_w_per_s=150.0, ramp_ceiling_w_per_s=100.0)  # over ceiling
+    r1 = _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=20.0, ramp_ceiling_w_per_s=100.0)
+    assert pick_whale_argmin([r0, r1], is_whale=False) == "r0"  # sanity: whale_argmin (via LMETRIC) would pick r0
+    assert pick_whale_argmin_power_switch([r0, r1], is_whale=False) == pick_drf_power_tiebreak([r0, r1]) == "r1"
+
+
+def test_whale_argmin_power_switch_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_whale_argmin_power_switch([], is_whale=False)
 
 
 def test_p2c_whale_with_real_rng_distributes_across_replicas():

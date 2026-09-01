@@ -276,3 +276,28 @@ def pick_whale_argmin(candidates: list, is_whale: bool, tie_start: int = 0) -> s
         return pick_lmetric(candidates, tie_start)
     best = min(_rotate(candidates, tie_start), key=lambda c: c.active_whale_count_after)
     return best.replica_id
+
+
+def pick_whale_argmin_power_switch(candidates: list, is_whale: bool, tie_start: int = 0) -> str:
+    """Fleet-state-triggered switching, same pattern as pick_pressure_switch, but with
+    whale_argmin as the default instead of plain LMETRIC: route via drf_power_tiebreak
+    whenever the fleet is CURRENTLY power-pressured (fleet_pressured), else via whale_argmin
+    (which itself already delegates non-whale traffic to LMETRIC unchanged).
+
+    Motivation (findings.md, 2026-09-01): whale_argmin won TTFT outright in every
+    whale-injection-based condition tested this session (closed-loop, both open-loop rates,
+    both decode-cap settings, throughput-matched) -- a stronger, more consistently-validated
+    default than plain LMETRIC. Its one real, bounded weakness is TBT-mean/mean-ramp under
+    real load -- exactly what drf_power_tiebreak (the resource-priority DRF tie-break fix,
+    validated specifically under real ramp pressure) is good at. Gating the switch to only
+    engage during genuine pressure should inherit whale_argmin's proven TTFT record
+    everywhere it already wins, while only paying drf_power_tiebreak's cost during the
+    windows its ramp protection is actually needed -- and should avoid drf_power_tiebreak's
+    own documented light-load regression, since it would rarely engage there by construction
+    (no pressure = no engagement). Not yet validated; this is the constructed hypothesis, not
+    a result."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    if fleet_pressured(candidates):
+        return pick_drf_power_tiebreak(candidates, tie_start)
+    return pick_whale_argmin(candidates, is_whale, tie_start)

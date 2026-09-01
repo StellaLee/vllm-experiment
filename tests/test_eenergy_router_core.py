@@ -101,6 +101,29 @@ def test_lmetric_power_convex_avoids_pressured_replica_even_when_raw_lmetric_sco
     assert chosen == "r1"
 
 
+def test_whale_argmin_power_switch_follows_drf_power_tiebreak_when_pressured():
+    """Integration-level smoke test: pressured mode routes away from the over-ceiling
+    replica even though it would otherwise win on whale-count/LMETRIC grounds."""
+    states = _states()
+    states[0].cached_block_hashes = set()
+    states[0].ramp_rate_w_per_s = 150.0  # r0: over its ramp ceiling (share_power=1.5)
+    states[1].ramp_rate_w_per_s = 0.0    # r1: full power headroom
+    r = Router(states, policy="whale_argmin_power_switch")
+    chosen = r.route(token_ids=[1, 2, 3])
+    assert chosen == "r1"
+
+
+def test_whale_argmin_power_switch_follows_whale_argmin_when_not_pressured():
+    """Integration-level smoke test: unpressured mode, whale request -- fewest active
+    whales wins, same as plain whale_argmin."""
+    states = _states()
+    whale_tokens = list(range(WHALE_TOKEN_THRESHOLD + 1))
+    r = Router(states, policy="whale_argmin_power_switch")
+    r.route(whale_tokens)          # r0 gets 1 active whale (tie_start=0)
+    second = r.route(whale_tokens)
+    assert second == "r1"          # r1 has 0 active whales, wins
+
+
 def test_constrained_lmetric_excludes_replica_over_ramp_ceiling_even_with_cache_advantage():
     states = _states()
     states[0].cached_block_hashes = set()
