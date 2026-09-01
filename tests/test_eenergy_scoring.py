@@ -9,7 +9,8 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       pick_p2c_whale, pick_whale_argmin, share_power, pick_constrained_lmetric,
                       dominant_share_vector, pick_pressure_switch, fleet_pressured,
                       dominant_share_vector_power_priority, pick_drf_power_tiebreak,
-                      lmetric_power_score, pick_lmetric_power)
+                      lmetric_power_score, pick_lmetric_power,
+                      lmetric_power_convex_score, pick_lmetric_power_convex)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -186,6 +187,56 @@ def test_lmetric_power_prefers_lower_power_replica_when_raw_lmetric_score_ties()
 def test_lmetric_power_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_lmetric_power([])
+
+
+def test_lmetric_power_convex_score_is_tokens_times_bs_times_one_plus_share_power_squared():
+    """Score = new_tokens x in_flight_after x (1 + share_power^2) -- same LMETRIC-style
+    multiplicative form as lmetric_power, but a convex penalty instead of linear. Convex
+    ramp-cost penalties are the standard convention in power-systems economic dispatch /
+    unit commitment literature (stressing a generator near its ramp limit carries
+    disproportionate, super-linear cost), and directly targets the oscillation mechanism
+    diagnosed for lmetric_power's mean_ramp/duty_cycle regression: a linear penalty reacts to
+    noise-level power differences even at low pressure; squaring makes the penalty much
+    smaller than linear at low share_power (0.3^2=0.09 vs 0.3) while still growing sharply
+    near the ceiling (barely different from linear at share_power=1)."""
+    c = _cand("r0", new_tokens=10, in_flight_after=5, ramp_rate_w_per_s=5.0, ramp_ceiling_w_per_s=10.0)
+    # power = 0.5 -> power^2 = 0.25 -> score = 10 * 5 * 1.25 = 62.5
+    assert lmetric_power_convex_score(c) == 62.5
+
+
+def test_lmetric_power_convex_penalty_is_smaller_than_linear_below_the_ceiling():
+    """The core property the design targets: for any share_power in (0, 1), the convex
+    penalty is strictly smaller (less reactive to noise) than the linear one; at the ceiling
+    (share_power=1) they coincide; beyond it, convex overtakes linear (steeper punishment for
+    genuinely exceeding the calibrated ceiling)."""
+    below = _cand("r0", new_tokens=10, in_flight_after=5, ramp_rate_w_per_s=3.0, ramp_ceiling_w_per_s=10.0)  # power=0.3
+    assert lmetric_power_convex_score(below) < lmetric_power_score(below)
+
+    at_ceiling = _cand("r0", new_tokens=10, in_flight_after=5, ramp_rate_w_per_s=10.0, ramp_ceiling_w_per_s=10.0)  # power=1.0
+    assert lmetric_power_convex_score(at_ceiling) == lmetric_power_score(at_ceiling)
+
+    over = _cand("r0", new_tokens=10, in_flight_after=5, ramp_rate_w_per_s=15.0, ramp_ceiling_w_per_s=10.0)  # power=1.5
+    assert lmetric_power_convex_score(over) > lmetric_power_score(over)
+
+
+def test_lmetric_power_convex_matches_lmetric_when_no_power_pressure():
+    cands = [
+        _cand("r0", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r2", new_tokens=50, in_flight_after=50, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+    ]
+    assert pick_lmetric_power_convex(cands) == pick_lmetric(cands) == "r1"
+
+
+def test_lmetric_power_convex_prefers_lower_power_replica_when_raw_lmetric_score_ties():
+    r0 = _cand("r0", new_tokens=10, in_flight_after=10, ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0)  # power=0.8
+    r1 = _cand("r1", new_tokens=10, in_flight_after=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)  # power=0.0
+    assert pick_lmetric_power_convex([r0, r1]) == "r1"
+
+
+def test_lmetric_power_convex_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_lmetric_power_convex([])
 
 
 def test_drf_tie_breaking_rotates_instead_of_always_picking_first_candidate():

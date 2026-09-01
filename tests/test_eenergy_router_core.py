@@ -90,6 +90,17 @@ def test_lmetric_power_avoids_pressured_replica_even_when_raw_lmetric_score_ties
     assert chosen == "r1"
 
 
+def test_lmetric_power_convex_avoids_pressured_replica_even_when_raw_lmetric_score_ties():
+    states = _states()  # ramp_ceiling_w_per_s=100.0 (see _states())
+    states[0].ramp_rate_w_per_s = 80.0  # r0: power=0.8
+    states[1].ramp_rate_w_per_s = 0.0   # r1: power=0.0
+    r = Router(states, policy="lmetric_power_convex")
+    r.load_tracker.on_dispatch("r0")
+    r.load_tracker.on_dispatch("r1")
+    chosen = r.route(token_ids=[1] * 10)
+    assert chosen == "r1"
+
+
 def test_constrained_lmetric_excludes_replica_over_ramp_ceiling_even_with_cache_advantage():
     states = _states()
     states[0].cached_block_hashes = set()

@@ -80,6 +80,33 @@ def pick_lmetric_power(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def lmetric_power_convex_score(c) -> float:
+    """Same LMETRIC-style multiplicative form as lmetric_power_score, but a CONVEX power
+    penalty -- new_tokens x in_flight_after x (1 + share_power^2) -- instead of linear.
+    Targets the mean_ramp/duty_cycle regression diagnosed for lmetric_power under real load
+    (findings.md, 2026-09-01): a linear penalty reacts to noise-level power differences even
+    when every replica is comfortably under-ceiling, plausibly causing a chase-the-coolest-
+    replica oscillation that raised mean ramp activity. Squaring makes the penalty much
+    smaller than linear below the ceiling (0.3^2=0.09 vs 0.3 -- barely reactive to noise)
+    while still growing sharply near/above it (matches linear exactly at share_power=1,
+    overtakes it beyond). Convex ramp-cost penalties are the standard convention in
+    power-systems economic dispatch / unit commitment literature: stressing a generator near
+    its ramp limit carries disproportionate, super-linear cost -- arguably better-grounded
+    for this project's actual domain than the linear version, not just an ad hoc tweak."""
+    sp = share_power(c)
+    return c.new_tokens * c.in_flight_after * (1.0 + sp * sp)
+
+
+def pick_lmetric_power_convex(candidates: list, tie_start: int = 0) -> str:
+    """Route to the candidate with the minimum lmetric_power_convex_score. tie_start rotates
+    which candidate wins residual exact ties (see _rotate), matching every other picker's
+    convention."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=lmetric_power_convex_score)
+    return best.replica_id
+
+
 def share_power(c) -> float:
     """Fraction of a replica's calibrated ramp ceiling currently in use. A negative ramp
     rate (power decreasing) never counts as pressure -- a routing decision can only ever
