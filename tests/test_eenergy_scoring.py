@@ -18,7 +18,8 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       share_power_level, dominant_share_peak,
                       dominant_share_vector_peak_priority, pick_drf_peak_power_tiebreak,
                       pick_drf_power_tiebreak_p2c, pick_compute_only,
-                      dominant_share_vector_power_priority_full, pick_drf_power_tiebreak_full)
+                      dominant_share_vector_power_priority_full, pick_drf_power_tiebreak_full,
+                      weighted_sum_score, pick_weighted_sum)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -245,6 +246,47 @@ def test_drf_power_tiebreak_full_matches_plain_drf_when_dominant_shares_dont_tie
 def test_drf_power_tiebreak_full_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_drf_power_tiebreak_full([])
+
+
+def test_weighted_sum_score_is_033_times_each_share_summed():
+    """Score = 0.33*Share_compute + 0.33*Share_load + 0.33*Share_power -- a genuine linear
+    combination over the same three normalized shares the DRF family uses, equal weights.
+    The theoretical counterpart to LMETRIC's implicit zero-weight-on-power: every dimension
+    gets a strictly positive, fixed weight, so (per the positive-weighted-sum-respects-
+    domination argument) this is expected to be Pareto-safe by construction, unlike LMETRIC."""
+    c = _cand("r0", new_tokens=80, in_flight_after=7, token_budget=100,
+              max_num_seqs=10, ramp_rate_w_per_s=3.0, ramp_ceiling_w_per_s=10.0)
+    # compute=0.8, load=0.7, power=0.3 -> 0.33*(0.8+0.7+0.3) = 0.33*1.8 = 0.594
+    assert weighted_sum_score(c) == pytest.approx(0.594)
+
+
+def test_weighted_sum_resolves_the_pareto_domination_counterexample():
+    """Same instance as drf_power_tiebreak's counterexample (paper.tex Sec 4.2): A
+    Pareto-dominates B (equal load and power, strictly lower compute). A positive-weighted
+    sum must never select the dominated point, regardless of iteration order -- unlike the
+    named rule's (D, power, load) tuple, every dimension always contributes here."""
+    a = _cand("A", new_tokens=30, in_flight_after=90, token_budget=100,
+              max_num_seqs=100, ramp_rate_w_per_s=90.0, ramp_ceiling_w_per_s=100.0)
+    b = _cand("B", new_tokens=50, in_flight_after=90, token_budget=100,
+              max_num_seqs=100, ramp_rate_w_per_s=90.0, ramp_ceiling_w_per_s=100.0)
+    assert pick_weighted_sum([b, a]) == "A"
+    assert pick_weighted_sum([a, b]) == "A"
+
+
+def test_weighted_sum_prefers_lower_power_replica_when_compute_and_load_tie():
+    """Direct analog of lmetric_power's own illustrative test: two candidates tied on
+    compute and load, differing only on power -- the weighted sum must differentiate them
+    via the power term, same as every power-aware arm's baseline sanity check."""
+    r0 = _cand("r0", new_tokens=50, in_flight_after=5, token_budget=100,
+               max_num_seqs=10, ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0)  # power=0.8
+    r1 = _cand("r1", new_tokens=50, in_flight_after=5, token_budget=100,
+               max_num_seqs=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)  # power=0.0
+    assert pick_weighted_sum([r0, r1]) == "r1"
+
+
+def test_weighted_sum_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_weighted_sum([])
 
 
 def test_lmetric_power_score_is_tokens_times_bs_times_one_plus_share_power():

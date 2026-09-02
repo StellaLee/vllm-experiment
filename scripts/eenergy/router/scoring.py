@@ -249,6 +249,34 @@ def pick_drf_peak_power_tiebreak(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def weighted_sum_score(c, w_compute: float = 0.33, w_load: float = 0.33, w_power: float = 0.33) -> float:
+    """A genuine linear combination over the same three normalized shares the DRF family
+    uses -- score = w_compute*Share_compute + w_load*Share_load + w_power*Share_power.
+    Route to the minimum. Every weight defaults to 0.33 (equal, strictly positive) --
+    unlike LMETRIC's product form, which gives power an implicit weight of ZERO (it isn't in
+    the formula at all), this weights all three dimensions on purpose.
+
+    Theoretical property (discussed, not just asserted): any weighted sum with every weight
+    strictly positive respects Pareto domination -- if c' dominates c (every raw share <=,
+    strictly somewhere), and every weight is positive, then weighted_sum_score(c') is
+    strictly lower, so argmin over this score can never select a dominated candidate. This
+    is the empirical counterpart to that argument: a concrete arm to compare against the
+    DRF family's discrete tie-break approach, using the same three shares."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    return w_compute * share_compute + w_load * share_load + w_power * share_power(c)
+
+
+def pick_weighted_sum(candidates: list, tie_start: int = 0) -> str:
+    """Route to the candidate with the minimum weighted_sum_score. tie_start rotates which
+    candidate wins residual exact ties (see _rotate), matching every other picker's
+    convention."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=weighted_sum_score)
+    return best.replica_id
+
+
 def dominant_share(c) -> float:
     """Share_compute, Share_load, Share_power for one candidate, each normalized to that
     replica's own configured capacity (no cross-resource weight); returns the max, i.e. the
