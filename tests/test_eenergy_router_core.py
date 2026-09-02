@@ -148,6 +148,29 @@ def test_drf_power_tiebreak_p2c_picks_better_of_the_sampled_pair():
     assert chosen == "r1"
 
 
+def test_drf_power_tiebreak_adaptive_starts_at_the_450_floor():
+    states = _states()  # ramp_ceiling_w_per_s=100.0 in config -- irrelevant to this policy,
+                         # which uses the adaptive tracker's own floor instead
+    r = Router(states, policy="drf_power_tiebreak_adaptive")
+    r.route(token_ids=[1, 2, 3])
+    assert r.adaptive_ceiling.ceiling() == 450.0  # nothing elevated observed yet
+
+
+def test_drf_power_tiebreak_adaptive_relaxes_the_ceiling_once_the_regime_is_heavier():
+    """After repeatedly observing a heavier-than-450 regime (both replicas consistently
+    ramping around 900 W/s), the adaptive ceiling rises well above the static floor -- a
+    replica at 900 W/s stops looking maximally pressured once that's normal for the CURRENT
+    regime, unlike the fixed-ceiling drf_power_tiebreak, which would treat it as ~2x over
+    ceiling forever regardless of how the workload has actually been behaving."""
+    states = _states()
+    r = Router(states, policy="drf_power_tiebreak_adaptive")
+    for _ in range(50):
+        states[0].ramp_rate_w_per_s = 900.0
+        states[1].ramp_rate_w_per_s = 900.0
+        r.route(token_ids=[1, 2, 3])
+    assert r.adaptive_ceiling.ceiling() == 900.0
+
+
 def test_lmetric_power_avoids_pressured_replica_even_when_raw_lmetric_score_ties():
     """Integration-level smoke test mirroring the scoring-level test: two candidates with
     identical raw new_tokens*in_flight_after but different power pressure -- lmetric_power

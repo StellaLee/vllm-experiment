@@ -4,6 +4,7 @@ those live in proxy_server.py / power_nvml.py and are called before/around this 
 keeping Router itself fully unit-testable."""
 import random
 
+from adaptive_ceiling import AdaptiveRampCeiling
 from cache_mirror import new_tokens_if_routed, record_cached
 from load_tracker import LoadTracker
 from whale_tracker import WhaleTracker
@@ -16,7 +17,7 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, pick_drf, pick_p
 _POLICIES = ("round_robin", "lmetric", "drf", "p2c_whale", "whale_argmin", "constrained_lmetric",
              "pressure_switch", "drf_power_tiebreak", "lmetric_power", "lmetric_power_convex",
              "whale_argmin_power_switch", "drf_coincidence_tiebreak", "drf_peak_power_tiebreak",
-             "drf_power_tiebreak_p2c")
+             "drf_power_tiebreak_p2c", "drf_power_tiebreak_adaptive")
 
 # Admission-time whale classification cutoff (prompt tokens), reused from this project's
 # existing whale-aware-controller convention (scripts/mlsys/hotpatch_whale_aware_budget.py)
@@ -38,6 +39,7 @@ class Router:
         self.rng = rng if rng is not None else random.Random()
         self.load_tracker = LoadTracker()
         self.whale_tracker = WhaleTracker()
+        self.adaptive_ceiling = AdaptiveRampCeiling()
         self._rr_index = -1
         self._tie_cursor = 0
         self.last_new_tokens = None  # P-token actually used for the most recent route() call --
@@ -50,6 +52,10 @@ class Router:
 
     def _build_candidates(self, token_ids: list) -> list:
         candidates = []
+        if self.policy == "drf_power_tiebreak_adaptive":
+            for state in self.replica_states:
+                self.adaptive_ceiling.observe(state.ramp_rate_w_per_s)
+            live_ceiling = self.adaptive_ceiling.ceiling()
         for state in self.replica_states:
             new_tokens = new_tokens_if_routed(token_ids, state.cached_block_hashes)
             if self.bs_source == "telemetry":
@@ -58,6 +64,10 @@ class Router:
                 in_flight_after = self.load_tracker.in_flight_if_dispatched(state.config.replica_id)
             active_whale_count_after = self.whale_tracker.active_whale_count_if_dispatched(
                 state.config.replica_id)
+            if self.policy == "drf_power_tiebreak_adaptive":
+                ramp_ceiling = live_ceiling
+            else:
+                ramp_ceiling = state.config.ramp_ceiling_w_per_s
             candidates.append(Candidate(
                 replica_id=state.config.replica_id,
                 new_tokens=new_tokens,
@@ -65,7 +75,7 @@ class Router:
                 token_budget=state.config.token_budget,
                 max_num_seqs=state.config.max_num_seqs,
                 ramp_rate_w_per_s=state.ramp_rate_w_per_s,
-                ramp_ceiling_w_per_s=state.config.ramp_ceiling_w_per_s,
+                ramp_ceiling_w_per_s=ramp_ceiling,
                 active_whale_count_after=active_whale_count_after,
                 power_w=state.last_power_w,
                 power_level_ceiling_w=state.config.power_level_ceiling_w,
@@ -113,6 +123,9 @@ class Router:
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
         elif self.policy == "drf_power_tiebreak_p2c":
             replica_id = pick_drf_power_tiebreak_p2c(candidates, self.rng)
+        elif self.policy == "drf_power_tiebreak_adaptive":
+            replica_id = pick_drf_power_tiebreak(candidates, self._tie_cursor)
+            self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
         else:
             replica_id = pick_pressure_switch(candidates, self._tie_cursor)
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
