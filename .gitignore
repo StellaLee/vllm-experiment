@@ -17,6 +17,16 @@ data/
 paper-mlsys/
 paper-pes-im/
 
+# LaTeX build artifacts (paper-eenergy/ is tracked; keep .tex/.bib/.pdf, drop the rest)
+paper-eenergy/*.aux
+paper-eenergy/*.log
+paper-eenergy/*.bbl
+paper-eenergy/*.blg
+paper-eenergy/*.out
+paper-eenergy/*.fls
+paper-eenergy/*.fdb_latexmk
+paper-eenergy/*.synctex.gz
+
 # macOS
 .DS_Store
 **/.DS_Store

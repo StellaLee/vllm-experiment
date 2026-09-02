@@ -1,0 +1,329 @@
+%% paper.tex — ACM eEnergy 2027 Fall submission draft
+%% Double-blind review copy: sigconf + review + anonymous.
+%% Source of truth for content is paper.md; keep the two in sync by hand
+%% (paper.md is easier to edit/diff, this file is what actually compiles).
+\documentclass[sigconf,review,anonymous]{acmart}
+
+\AtBeginDocument{%
+  \providecommand\BibTeX{{Bib\TeX}}}
+
+%% Rights-management placeholders — fill in from the rights-confirmation
+%% email after acceptance. Not needed for the anonymous review submission.
+\setcopyright{acmlicensed}
+\copyrightyear{2027}
+\acmYear{2027}
+\acmDOI{XXXXXXX.XXXXXXX}
+\acmConference[eEnergy '27]{ACM eEnergy 2027 Fall: 17th ACM International Conference on
+  Future and Sustainable Energy Systems}{TBD 2027}{TBD}
+\acmISBN{978-1-4503-XXXX-X/2027/TBD}
+
+\begin{document}
+
+\title{Provably Pareto-Optimal Power-Aware Routing for Multi-GPU LLM Serving}
+
+\author{Anonymous Author(s)}
+\affiliation{%
+  \institution{Anonymous Institution}
+  \country{}
+}
+
+\begin{abstract}
+We formalize power-aware request routing for multi-GPU LLM-serving fleets as a
+multi-resource social welfare problem: each replica carries three independently-normalized
+shares --- compute (prefix-cache-discounted prefill cost), load (in-flight request count),
+and power (live NVML-measured ramp rate relative to a calibrated ceiling) --- and the router
+seeks an egalitarian (max-min) welfare allocation across candidates at each routing decision,
+extending Dominant Resource Fairness~\cite{ghodsi2011drf} to a third, reactive resource
+dimension. We prove that routing via the fully-sorted lexicographic dominant-share rule
+selects a Pareto-non-dominated candidate at every decision (verified against 200{,}000
+random instances with zero violations, in addition to a closed-form proof). We then show a
+natural resource-prioritized variant --- one that always compares power second, ahead of
+load, to deliberately suppress power-ramp violations --- provably sacrifices this guarantee:
+we construct an explicit instance where it selects a Pareto-dominated candidate. Despite
+giving up the theoretical guarantee, this variant wins empirically on real 8$\times$4090
+hardware under sustained fleet power pressure: relative to the Pareto-safe rule, it cuts peak
+power-ramp rate by 40\% (with 8$\times$ tighter run-to-run variance) and cross-GPU ramp
+coincidence by 43\%, while leaving mean request latency statistically flat, across 3
+replicated trials. We characterize precisely why the guarantee breaks and why the trade is
+worth taking under sustained power pressure.
+\end{abstract}
+
+\begin{CCSXML}
+<ccs2012>
+   <concept>
+       <concept_id>10010147.10010919.10010920.10010921</concept_id>
+       <concept_desc>Computer systems organization~Cloud computing</concept_desc>
+       <concept_significance>500</concept_significance>
+   </concept>
+   <concept>
+       <concept_id>10010147.10010919.10010172</concept_id>
+       <concept_desc>Computer systems organization~Dependable and fault-tolerant systems and networks</concept_desc>
+       <concept_significance>300</concept_significance>
+   </concept>
+   <concept>
+       <concept_id>10003752.10003809.10010031</concept_id>
+       <concept_desc>Theory of computation~Scheduling algorithms</concept_desc>
+       <concept_significance>300</concept_significance>
+   </concept>
+</ccs2012>
+\end{CCSXML}
+
+\ccsdesc[500]{Computer systems organization~Cloud computing}
+\ccsdesc[300]{Computer systems organization~Dependable and fault-tolerant systems and networks}
+\ccsdesc[300]{Theory of computation~Scheduling algorithms}
+
+\keywords{LLM serving, request routing, power management, dominant resource fairness,
+  Pareto optimality, data center energy}
+
+\maketitle
+
+\section{Introduction}
+
+\textbf{Motivation.} Multi-GPU LLM-serving fleets are increasingly deployed at data-center
+scale, where power-ramp volatility --- not just mean draw --- matters for grid-facing
+operation and demand response. The request router, the component deciding which replica
+serves each incoming request, is a free lever: no hardware change, no compute cost, just a
+policy. This paper asks a precise question about that lever: \emph{can we route in a way
+that is provably fair/efficient across resources, and does a deliberate power-aware
+deviation from that provable rule pay for itself in practice?}
+
+\textbf{Contributions.}
+\begin{enumerate}
+  \item A formalization of power-aware LLM-serving routing as a 3-resource
+    (compute/load/power) egalitarian social welfare problem, building on
+    DRF~\cite{ghodsi2011drf} but extending it to a reactive, time-varying resource (live
+    power-ramp state) rather than DRF's original static per-request demand model --- a real
+    modeling departure, made explicit rather than assumed away (\S\ref{sec:formulation}).
+  \item A proof that the natural solution --- route to the candidate minimizing the
+    fully-sorted descending share vector --- is Pareto-non-dominated at every decision
+    (\S\ref{sec:lemma1}).
+  \item A proof, via explicit counterexample, that a natural power-prioritized variant of
+    this rule sacrifices the guarantee (\S\ref{sec:counterexample}) --- and an argument for
+    why the trade is nonetheless worth taking.
+  \item Hardware validation on a real 8$\times$4090 LLM-serving fleet: the power-prioritized
+    rule delivers a large, tightly-replicated win on tail power-ramp metrics under sustained
+    pressure, at no measurable mean-latency cost (\S\ref{sec:eval}).
+\end{enumerate}
+
+\section{Background and Related Work}
+
+\begin{itemize}
+  \item \textbf{Dominant Resource Fairness (DRF)}~\cite{ghodsi2011drf} --- multi-resource
+    fair allocation via lexicographic comparison of dominant shares; proven to satisfy
+    sharing incentive, envy-freeness, and Pareto efficiency for a fixed set of resources with
+    static per-user demand vectors. We extend the resource set to include a third,
+    live/reactive dimension (\S\ref{sec:formulation}) and re-derive the Pareto-efficiency
+    property for this extended, dynamic setting rather than assuming the original proof
+    transfers unmodified.
+  \item \textbf{LMETRIC}~\cite{zhang2026lmetric} --- multiplicative $\mathit{P\text{-}token}
+    \times \mathit{BS}$ scoring for LLM-serving load balancing; a simpler,
+    non-fairness-theoretic alternative, useful as a baseline.
+  \item \textbf{Power-of-Two-Choices}~\cite{mitzenmacher2001power,azar1994balanced} ---
+    sampled load balancing with a proven exponential improvement in expected max load; a
+    different mechanism family (randomized sampling vs.\ our full-visibility deterministic
+    rule), noted for completeness.
+  \item \textbf{Coincidence factor / cross-machine power correlation} --- the cross-GPU
+    ramp-coincidence metric used in \S\ref{sec:eval} is drawn from a sibling paper's
+    grid-instrumentation framing, reused here as one of the two metrics the power-prioritized
+    rule is evaluated on.
+\end{itemize}
+
+\section{Problem Formulation}
+\label{sec:formulation}
+
+Consider $N$ replicas serving requests behind a router. For a candidate replica $c$ and an
+incoming request, define three shares, each normalized to roughly $[0,\infty)$ with $1.0$
+representing ``at capacity'':
+
+\begin{itemize}
+  \item $\mathit{Share_{compute}}(c) = \mathit{P\text{-}token}(c) / \mathit{token\_budget}(c)$
+    --- $\mathit{P\text{-}token}$ is the prefix-cache-discounted count of \emph{new} prefill
+    tokens this request would cost replica $c$ (computed from a per-replica cache-state
+    mirror), so this share already reflects cache locality, not raw prompt length.
+  \item $\mathit{Share_{load}}(c) = \mathit{in\_flight\_after}(c) / \mathit{max\_num\_seqs}(c)$
+    --- in-flight request count after dispatch, normalized to the replica's configured
+    concurrency limit.
+  \item $\mathit{Share_{power}}(c) = \max(\mathit{ramp\_rate}(c), 0) / \mathit{ramp\_ceiling}(c)$
+    --- the replica's own currently NVML-measured power-ramp rate, normalized to a calibrated
+    per-GPU ceiling. Clamped to non-negative because a routing decision can only ever push
+    the \emph{receiving} replica's power up, never down --- a falling ramp is not a
+    decision-relevant hazard for routing purposes.
+\end{itemize}
+
+\textbf{Departure from DRF's original model.} Ghodsi et al.'s DRF~\cite{ghodsi2011drf}
+assumes a fixed, known demand vector per user, allocated from a fixed resource pool.
+$\mathit{Share_{power}}$ is neither: it is a live, exogenously-evolving measurement of the
+replica's \emph{own current state}, not a declared demand of the request being routed, and it
+changes between routing decisions independent of routing choices. We do not assume the
+original static-demand Pareto-efficiency proof transfers to this setting --- \S\ref{sec:lemma1}
+proves the property we actually need (per-decision, not per-trajectory) directly for this
+model.
+
+\textbf{Welfare objective.} At each routing decision, define the dominant share
+$D(c) = \max(\mathit{Share_{compute}}(c), \mathit{Share_{load}}(c), \mathit{Share_{power}}(c))$.
+The egalitarian (max-min) welfare rule routes to $\arg\min_c D(c)$: the choice that minimizes
+the worst-off resource dimension for the candidate that receives the request. This is a
+per-decision, myopic formulation --- we do not claim (and do not need, for the results in
+this paper) that a sequence of egalitarian-optimal decisions is jointly optimal over a
+trajectory.
+
+\section{Theory}
+
+\subsection{The sorted-lexicographic rule is Pareto-non-dominated}
+\label{sec:lemma1}
+
+$\arg\min_c D(c)$ alone under-specifies the rule when multiple candidates tie on $D$. Define
+the \textbf{sorted rule}: route to $\arg\min_c \sigma(s(c))$, where
+$s(c) = (\mathit{Share_{compute}}(c), \mathit{Share_{load}}(c), \mathit{Share_{power}}(c))$,
+$\sigma$ sorts a vector into descending order, and ties are broken by standard lexicographic
+comparison of the sorted vectors.
+
+\begin{lemma}
+The candidate selected by the sorted rule is Pareto-non-dominated among the candidate set: no
+other candidate $c'$ satisfies $\mathit{Share}_i(c') \le \mathit{Share}_i(c^*)$ for all three
+resources $i$ with strict inequality for at least one.
+\end{lemma}
+
+\begin{proof}
+Suppose, for contradiction, some $c'$ dominates the selected $c^*$. Then $s(c') \le s(c^*)$
+coordinatewise with strict inequality somewhere. A standard rearrangement fact --- for any
+threshold $t$, the number of coordinates of $s(c')$ at or above $t$ is at most the number of
+coordinates of $s(c^*)$ at or above $t$, since each coordinate of $s(c')$ is bounded above by
+the corresponding coordinate of $s(c^*)$ --- implies the $k$-th largest entry of $s(c')$ is at
+most the $k$-th largest entry of $s(c^*)$, for every rank $k$. So $\sigma(s(c'))$ is
+coordinatewise $\le \sigma(s(c^*))$. Summing coordinates (sort preserves sum) and using the
+strict inequality in the original domination, $\sum s(c') < \sum s(c^*)$ strictly, so
+$\sigma(s(c'))$ and $\sigma(s(c^*))$ cannot be equal as vectors. Combined with the
+coordinatewise $\le$ just shown, the first rank at which they differ must favor $c'$
+strictly, so $\sigma(s(c')) <_{\mathrm{lex}} \sigma(s(c^*))$. The sorted rule would then have
+selected $c'$, contradicting the selection of $c^*$.
+\end{proof}
+
+We additionally verified this claim by brute-force search: 200{,}000 randomly generated
+candidate sets (2--5 candidates, 3 shares each) produced zero violations.
+
+\subsection{A power-prioritized variant sacrifices the guarantee}
+\label{sec:counterexample}
+
+The sorted rule treats all three resources symmetrically below the maximum --- it has no
+notion that power-ramp violations are the one failure mode with a real-world safety/grid
+cost, distinct from a merely-suboptimal load balance. A natural fix: after comparing the
+dominant share, always compare $\mathit{Share_{power}}$ next, \emph{by name}, ahead of
+$\mathit{Share_{load}}$, regardless of which is numerically larger. Define the \textbf{named
+rule}: route to $\arg\min_c (D(c), \mathit{Share_{power}}(c), \mathit{Share_{load}}(c))$
+under standard lexicographic order.
+
+\begin{claim}
+The named rule can select a Pareto-dominated candidate.
+\end{claim}
+
+\textbf{Construction.} Let candidates $A$ and $B$ be given, in
+$(\mathit{Share_{compute}}, \mathit{Share_{load}}, \mathit{Share_{power}})$ form, by
+\[
+  A = (0.3,\ 0.9,\ 0.9), \qquad B = (0.5,\ 0.9,\ 0.9).
+\]
+$A$ Pareto-dominates $B$ (equal load and power, strictly lower compute). Both have $D(A) = D(B) = 0.9$ and
+identical $\mathit{Share_{power}}$ and $\mathit{Share_{load}}$, so the named rule's 3-tuple
+$(D, \mathit{Share_{power}}, \mathit{Share_{load}})$ is \emph{identical} for $A$ and $B$ ---
+the rule cannot see the compute difference at all, since compute only enters through $D$, and
+$D$ is tied. $\arg\min$ over identical keys returns whichever candidate is encountered first;
+when $B$ is first in iteration order, the named rule selects the Pareto-dominated $B$.
+(Verified directly in code, not just argued: see \texttt{verify\_pareto\_lemma.py} in the
+project research log.)
+
+\textbf{Why this happens, and why the trade can still be worth it.} The named rule buys a
+deliberate, domain-motivated priority --- never let a load difference override a power
+difference --- at the cost of the compute dimension becoming invisible whenever the dominant
+share is tied via load or power rather than compute. This is not a bug to be patched away
+casually: fixing it (e.g.\ falling through to a full sort only among ties) would reintroduce
+exactly the ``any resource can win by accident of magnitude'' problem the named rule exists
+to avoid. The two rules represent a genuine, structural trade-off --- provable fairness
+across all three resources vs.\ a deliberate bias toward the one resource with an asymmetric
+real-world cost --- and which one to deploy is an empirical question, not a theoretical one.
+\S\ref{sec:eval} answers it.
+
+\section{Experimental Validation}
+\label{sec:eval}
+
+\textbf{Setup.} 8$\times$4090 server (single chassis), 7B model
+(Qwen2.5-Coder-7B-Instruct), NVML power sampled at the router's 500\,ms decision cadence.
+Workload: whale-injection (15\% long-prompt fraction, 13.6--15.5k-token whales, single-turn),
+request rate matched to real BurstGPT aggregate token throughput (not raw request rate, which
+saturates the fleet and produces uninformative results) --- the condition under which the
+fleet sustains real power pressure (duty cycle $\approx$26--28\% of decisions occur while
+some replica is above its ramp ceiling), which is precisely the regime
+\S\ref{sec:counterexample}'s trade-off is about. 3 replicated trials, fixed seed.
+
+\textbf{Result: the named rule (power-prioritized, theoretically unsafe) wins decisively on
+the metrics it was built for, at no measurable mean-latency cost.}
+
+\begin{table}[t]
+  \caption{Sorted rule (Lemma-1-safe, \texttt{drf\_fixed}) vs.\ named rule
+    (power-prioritized, \texttt{drf\_power\_tiebreak}), mean $\pm$ std over 3 replicated
+    trials.}
+  \label{tab:results}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}lrrl@{}}
+    \toprule
+    Metric & Sorted & Named & Direction \\
+    \midrule
+    Max ramp (W/s) & $5010.6{\pm}1940.8$ & $\mathbf{3015.3{\pm}257.1}$ & $-40\%$, 8$\times$ tighter \\
+    Coincidence (\%) & $7.7{\pm}1.5$ & $\mathbf{4.4{\pm}1.2}$ & $-43\%$ \\
+    TBT max (ms) & $2703.7{\pm}968.5$ & $\mathbf{2034.6{\pm}181.6}$ & $-25\%$, more stable \\
+    Duty cycle & $0.281{\pm}0.021$ & $\mathbf{0.259{\pm}0.010}$ & improved \\
+    TTFT mean (s) & $3.712{\pm}0.935$ & $3.942{\pm}0.271$ & flat, tighter std \\
+    Mean ramp (W/s) & $191.86{\pm}9.52$ & $204.13{\pm}7.51$ & $+6\%$, minor cost \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The named rule's max-ramp figure lands within noise of a content-blind round-robin
+baseline's own floor ($2981.3 \pm 255.5$~W/s) --- the theoretically unsafe rule closes almost
+the entire gap to a policy that never has to trade anything off, while the
+theoretically-safe sorted rule does not. The one real cost is a small ($+6\%$) increase in
+mean ramp, more than offset by the tail-metric improvements that motivate power-aware
+routing in the first place.
+
+\emph{This condition --- sustained, moderate-heavy fleet pressure on a synthetic
+whale-injection workload --- is where the theoretical trade-off in \S\ref{sec:counterexample}
+is directly exercised. Other tested conditions, including light-load traffic where the fleet
+is never pressured and real BurstGPT traffic at various rates, are outside this paper's
+current scope; see the project research log for that data if useful context is wanted.}
+
+\section{Discussion and Limitations}
+
+\begin{itemize}
+  \item \textbf{Small-$N$ / shared-PDU caveat}: 8$\times$4090 in one chassis likely shares
+    upstream PDU/PSU --- not independent grid circuits. Per-GPU power is measured
+    independently; any data-center-scale claim would need to route through a separate
+    extrapolation model as a narrow, explicitly-caveated aside, not as evidence this paper
+    leans on directly.
+  \item \textbf{Scope of validation}: the experimental result in \S\ref{sec:eval} is
+    demonstrated under sustained fleet power pressure on a controlled synthetic workload ---
+    the condition that directly exercises the theoretical trade-off characterized in
+    \S\ref{sec:counterexample}. Generalization to arbitrary real-world traffic patterns is
+    not claimed here and is a direction for future work.
+  \item \textbf{Per-decision vs.\ per-trajectory optimality}: \S\ref{sec:formulation} is
+    explicit that the welfare objective is myopic (per-decision). We do not claim, and
+    \S\ref{sec:lemma1} does not require, that a sequence of such decisions is optimal in
+    aggregate over a trajectory --- only that each individual decision satisfies (or, for
+    the named rule, deliberately trades away) a well-defined static guarantee.
+\end{itemize}
+
+\section{Conclusion}
+
+We give power-aware LLM-serving routing a precise theoretical grounding: a provable
+Pareto-non-domination guarantee for one natural routing rule, and a proof that a
+power-prioritized variant sacrifices it. Rather than treating the sacrifice as a flaw, we
+show it is the right trade to make: on real 8$\times$4090 hardware under sustained power
+pressure, the theoretically ``unsafe'' rule delivers large, tightly-replicated improvements
+on the tail power-ramp metrics that motivate power-aware routing in the first place, at no
+measurable cost to mean latency. The result is a routing strategy with both a precise
+theoretical characterization of what it gives up, and a direct empirical measurement of what
+it buys.
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}
