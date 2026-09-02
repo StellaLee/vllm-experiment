@@ -14,15 +14,17 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       pick_whale_argmin_power_switch,
                       share_power_coincidence, dominant_share_coincidence,
                       dominant_share_vector_power_priority_coincidence,
-                      pick_drf_coincidence_tiebreak)
+                      pick_drf_coincidence_tiebreak,
+                      share_power_level, dominant_share_peak,
+                      dominant_share_vector_peak_priority, pick_drf_peak_power_tiebreak)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
            max_num_seqs=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0,
-           active_whale_count_after=0):
+           active_whale_count_after=0, power_w=0.0, power_level_ceiling_w=450.0):
     return Candidate(replica_id, new_tokens, in_flight_after, token_budget,
                       max_num_seqs, ramp_rate_w_per_s, ramp_ceiling_w_per_s,
-                      active_whale_count_after)
+                      active_whale_count_after, power_w, power_level_ceiling_w)
 
 
 class _FakeRng:
@@ -558,6 +560,49 @@ def test_drf_coincidence_tiebreak_matches_plain_drf_when_fleet_fully_calm():
 def test_drf_coincidence_tiebreak_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_drf_coincidence_tiebreak([])
+
+
+def test_share_power_level_is_current_power_over_hardware_ceiling():
+    """Unlike share_power(c) (ramp rate), this reads the candidate's own current
+    instantaneous power draw -- a non-negative, purely local quantity with no coincidence/
+    cancellation concern (see project discussion: aggregate power level is a sum of
+    non-negative terms, so bounding each candidate's own share is a genuine, tight bound on
+    the fleet aggregate, unlike ramp)."""
+    c = _cand("r0", power_w=225.0, power_level_ceiling_w=450.0)
+    assert share_power_level(c) == 0.5
+
+
+def test_dominant_share_peak_uses_power_level_share_as_the_power_dimension():
+    # compute=0.8 (dom), load=0.1, power_level=225/450=0.5
+    c = _cand("r0", new_tokens=80, in_flight_after=1, token_budget=100, max_num_seqs=10,
+              power_w=225.0, power_level_ceiling_w=450.0)
+    assert dominant_share_peak(c) == 0.8
+
+
+def test_drf_peak_power_tiebreak_routes_away_from_replica_near_its_power_ceiling():
+    """Direct analog of drf_power_tiebreak's own test, using current power LEVEL instead of
+    ramp rate: r0 draws almost its full hardware power limit already; r1 has full headroom.
+    Primary criterion (route to lowest dominant share) must pick r1."""
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, power_w=440.0, power_level_ceiling_w=450.0)  # dom=0.978
+    r1 = _cand("r1", new_tokens=50, in_flight_after=5, power_w=0.0, power_level_ceiling_w=450.0)   # dom=0.5
+    assert pick_drf_peak_power_tiebreak([r0, r1]) == "r1"
+
+
+def test_drf_peak_power_tiebreak_prefers_lower_power_level_over_lower_load_when_compute_ties():
+    """Same tie-break-order test as drf_power_tiebreak's, using power LEVEL: two candidates
+    tied on dominant compute share; r0 has more load but less power draw, r1 has less load
+    but more power draw. Power-priority tie-break must pick r0 (favors low power)."""
+    r0 = _cand("r0", new_tokens=90, token_budget=100, in_flight_after=7, max_num_seqs=10,
+               power_w=135.0, power_level_ceiling_w=450.0)  # compute=0.9(dom), load=0.7, power=0.3
+    r1 = _cand("r1", new_tokens=90, token_budget=100, in_flight_after=2, max_num_seqs=10,
+               power_w=225.0, power_level_ceiling_w=450.0)  # compute=0.9(dom), load=0.2, power=0.5
+    assert pick_drf([r0, r1]) == "r1"  # magnitude-sort tie-break: favors low load
+    assert pick_drf_peak_power_tiebreak([r0, r1]) == "r0"  # power-priority: favors low power level
+
+
+def test_drf_peak_power_tiebreak_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_peak_power_tiebreak([])
 
 
 def test_p2c_whale_with_real_rng_distributes_across_replicas():

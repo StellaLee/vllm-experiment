@@ -13,6 +13,9 @@ class ReplicaConfig:
     token_budget: int           # vLLM's max_num_scheduled_tokens for this replica
     max_num_seqs: int           # vLLM's max_num_seqs for this replica
     ramp_ceiling_w_per_s: float  # calibrated ramp-rate ceiling for Share_power normalization
+    power_level_ceiling_w: float = 450.0  # hardware power limit (nvidia-smi power.limit) for
+                                           # share_power_level normalization -- authoritative,
+                                           # externally-set, not a calibrated safety margin
 
 
 @dataclass

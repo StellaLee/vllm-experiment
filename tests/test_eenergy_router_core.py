@@ -124,6 +124,19 @@ def test_drf_coincidence_tiebreak_prefers_already_ramping_replica_over_triggerin
     assert r_new.route(token_ids=[1, 2, 3]) == "r0"  # new share: prefers it instead
 
 
+def test_drf_peak_power_tiebreak_routes_away_from_replica_near_its_power_ceiling():
+    """Integration-level analog of drf_power_tiebreak's own test, using current power LEVEL
+    (last_power_w) instead of ramp rate: r0 is drawing nearly its full hardware power limit,
+    r1 has full headroom. Primary criterion (route to lowest dominant share) must pick r1."""
+    states = _states()
+    states[0].cached_block_hashes = set()  # r0: no cache advantage
+    states[0].last_power_w = 440.0         # r0: near its 450W hardware limit (dom share ~0.98)
+    states[1].last_power_w = 0.0           # r1: full power headroom
+    r = Router(states, policy="drf_peak_power_tiebreak")
+    chosen = r.route(token_ids=[1, 2, 3])
+    assert chosen == "r1"
+
+
 def test_lmetric_power_avoids_pressured_replica_even_when_raw_lmetric_score_ties():
     """Integration-level smoke test mirroring the scoring-level test: two candidates with
     identical raw new_tokens*in_flight_after but different power pressure -- lmetric_power

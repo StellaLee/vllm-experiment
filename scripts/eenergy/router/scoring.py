@@ -15,6 +15,11 @@ class Candidate:
     ramp_rate_w_per_s: float
     ramp_ceiling_w_per_s: float
     active_whale_count_after: int = 0  # active whales at this replica if dispatched here
+    power_w: float = 0.0                    # current instantaneous power draw (level, not ramp)
+    power_level_ceiling_w: float = 450.0    # hardware power limit (nvidia-smi power.limit) --
+                                             # unlike ramp_ceiling_w_per_s (a calibrated safety
+                                             # margin), this is an authoritative, externally-set
+                                             # hardware maximum
 
 
 def pick_round_robin(candidates: list, last_index: int):
@@ -181,6 +186,51 @@ def pick_drf_coincidence_tiebreak(candidates: list, tie_start: int = 0) -> str:
         raise ValueError("no candidates to route to")
     rotated = _rotate(candidates, tie_start)
     best = min(rotated, key=lambda c: dominant_share_vector_power_priority_coincidence(c, candidates))
+    return best.replica_id
+
+
+def share_power_level(c) -> float:
+    """Fraction of a replica's hardware power limit currently drawn. Unlike share_power(c)
+    (ramp rate -- signed, can cancel across replicas in the fleet aggregate), instantaneous
+    power draw is always non-negative: P_agg(t) = sum_i P_i(t) is a sum of non-negative
+    terms, so bounding each candidate's OWN share against its own ceiling is a genuine,
+    tight bound on the fleet aggregate -- no coincidence/correlation reasoning needed, no
+    fleet-wide visibility needed, fully separable per candidate (unlike
+    share_power_coincidence). power_level_ceiling_w is calibrated to the GPU's actual
+    hardware power limit (nvidia-smi power.limit), an externally-verifiable maximum, not an
+    ad hoc safety margin."""
+    return c.power_w / c.power_level_ceiling_w
+
+
+def dominant_share_peak(c) -> float:
+    """Same as dominant_share(c), but using share_power_level in place of share_power (ramp)
+    as the power dimension -- bounds peak power draw (demand-charge / circuit-capacity
+    relevant) rather than ramp volatility (grid frequency-regulation relevant). Fully
+    separable per candidate, so Lemma 1's Pareto-non-domination proof applies to this
+    variant unmodified -- unlike dominant_share_coincidence, which breaks that assumption."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    return max(share_compute, share_load, share_power_level(c))
+
+
+def dominant_share_vector_peak_priority(c) -> tuple:
+    """Peak-power-level counterpart to dominant_share_vector_power_priority: same fixed
+    (dominant_share, power, load) tie-break order, but both the dominant share and the power
+    term use share_power_level instead of share_power."""
+    share_load = c.in_flight_after / c.max_num_seqs
+    spl = share_power_level(c)
+    return (dominant_share_peak(c), spl, share_load)
+
+
+def pick_drf_peak_power_tiebreak(candidates: list, tie_start: int = 0) -> str:
+    """DRF variant bounding peak power draw instead of ramp rate: same primary criterion as
+    pick_drf (route to the replica with the lowest dominant share), tie-break vector
+    (dominant_share_peak, share_power_level, share_load) -- power always compared second,
+    same fixed-priority structure as pick_drf_power_tiebreak, with share_power_level in
+    place of share_power throughout."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=dominant_share_vector_peak_priority)
     return best.replica_id
 
 
