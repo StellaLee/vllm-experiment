@@ -66,7 +66,9 @@ provable rule pay for itself in practice?**
    ceiling in place of a fixed constant — shown to require the ceiling be shared across
    candidates rather than calibrated per-candidate — and an insensitivity guarantee for the
    round-filtered calibration scheme that avoids the naive scheme's self-defeating inflation
-   under sustained concentration (§4.3, §4.4).
+   under sustained concentration (§4.3, §4.4), with a matching empirical check showing the
+   live-calibrated variant's advantage over the static constant concentrates precisely in the
+   condition where the constant is worst matched to the workload (§5).
 
 ## 2. Background / Related Work
 
@@ -330,6 +332,30 @@ when the fleet is under real, sustained pressure. Under light load or a traffic 
 rarely produces power-driven ties, the named rule pays §4.2's compute-blindness cost without
 a compensating benefit.
 
+**Does live calibration help in practice, matching §4.3/4.4's theoretical
+characterization?** We ran `drf_power_tiebreak_adaptive_isolated` — the round-filtered,
+live-calibrated ceiling variant those sections characterize — across the same four
+conditions and compared it to the named rule's own (static-ceiling) ramp-tail metric.
+
+| condition | static ceiling | live-calibrated | Δ |
+|---|---|---|---|
+| Heavy/Matched | **1485.3 ± 7.5** | 1584.2 ± 85.4 | +6.7% |
+| Light/Cachehit | **1939.9 ± 279.0** | 2063.8 ± 224.8 | +6.4% |
+| Heavy/Closed-Loop | **2068.1 ± 387.9** | 2125.8 ± 101.4 | +2.8% (3.8× tighter std) |
+| Ramp & Route | 6521 ± 3928 | **3587 ± 984** | **−45.0%** (4.0× tighter std) |
+
+Live calibration costs a small, consistent 3–7% ramp-tail penalty in the three conditions
+where the static 450 W/s constant was already well-matched to the regime it was calibrated
+on. In the fourth — Ramp & Route, the one condition where the named rule itself performs
+worst (see the generalization table above) — live calibration recovers 45% of the ramp-tail
+cost, with 4× tighter variance. This is exactly the failure mode a live ceiling should help
+with: a fixed constant, calibrated once against one workload, can be badly matched to a
+different regime, and `drf_power_tiebreak_adaptive_isolated`'s advantage is concentrated
+precisely where that mismatch is worst. As §4.3 establishes, this empirical trade is separate
+from either rule's own domination status — `drf_power_tiebreak_adaptive_isolated` still
+routes via the named rule and inherits §4.2's counterexample unchanged; what varies here is
+only the calibration feeding into that same comparator.
+
 ## 6. Discussion / Limitations
 
 - **Small-N / shared-PDU caveat**: 8×4090 in one chassis likely shares upstream PDU/PSU —
@@ -349,6 +375,11 @@ a compensating benefit.
   such decisions is optimal in aggregate over a trajectory — only that each individual
   decision satisfies (or, for the named rule, deliberately trades away) a well-defined
   static guarantee.
+- **Fixed replica pool**: this paper routes among N already-running replicas; deciding which
+  replicas are powered on at all — server sleep/shutdown scheduling under an SLO constraint
+  — is a separate, coarser-timescale decision problem this paper does not address. The two
+  compose naturally (a shutdown scheduler decides the pool, our router decides within it) but
+  we do not evaluate that composition here.
 
 ## 7. Conclusion (draft)
 

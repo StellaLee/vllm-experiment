@@ -113,7 +113,10 @@ deviation from that provable rule pay for itself in practice?}
     ceiling in place of a fixed constant --- shown to require the ceiling be shared across
     candidates rather than calibrated per-candidate --- and an insensitivity guarantee for the
     round-filtered calibration scheme that avoids the naive scheme's self-defeating inflation
-    under sustained concentration (\S\ref{sec:ceiling-invariance}, \S\ref{sec:ceiling-boundedness}).
+    under sustained concentration (\S\ref{sec:ceiling-invariance}, \S\ref{sec:ceiling-boundedness}),
+    with a matching empirical check showing the live-calibrated variant's advantage over the
+    static constant concentrates precisely in the condition where the constant is worst
+    matched to the workload (\S\ref{sec:eval}).
 \end{enumerate}
 
 \section{Background and Related Work}
@@ -454,6 +457,44 @@ pressure. Under light load or a traffic shape that rarely produces power-driven 
 named rule pays \S\ref{sec:counterexample}'s compute-blindness cost without a compensating
 benefit.
 
+\textbf{Does live calibration help in practice, matching \S\ref{sec:ceiling-invariance}/
+\S\ref{sec:ceiling-boundedness}'s theoretical characterization?} We ran
+\texttt{drf\_power\_tiebreak\_adaptive\_isolated} --- the round-filtered, live-calibrated
+ceiling variant those sections characterize --- across the same four conditions and compared
+it to the named rule's own (static-ceiling) ramp-tail metric.
+
+\begin{table}[t]
+  \caption{Named rule (static 450~W/s ceiling) vs.\ its live-calibrated, round-filtered
+    counterpart, same ramp-tail metric and condition set as Table~\ref{tab:generalization}.
+    Mean $\pm$ std over 3 replicated trials; bold marks the better value per row.}
+  \label{tab:adaptive}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}lrrr@{}}
+    \toprule
+    Condition & Static ceiling & Live-calibrated & $\Delta$ \\
+    \midrule
+    Heavy/Matched & $\mathbf{1485.3{\pm}7.5}$ & $1584.2{\pm}85.4$ & $+6.7\%$ \\
+    Light/Cachehit & $\mathbf{1939.9{\pm}279.0}$ & $2063.8{\pm}224.8$ & $+6.4\%$ \\
+    Heavy/Closed-Loop & $\mathbf{2068.1{\pm}387.9}$ & $2125.8{\pm}101.4$ & $+2.8\%$ ($3.8\times$ tighter std) \\
+    Ramp \& Route & $6521{\pm}3928$ & $\mathbf{3587{\pm}984}$ & $\mathbf{-45.0\%}$ ($4.0\times$ tighter std) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Live calibration costs a small, consistent 3--7\% ramp-tail penalty in the three conditions
+where the static 450~W/s constant was already well-matched to the regime it was calibrated
+on. In the fourth --- Ramp \& Route, the one condition where the named rule itself performs
+worst (Table~\ref{tab:generalization}) --- live calibration recovers 45\% of the ramp-tail
+cost, with $4\times$ tighter variance. This is exactly the failure mode a live ceiling should
+help with: a fixed constant, calibrated once against one workload, can be badly matched to a
+different regime, and \texttt{drf\_power\_tiebreak\_adaptive\_isolated}'s advantage is
+concentrated precisely where that mismatch is worst. As \S\ref{sec:ceiling-invariance}
+establishes, this empirical trade is separate from either rule's own domination status ---
+\texttt{drf\_power\_tiebreak\_adaptive\_isolated} still routes via the named rule and
+inherits \S\ref{sec:counterexample}'s counterexample unchanged; what varies here is only the
+calibration feeding into that same comparator.
+
 \section{Discussion and Limitations}
 
 \begin{itemize}
@@ -475,6 +516,11 @@ benefit.
     \S\ref{sec:lemma1} does not require, that a sequence of such decisions is optimal in
     aggregate over a trajectory --- only that each individual decision satisfies (or, for
     the named rule, deliberately trades away) a well-defined static guarantee.
+  \item \textbf{Fixed replica pool}: this paper routes among $N$ already-running replicas;
+    deciding which replicas are powered on at all --- server sleep/shutdown scheduling under
+    an SLO constraint --- is a separate, coarser-timescale decision problem this paper does
+    not address. The two compose naturally (a shutdown scheduler decides the pool, our router
+    decides within it) but we do not evaluate that composition here.
 \end{itemize}
 
 \section{Conclusion}
