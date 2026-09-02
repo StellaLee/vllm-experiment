@@ -171,6 +171,42 @@ def test_drf_power_tiebreak_adaptive_relaxes_the_ceiling_once_the_regime_is_heav
     assert r.adaptive_ceiling.ceiling() == 900.0
 
 
+def test_drf_power_tiebreak_adaptive_isolated_starts_at_the_450_floor():
+    states = _states()
+    r = Router(states, policy="drf_power_tiebreak_adaptive_isolated")
+    r.route(token_ids=[1, 2, 3])
+    assert r.adaptive_ceiling_isolated.ceiling() == 450.0  # nothing elevated observed yet
+
+
+def test_drf_power_tiebreak_adaptive_isolated_does_not_relax_under_simultaneous_pressure():
+    """Direct contrast with drf_power_tiebreak_adaptive's own test: the EXACT SAME setup
+    (both replicas consistently at 900 W/s every round -- a sustained, simultaneous
+    concentration episode) that makes the naive adaptive ceiling climb to 900 must leave
+    THIS ceiling pinned at the floor throughout, since every round has 2 elevated replicas
+    and gets excluded from calibration entirely."""
+    states = _states()
+    r = Router(states, policy="drf_power_tiebreak_adaptive_isolated")
+    for _ in range(50):
+        states[0].ramp_rate_w_per_s = 900.0
+        states[1].ramp_rate_w_per_s = 900.0
+        r.route(token_ids=[1, 2, 3])
+    assert r.adaptive_ceiling_isolated.ceiling() == 450.0  # still the floor -- unlike the naive version
+
+
+def test_drf_power_tiebreak_adaptive_isolated_still_relaxes_for_genuinely_isolated_pressure():
+    """The fix only excludes CONCENTRATION, not all adaptation: if only ONE replica is ever
+    elevated at a time (never simultaneously with the other), the ceiling still climbs,
+    matching the original motivation (track the regime) for the case that's actually safe
+    to adapt to."""
+    states = _states()
+    r = Router(states, policy="drf_power_tiebreak_adaptive_isolated")
+    for _ in range(50):
+        states[0].ramp_rate_w_per_s = 900.0
+        states[1].ramp_rate_w_per_s = 0.0  # only r0 ever elevated -- isolated every round
+        r.route(token_ids=[1, 2, 3])
+    assert r.adaptive_ceiling_isolated.ceiling() == 900.0
+
+
 def test_lmetric_power_avoids_pressured_replica_even_when_raw_lmetric_score_ties():
     """Integration-level smoke test mirroring the scoring-level test: two candidates with
     identical raw new_tokens*in_flight_after but different power pressure -- lmetric_power

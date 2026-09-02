@@ -31,6 +31,28 @@ class AdaptiveRampCeiling:
         not be able to pull the ceiling down either."""
         self._window.append(max(ramp_rate_w_per_s, 0.0))
 
+    def observe_round(self, ramp_rates_w_per_s: list) -> None:
+        """Records one decision round's fleet-wide ramp readings together, but SKIPS the
+        WHOLE round if 2+ replicas are simultaneously elevated (> floor) -- a concentration
+        event, which must not inflate the very ceiling meant to guard against it. An
+        isolated round (0 or 1 elevated) is benign individual variability, recorded
+        normally, same as observe().
+
+        Fixes the self-defeating loop diagnosed in plain observe()-based calibration: since
+        "concentration" (multiple replicas elevated at once) is exactly the condition that
+        would otherwise fill the window with elevated values, a naive rolling percentile
+        raises the ceiling most aggressively DURING a sustained multi-replica pressure
+        episode -- diluting protection right when it matters most. This method keeps the
+        per-candidate scoring rule itself unchanged (still a single continuous ratio, still
+        separable, Lemma 1 still applies) -- only the calibration bookkeeping needs
+        fleet-wide visibility, not the routing decision."""
+        clamped = [max(r, 0.0) for r in ramp_rates_w_per_s]
+        elevated_count = sum(1 for r in clamped if r > self.floor_w_per_s)
+        if elevated_count >= 2:
+            return
+        for r in clamped:
+            self._window.append(r)
+
     def ceiling(self) -> float:
         if not self._window:
             return self.floor_w_per_s

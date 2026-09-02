@@ -60,3 +60,56 @@ def test_percentile_selects_the_correct_rank_in_a_mixed_window():
         c.observe(float(v))
     # 90th percentile (index 9 of 10 sorted values, 0-indexed) is the top value, 1000
     assert c.ceiling() == 1000.0
+
+
+# ---- observe_round: coincidence-filtered calibration (the fix for the self-defeating loop
+# diagnosed in drf_power_tiebreak_adaptive -- a sustained multi-replica pressure episode
+# must not inflate its own tolerance for pressure) ----
+
+def test_observe_round_records_an_isolated_elevated_reading_normally():
+    """Only ONE replica elevated this round -- a benign individual transition, not a
+    concentration event. Must be recorded like any ordinary observation."""
+    c = AdaptiveRampCeiling(floor_w_per_s=450.0, window_size=10, percentile=0.99)
+    c.observe_round([900.0, 10.0, 10.0])
+    assert c.ceiling() == 900.0
+
+
+def test_observe_round_excludes_a_simultaneous_multi_replica_round_entirely():
+    """TWO replicas elevated in the SAME round -- a concentration event. None of this
+    round's readings (elevated or not) may enter the window, or the ceiling would relax
+    exactly when protection matters most."""
+    c = AdaptiveRampCeiling(floor_w_per_s=450.0, window_size=10, percentile=0.99)
+    c.observe_round([900.0, 800.0, 10.0])
+    assert c.ceiling() == 450.0  # excluded entirely -- floor still wins
+
+
+def test_observe_round_records_a_fully_calm_round_normally():
+    c = AdaptiveRampCeiling(floor_w_per_s=450.0, window_size=10, percentile=0.99)
+    c.observe_round([10.0, 20.0, 5.0])
+    assert c.ceiling() == 450.0  # nothing elevated, floor wins (trivially recorded)
+
+
+def test_observe_round_isolated_rounds_can_still_adapt_the_ceiling_upward_over_time():
+    """A sequence of ISOLATED elevated rounds (never 2+ simultaneously) should still let
+    the ceiling climb -- the fix only excludes CONCENTRATION events, not all adaptation."""
+    c = AdaptiveRampCeiling(floor_w_per_s=450.0, window_size=100, percentile=0.99)
+    for _ in range(99):
+        c.observe_round([1000.0, 10.0, 10.0])  # isolated each time -- only replica 0 elevated
+    c.observe_round([5000.0, 10.0, 10.0])  # isolated outlier at the top
+    assert c.ceiling() == 5000.0
+
+
+def test_observe_round_a_sustained_concentration_episode_never_moves_the_ceiling():
+    """The exact failure mode being fixed: many consecutive rounds where 2+ replicas are
+    simultaneously elevated (a sustained pressure episode) must leave the ceiling pinned at
+    the floor throughout -- not creep upward as the episode continues."""
+    c = AdaptiveRampCeiling(floor_w_per_s=450.0, window_size=100, percentile=0.99)
+    for _ in range(50):
+        c.observe_round([900.0, 900.0, 10.0])  # 2 replicas simultaneously elevated, every round
+    assert c.ceiling() == 450.0
+
+
+def test_observe_round_clamps_negative_readings_before_counting_as_elevated():
+    c = AdaptiveRampCeiling(floor_w_per_s=450.0, window_size=10, percentile=0.99)
+    c.observe_round([900.0, -900.0, 10.0])  # only 1 truly elevated after clamping -- isolated
+    assert c.ceiling() == 900.0
