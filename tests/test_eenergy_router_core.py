@@ -76,6 +76,54 @@ def test_drf_power_tiebreak_routes_away_from_replica_with_high_ramp_even_if_cach
     assert chosen == "r1"
 
 
+def test_drf_coincidence_tiebreak_ties_below_ceiling_unlike_power_tiebreak():
+    """Real behavioral difference from drf_power_tiebreak, found while writing this test
+    (not designed in advance): share_power_coincidence is threshold-gated at share_power >
+    1.0 ("is this replica ramping right now"), not continuous like share_power(c) -- so a
+    replica at 0.95 (close to its ceiling but not over it) scores IDENTICALLY to one at
+    0.0 (idle). drf_power_tiebreak's continuous share correctly steers away from the 0.95
+    replica here; drf_coincidence_tiebreak cannot see the difference below the hard
+    threshold, both candidates tie on every dimension, and the tie falls through to
+    rotation order. This is the coincidence share's known trade-off: it targets the
+    fleet-aggregate coincidence event precisely, at the cost of sub-ceiling magnitude
+    sensitivity -- documented here rather than silently patched around."""
+    states = _states()
+    states[0].cached_block_hashes = set()  # r0: no cache advantage
+    states[0].ramp_rate_w_per_s = 95.0     # close to ceiling but NOT over it (share_power=0.95)
+    states[1].ramp_rate_w_per_s = 0.0      # r1 has full power headroom
+
+    states_old = _states()
+    states_old[0].cached_block_hashes = set()
+    states_old[0].ramp_rate_w_per_s = 95.0
+    states_old[1].ramp_rate_w_per_s = 0.0
+    r_old = Router(states_old, policy="drf_power_tiebreak")
+    assert r_old.route(token_ids=[1, 2, 3]) == "r1"  # continuous share: correctly avoids r0
+
+    r_new = Router(states, policy="drf_coincidence_tiebreak")
+    assert r_new.route(token_ids=[1, 2, 3]) == "r0"  # thresholded share: can't tell 0.95 from 0.0,
+                                                       # ties fall through to rotation (r0 first)
+
+
+def test_drf_coincidence_tiebreak_prefers_already_ramping_replica_over_triggering_a_new_one():
+    """The actual hypothesis under test, at integration level: r0 is ALREADY over its ramp
+    ceiling, r1 is quiet, and both tie on compute/load. drf_power_tiebreak (per-replica
+    power share) would route to r1 to avoid r0's pressure -- but that TRIGGERS a brand new
+    simultaneous ramp on r1. drf_coincidence_tiebreak (fleet-aggregate share) should instead
+    prefer piling onto r0, since that creates no NEW coincidence event."""
+    states = _states()
+    states[0].ramp_rate_w_per_s = 150.0  # r0: already ramping (over 100.0 ceiling)
+    states[1].ramp_rate_w_per_s = 0.0    # r1: quiet
+
+    states_old = _states()
+    states_old[0].ramp_rate_w_per_s = 150.0
+    states_old[1].ramp_rate_w_per_s = 0.0
+    r_old = Router(states_old, policy="drf_power_tiebreak")
+    assert r_old.route(token_ids=[1, 2, 3]) == "r1"  # old share: avoids the ramping replica
+
+    r_new = Router(states, policy="drf_coincidence_tiebreak")
+    assert r_new.route(token_ids=[1, 2, 3]) == "r0"  # new share: prefers it instead
+
+
 def test_lmetric_power_avoids_pressured_replica_even_when_raw_lmetric_score_ties():
     """Integration-level smoke test mirroring the scoring-level test: two candidates with
     identical raw new_tokens*in_flight_after but different power pressure -- lmetric_power

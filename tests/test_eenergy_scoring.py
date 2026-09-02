@@ -11,7 +11,10 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       dominant_share_vector_power_priority, pick_drf_power_tiebreak,
                       lmetric_power_score, pick_lmetric_power,
                       lmetric_power_convex_score, pick_lmetric_power_convex,
-                      pick_whale_argmin_power_switch)
+                      pick_whale_argmin_power_switch,
+                      share_power_coincidence, dominant_share_coincidence,
+                      dominant_share_vector_power_priority_coincidence,
+                      pick_drf_coincidence_tiebreak)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -470,6 +473,91 @@ def test_whale_argmin_power_switch_matches_drf_power_tiebreak_when_fleet_pressur
 def test_whale_argmin_power_switch_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_whale_argmin_power_switch([], is_whale=False)
+
+
+def test_share_power_coincidence_is_zero_when_fleet_fully_calm():
+    """A lone replica starting to ramp is not a coincidence -- only 2+ simultaneous ramps
+    are. c is not currently ramping and nobody else is either, so routing here would push
+    the fleet to exactly 1 ramping replica: still zero coincidence share."""
+    r0 = _cand("r0", ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)
+    r1 = _cand("r1", ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)
+    r2 = _cand("r2", ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)
+    assert share_power_coincidence(r0, [r0, r1, r2]) == 0.0
+
+
+def test_share_power_coincidence_penalizes_triggering_a_new_ramp_when_others_already_ramping():
+    """r0 is already over ceiling (ramping). Routing to quiet r1 would make it a SECOND
+    simultaneously-ramping replica -- a real coincidence event -- while r1 staying quiet
+    would not. This is the direct fleet-aggregate signal share_power(c) alone can't see:
+    share_power(r1) here is 0.0 (r1's OWN ramp is nil), but routing to r1 still creates a
+    new coincidence event because of what r0 is ALREADY doing."""
+    r0 = _cand("r0", ramp_rate_w_per_s=150.0, ramp_ceiling_w_per_s=100.0)  # already ramping
+    r1 = _cand("r1", ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)    # quiet
+    cands = [r0, r1]
+    assert share_power(r1) == 0.0  # the OLD per-replica share sees no risk at all here
+    assert share_power_coincidence(r1, cands) == 1.0  # resulting_k=2 -> max(2-1,0)/(2-1)=1.0
+
+
+def test_share_power_coincidence_is_free_to_route_onto_an_already_ramping_replica():
+    """Routing MORE load onto a replica that's already ramping doesn't trigger a NEW
+    coincidence event -- it was already counted. Counterintuitive vs. share_power(c) (which
+    would score this replica as maximally risky), but correct for the fleet-aggregate
+    metric: the coincidence count doesn't change whether or not this request lands here."""
+    r0 = _cand("r0", ramp_rate_w_per_s=150.0, ramp_ceiling_w_per_s=100.0)  # already ramping
+    r1 = _cand("r1", ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)    # quiet
+    cands = [r0, r1]
+    assert share_power_coincidence(r0, cands) == 0.0  # resulting_k=1 (r0 already counted) -> 0.0
+    assert share_power(r0) == 1.5  # the OLD per-replica share scores this as the WORST option
+
+
+def test_share_power_coincidence_scales_with_fleet_size_and_existing_ramp_count():
+    """3 of 6 replicas already ramping; c (r3) is quiet. Routing here makes it the 4th
+    simultaneous ramp: max(4-1,0)/(6-1) = 3/5."""
+    ramping = [_cand(f"r{i}", ramp_rate_w_per_s=150.0, ramp_ceiling_w_per_s=100.0) for i in range(3)]
+    quiet = [_cand(f"r{i}", ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0) for i in range(3, 6)]
+    cands = ramping + quiet
+    assert share_power_coincidence(quiet[0], cands) == pytest.approx(3 / 5)
+
+
+def test_share_power_coincidence_handles_single_candidate_fleet():
+    """No other replica can coincide with -- always zero, no division by zero."""
+    r0 = _cand("r0", ramp_rate_w_per_s=150.0, ramp_ceiling_w_per_s=100.0)
+    assert share_power_coincidence(r0, [r0]) == 0.0
+
+
+def test_dominant_share_coincidence_uses_coincidence_share_as_the_power_dimension():
+    # compute=0.8 (dom), load=0.1; power via coincidence is 0.0 (fleet fully calm)
+    c = _cand("r0", new_tokens=80, in_flight_after=1, token_budget=100,
+              max_num_seqs=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)
+    assert dominant_share_coincidence(c, [c]) == 0.8
+
+
+def test_drf_coincidence_tiebreak_prefers_the_already_ramping_replica_when_fleet_is_pressured():
+    """Direct behavioral contrast with pick_drf_power_tiebreak: when one replica is already
+    ramping and the other is quiet, and both otherwise tie on compute/load, the coincidence-
+    aware tie-break should PREFER piling onto the already-ramping replica (no new coincidence
+    event) -- the opposite of what the per-replica power share does."""
+    r0 = _cand("r0", new_tokens=90, token_budget=100, in_flight_after=5, max_num_seqs=10,
+               ramp_rate_w_per_s=150.0, ramp_ceiling_w_per_s=100.0)  # already ramping
+    r1 = _cand("r1", new_tokens=90, token_budget=100, in_flight_after=5, max_num_seqs=10,
+               ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)   # quiet
+    assert pick_drf_power_tiebreak([r0, r1]) == "r1"  # old share: avoids the already-ramping one
+    assert pick_drf_coincidence_tiebreak([r0, r1]) == "r0"  # new share: prefers it instead
+
+
+def test_drf_coincidence_tiebreak_matches_plain_drf_when_fleet_fully_calm():
+    """With nobody ramping, share_power_coincidence is 0.0 for every candidate (see
+    test_share_power_coincidence_is_zero_when_fleet_fully_calm) -- so the coincidence
+    tie-break degenerates to load-only tie-breaking, same as plain pick_drf's lexicographic
+    sort would do once power drops out as the smallest, non-discriminating share."""
+    r0 = _cand("r0", new_tokens=90, token_budget=100, in_flight_after=8, max_num_seqs=10)
+    r1 = _cand("r1", new_tokens=90, token_budget=100, in_flight_after=2, max_num_seqs=10)
+    assert pick_drf([r0, r1]) == pick_drf_coincidence_tiebreak([r0, r1]) == "r1"
+
+
+def test_drf_coincidence_tiebreak_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_coincidence_tiebreak([])
 
 
 def test_p2c_whale_with_real_rng_distributes_across_replicas():

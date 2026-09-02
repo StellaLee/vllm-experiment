@@ -116,6 +116,74 @@ def share_power(c) -> float:
     return max(c.ramp_rate_w_per_s, 0.0) / c.ramp_ceiling_w_per_s
 
 
+def share_power_coincidence(c, candidates: list) -> float:
+    """Fleet-aggregate power share: unlike share_power(c), which only reads c's OWN ramp
+    state, this reads the full candidate list's live ramp state and asks a genuinely
+    different question -- not "is this replica itself ramping" but "how many replicas
+    fleet-wide would be SIMULTANEOUSLY ramping if this request landed on c." Directly
+    targets this project's own evaluation metric (cross-GPU ramp coincidence) instead of
+    an individual per-replica proxy for it, at the cost of no longer being computable from
+    c alone (a genuine departure from DRF's per-candidate-independent share model -- see
+    the caveat on dominant_share_coincidence below).
+
+    resulting_k = how many replicas would count as "currently ramping" (share_power > 1.0)
+    after this decision: c keeps contributing to that count if it's ALREADY ramping
+    (routing here triggers nothing new), or newly joins the count if it isn't (routing
+    here DOES trigger a new, potentially-coincident ramp event). A single ramping replica
+    is not a coincidence -- only 2+ simultaneous ramps are -- so resulting_k of 0 or 1
+    both score zero; the share only grows once routing here would push the fleet into (or
+    deepen) an actual multi-GPU coincident ramp. Normalized by (N-1), the maximum possible
+    number of OTHER replicas that could be coincidentally ramping alongside c.
+
+    Counterintuitive but deliberate consequence: routing MORE load onto an already-ramping
+    replica scores as SAFER than triggering a new one, when the fleet already has some
+    pressure -- the opposite of what share_power(c) alone would recommend (see
+    dominant_share_vector_power_priority_coincidence's tests)."""
+    n = len(candidates)
+    if n <= 1:
+        return 0.0
+    is_c_ramping = share_power(c) > 1.0
+    k_now = sum(1 for other in candidates if share_power(other) > 1.0)
+    resulting_k = k_now if is_c_ramping else k_now + 1
+    return max(resulting_k - 1, 0) / (n - 1)
+
+
+def dominant_share_coincidence(c, candidates: list) -> float:
+    """Same as dominant_share(c), but using share_power_coincidence in place of
+    share_power as the power dimension. NOTE: this breaks the independent-per-candidate
+    share assumption Lemma 1's Pareto-non-domination proof relies on -- D(c) now depends
+    on every OTHER candidate's live state too, not just c's own. Whether (or how) the
+    Pareto-non-domination guarantee re-derives for this coupled-share setting is an open
+    question, not claimed here; this function exists to empirically test whether the
+    fleet-aggregate signal outperforms the per-replica one on the coincidence metric
+    itself, prior to any theoretical claim about it."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    return max(share_compute, share_load, share_power_coincidence(c, candidates))
+
+
+def dominant_share_vector_power_priority_coincidence(c, candidates: list) -> tuple:
+    """Coincidence-aware counterpart to dominant_share_vector_power_priority: same fixed
+    (dominant_share, power, load) tie-break order, but both the dominant share and the
+    power term use share_power_coincidence instead of share_power."""
+    share_load = c.in_flight_after / c.max_num_seqs
+    spc = share_power_coincidence(c, candidates)
+    return (dominant_share_coincidence(c, candidates), spc, share_load)
+
+
+def pick_drf_coincidence_tiebreak(candidates: list, tie_start: int = 0) -> str:
+    """Hypothesis test (not yet a claimed result): does routing on the fleet-aggregate
+    coincidence share instead of the per-replica power share (pick_drf_power_tiebreak)
+    reduce cross-GPU ramp coincidence further, since it targets that exact metric instead
+    of an indirect proxy for it? Same structure as pick_drf_power_tiebreak, with
+    share_power(c) replaced by share_power_coincidence(c, candidates) throughout."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    rotated = _rotate(candidates, tie_start)
+    best = min(rotated, key=lambda c: dominant_share_vector_power_priority_coincidence(c, candidates))
+    return best.replica_id
+
+
 def dominant_share(c) -> float:
     """Share_compute, Share_load, Share_power for one candidate, each normalized to that
     replica's own configured capacity (no cross-resource weight); returns the max, i.e. the
