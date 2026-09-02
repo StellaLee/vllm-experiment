@@ -367,7 +367,8 @@ some replica is above its ramp ceiling), which is precisely the regime
 \S\ref{sec:counterexample}'s trade-off is about. 3 replicated trials, fixed seed.
 
 \textbf{Result: the named rule (power-prioritized, theoretically unsafe) wins decisively on
-the metrics it was built for, at no measurable mean-latency cost.}
+the metrics it was built for, at no measurable mean-latency cost.} Figure~\ref{fig:ramp}
+shows the raw traces behind this result; Table~\ref{tab:results} summarizes it.
 
 \begin{table}[t]
   \caption{Sorted rule (Lemma-1-safe, \texttt{drf\_fixed}) vs.\ named rule
@@ -388,6 +389,17 @@ the metrics it was built for, at no measurable mean-latency cost.}
     \bottomrule
   \end{tabular}
 \end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figs/ramp_comparison.pdf}
+  \caption{Fleet-aggregate power (top) and its ramp rate (bottom) for all 3 replicated trials
+    of each rule, Heavy/Matched condition. The sorted rule's ramp exceeds 6000~W/s in one
+    trial (early ramp-up, $t{\approx}8$s) while the named rule's three trials stay well
+    below that across the board --- the visual form of Table~\ref{tab:results}'s $8\times$
+    tighter run-to-run variance, not just a lower mean.}
+  \label{fig:ramp}
+\end{figure}
 
 The named rule's max-ramp figure lands within noise of a content-blind round-robin
 baseline's own floor ($2981.3 \pm 255.5$~W/s) --- the theoretically unsafe rule closes almost

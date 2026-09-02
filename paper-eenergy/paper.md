@@ -275,6 +275,12 @@ is precisely the regime §4.2's trade-off is about. 3 replicated trials, fixed s
 **Result: the named rule (power-prioritized, theoretically unsafe) wins decisively on the
 metrics it was built for, at no measurable mean-latency cost.**
 
+**Figure 1** (`figs/ramp_comparison.pdf`, LaTeX build only): fleet-aggregate power (top) and
+its ramp rate (bottom) for all 3 replicated trials of each rule. The sorted rule's ramp
+exceeds 6000 W/s in one trial (early ramp-up, t≈8s) while the named rule's three trials stay
+well below that across the board — the visual form of the table below's 8× tighter
+run-to-run variance, not just a lower mean.
+
 | metric | sorted rule (Lemma-1-safe) | named rule (power-prioritized) | direction |
 |---|---|---|---|
 | max power-ramp (W/s) | 5010.6 ± 1940.8 | **3015.3 ± 257.1** | **−40%, 8× tighter std** |
