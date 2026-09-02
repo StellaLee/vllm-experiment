@@ -58,9 +58,10 @@ provable rule pay for itself in practice?**
 3. A proof, via explicit counterexample, that a natural power-prioritized variant of this
    rule sacrifices the guarantee (§4.2) — and an argument for why the trade is nonetheless
    worth taking.
-4. Hardware validation on a real 8×4090 LLM-serving fleet: the power-prioritized rule
-   delivers a large, tightly-replicated win on tail power-ramp metrics under sustained
-   pressure, at no measurable mean-latency cost (§5).
+4. Hardware validation on a real 8×4090 LLM-serving fleet across four workload conditions:
+   the power-prioritized rule delivers a large, tightly-replicated win on tail power-ramp
+   metrics under sustained pressure, at no measurable mean-latency cost, and we show
+   precisely where that win reverses under lighter or differently-shaped traffic (§5).
 5. An extension of the Pareto-non-domination guarantee to a live, fleet-calibrated ramp
    ceiling in place of a fixed constant — shown to require the ceiling be shared across
    candidates rather than calibrated per-candidate — and an insensitivity guarantee for the
@@ -80,6 +81,23 @@ provable rule pay for itself in practice?**
 - **Power-of-Two-Choices** [3, 4] — sampled load balancing with a proven exponential
   improvement in expected max load; a different mechanism family (randomized sampling vs.
   our full-visibility deterministic rule), noted for completeness.
+- **Power capping as an alternative mechanism** [5] — a natural objection to a routing-layer
+  intervention is: why not simply power-cap each GPU directly? Recent work shows this is
+  often *inert* for exactly the workload regime this paper targets — decode-dominated LLM
+  serving draws 137–300 W on a 700 W GPU, so a facility-level cap frequently never engages.
+  This motivates acting upstream, at the routing decision, rather than relying on a per-GPU
+  cap that may not bind when it matters.
+- **Grid-integrated AI infrastructure** [6] — broader strategies for aligning AI workload
+  management with grid operating conditions, at the facility/life-cycle level. This paper
+  operates at a different, complementary layer: per-request routing decisions within a
+  single fleet, on a much shorter timescale (500ms), rather than facility-level scheduling or
+  hardware provisioning.
+- **Online optimization with switching costs** [7] — a related framing where an action's cost
+  of *change*, not just its instantaneous cost, is explicitly penalized; `Share_power`'s
+  ramp-rate term is conceptually a switching-cost signal. We do not adopt that literature's
+  regret/competitive-ratio analysis; Lemma 1's guarantee is a per-decision
+  egalitarian-welfare property, not a trajectory-level competitive bound, a distinction made
+  explicit in §3.
 
 ## 3. Problem Formulation
 
@@ -272,10 +290,39 @@ sorted rule does not. The one real cost is a small (+6%) increase in mean ramp, 
 offset by the tail-metric improvements that motivate power-aware routing in the first place.
 
 *(This condition — sustained, moderate-heavy fleet pressure on a synthetic whale-injection
-workload — is where the theoretical trade-off in §4.2 is directly exercised. Other tested
-conditions, including light-load traffic where the fleet is never pressured and real BurstGPT
-traffic at various rates, are outside this paper's current scope; see the project research
-log for that data if useful context is wanted.)*
+workload — is where the theoretical trade-off in §4.2 is directly exercised. Real BurstGPT
+trace replay at various rates was tested separately and is outside this paper's current
+scope; see the project research log for that data if useful context is wanted.)*
+
+**Does the result generalize across conditions?** We additionally ran the identical
+sorted-vs-named comparison under 3 further conditions on the same fleet: closed-loop
+whale-injection traffic at higher concurrency (Heavy/Closed-Loop); light, no-whale traffic
+where the fleet is never pressured (Light/Cachehit); and a fourth, short-output condition at
+lower per-request cost but higher concurrency (Ramp & Route). 3 replicated trials each.
+
+| condition | sorted | named | ramp-tail Δ |
+|---|---|---|---|
+| Heavy/Matched (above) | 5010.6 ± 1940.8 | **3015.3 ± 257.1** | **−40%** |
+| Heavy/Closed-Loop | 2218.7 ± 86.6 | **2068.1 ± 387.9** | **−6.8%** |
+| Light/Cachehit (no pressure) | **1607.1 ± 330.8** | 1939.9 ± 279.0 | +20.7% (reverses) |
+| Ramp & Route (short-output) | **4901 ± 603** | 6521 ± 3928 | +33.1% (reverses, noisier) |
+
+*(Ramp-tail metric is p99_ramp for the first three rows, max_ramp for Ramp & Route — see §5's
+setup for why max_ramp is used there; these are different summary statistics, not directly
+comparable across that row boundary.)*
+
+**The win is conditional, not universal, and precisely so.** The named rule wins on both
+conditions with sustained whale-driven power pressure (Heavy/Matched, Heavy/Closed-Loop) and
+reverses on both conditions without it: light, no-whale traffic (Light/Cachehit), and a
+short-output, higher-concurrency condition (Ramp & Route) where TTFT also degrades (+19.3%,
+sorted 0.517±0.035s vs. named 0.617±0.085s). This is not a failure of the headline result —
+it substantiates precisely the qualifier already built into the abstract and this section's
+framing ("under sustained power pressure"), rather than leaving that qualifier as an
+unmeasured hedge. The mechanism §4.2 analyzes theoretically — deliberately privileging
+`Share_power` in ties — only pays for itself when power-driven ties actually occur, i.e.,
+when the fleet is under real, sustained pressure. Under light load or a traffic shape that
+rarely produces power-driven ties, the named rule pays §4.2's compute-blindness cost without
+a compensating benefit.
 
 ## 6. Discussion / Limitations
 
@@ -283,10 +330,14 @@ log for that data if useful context is wanted.)*
   not independent grid circuits. Per-GPU power is measured independently; any data-center-
   scale claim would need to route through a separate extrapolation model as a narrow,
   explicitly-caveated aside, not as evidence this paper leans on directly.
-- **Scope of validation**: the experimental result in §5 is demonstrated under sustained
-  fleet power pressure on a controlled synthetic workload — the condition that directly
-  exercises the theoretical trade-off characterized in §4.2. Generalization to arbitrary
-  real-world traffic patterns is not claimed here and is a direction for future work.
+- **Scope of validation**: the headline result is demonstrated under sustained fleet power
+  pressure on a controlled synthetic workload — the condition that directly exercises the
+  theoretical trade-off characterized in §4.2. This is not an unmeasured hedge: the
+  generalization table in §5 shows the win holds under a second sustained-pressure condition
+  and reverses under two conditions without sustained pressure. We do not claim
+  generalization to arbitrary real-world traffic beyond these four measured conditions;
+  characterizing the full boundary (e.g. a duty-cycle threshold above which the trade becomes
+  worthwhile) is a direction for future work.
 - **Per-decision vs. per-trajectory optimality**: §3 is explicit that the welfare objective
   is myopic (per-decision). We do not claim, and §4 does not require, that a sequence of
   such decisions is optimal in aggregate over a trajectory — only that each individual
@@ -320,3 +371,12 @@ characterization of what it gives up, and a direct empirical measurement of what
    the 26th Annual ACM Symposium on Theory of Computing (STOC '94)*, 1994. (The original
    static balls-into-bins result underlying the power-of-two-choices line of work cited
    above.)
+5. B. Ma, A. Afzal, J. Eitzinger, and G. Wellein. "The Illusion of Power Capping in LLM
+   Decode: A Phase-Aware Energy Characterisation Across Attention Architectures." arXiv
+   preprint arXiv:2605.11999, 2026.
+6. A. A. Chien, U. Gupta, S. Ren, A. Sriraman, and B. Tomlinson. "Strategies and Design for
+   Increasing AI Sustainability." *Nature Reviews Clean Technology*, 2026.
+   doi:10.1038/s44359-026-00195-w.
+7. P. Li, Y. Han, A. Wierman, and S. Ren. "Fairness-Regularized Online Optimization with
+   Switching Costs." *Advances in Neural Information Processing Systems (NeurIPS '25)*, 2025.
+   arXiv:2512.11131.

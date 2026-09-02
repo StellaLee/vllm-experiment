@@ -104,9 +104,11 @@ deviation from that provable rule pay for itself in practice?}
   \item A proof, via explicit counterexample, that a natural power-prioritized variant of
     this rule sacrifices the guarantee (\S\ref{sec:counterexample}) --- and an argument for
     why the trade is nonetheless worth taking.
-  \item Hardware validation on a real 8$\times$4090 LLM-serving fleet: the power-prioritized
-    rule delivers a large, tightly-replicated win on tail power-ramp metrics under sustained
-    pressure, at no measurable mean-latency cost (\S\ref{sec:eval}).
+  \item Hardware validation on a real 8$\times$4090 LLM-serving fleet across four workload
+    conditions: the power-prioritized rule delivers a large, tightly-replicated win on tail
+    power-ramp metrics under sustained pressure, at no measurable mean-latency cost, and we
+    show precisely where that win reverses under lighter or differently-shaped traffic
+    (\S\ref{sec:eval}).
   \item An extension of the Pareto-non-domination guarantee to a live, fleet-calibrated ramp
     ceiling in place of a fixed constant --- shown to require the ceiling be shared across
     candidates rather than calibrated per-candidate --- and an insensitivity guarantee for the
@@ -131,6 +133,24 @@ deviation from that provable rule pay for itself in practice?}
     sampled load balancing with a proven exponential improvement in expected max load; a
     different mechanism family (randomized sampling vs.\ our full-visibility deterministic
     rule), noted for completeness.
+  \item \textbf{Power capping as an alternative mechanism}~\cite{ma2026illusion} --- a natural
+    objection to a routing-layer intervention is: why not simply power-cap each GPU directly?
+    Recent work shows this is often \emph{inert} for exactly the workload regime this paper
+    targets --- decode-dominated LLM serving draws 137--300~W on a 700~W GPU, so a
+    facility-level cap frequently never engages. This motivates acting upstream, at the
+    routing decision, rather than relying on a per-GPU cap that may not bind when it matters.
+  \item \textbf{Grid-integrated AI infrastructure}~\cite{chien2026sustainability} --- broader
+    strategies for aligning AI workload management with grid operating conditions, at the
+    facility/life-cycle level. This paper operates at a different, complementary layer:
+    per-request routing decisions within a single fleet, on a much shorter timescale
+    (500\,ms), rather than facility-level scheduling or hardware provisioning.
+  \item \textbf{Online optimization with switching costs}~\cite{li2025fairness} --- a
+    related framing where an action's cost of \emph{change}, not just its instantaneous cost,
+    is explicitly penalized; $\mathit{Share_{power}}$'s ramp-rate term is conceptually a
+    switching-cost signal. We do not adopt that literature's regret/competitive-ratio
+    analysis; \S\ref{sec:lemma1}'s guarantee is a per-decision egalitarian-welfare property,
+    not a trajectory-level competitive bound, a distinction made explicit in
+    \S\ref{sec:formulation}.
 \end{itemize}
 
 \section{Problem Formulation}
@@ -378,9 +398,49 @@ routing in the first place.
 
 \emph{This condition --- sustained, moderate-heavy fleet pressure on a synthetic
 whale-injection workload --- is where the theoretical trade-off in \S\ref{sec:counterexample}
-is directly exercised. Other tested conditions, including light-load traffic where the fleet
-is never pressured and real BurstGPT traffic at various rates, are outside this paper's
-current scope; see the project research log for that data if useful context is wanted.}
+is directly exercised. Real BurstGPT trace replay at various rates was tested separately and
+is outside this paper's current scope; see the project research log for that data if useful
+context is wanted.}
+
+\textbf{Does the result generalize across conditions?} We additionally ran the identical
+sorted-vs-named comparison under 3 further conditions on the same fleet: closed-loop
+whale-injection traffic at higher concurrency (Heavy/Closed-Loop); light, no-whale traffic
+where the fleet is never pressured (Light/Cachehit); and a fourth, short-output condition at
+lower per-request cost but higher concurrency (Ramp \& Route). 3 replicated trials each.
+
+\begin{table}[t]
+  \caption{Sorted rule vs.\ named rule across four workload conditions. Ramp-tail metric is
+    p99\_ramp for the first three rows, max\_ramp for Ramp \& Route (a different summary
+    statistic; see \S\ref{sec:eval}'s setup for why max\_ramp is used there). Mean $\pm$ std
+    over 3 replicated trials; bold marks the better value per row.}
+  \label{tab:generalization}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}lrrr@{}}
+    \toprule
+    Condition & Sorted & Named & Ramp-tail $\Delta$ \\
+    \midrule
+    Heavy/Matched (above) & $5010.6{\pm}1940.8$ & $\mathbf{3015.3{\pm}257.1}$ & $\mathbf{-40\%}$ \\
+    Heavy/Closed-Loop & $2218.7{\pm}86.6$ & $\mathbf{2068.1{\pm}387.9}$ & $\mathbf{-6.8\%}$ \\
+    Light/Cachehit (no pressure) & $\mathbf{1607.1{\pm}330.8}$ & $1939.9{\pm}279.0$ & $+20.7\%$ (reverses) \\
+    Ramp \& Route (short-output) & $\mathbf{4901{\pm}603}$ & $6521{\pm}3928$ & $+33.1\%$ (reverses, noisier) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textbf{The win is conditional, not universal, and precisely so.} The named rule wins on both
+conditions with sustained whale-driven power pressure (Heavy/Matched, Heavy/Closed-Loop) and
+reverses on both conditions without it: light, no-whale traffic (Light/Cachehit), and a
+short-output, higher-concurrency condition (Ramp \& Route) where TTFT also degrades
+($+19.3\%$, sorted $0.517{\pm}0.035$s vs.\ named $0.617{\pm}0.085$s). This is not a failure
+of the headline result --- it substantiates precisely the qualifier already built into the
+abstract and this section's framing (``under sustained power pressure''), rather than leaving
+that qualifier as an unmeasured hedge. The mechanism \S\ref{sec:counterexample} analyzes
+theoretically --- deliberately privileging $\mathit{Share_{power}}$ in ties --- only pays for
+itself when power-driven ties actually occur, i.e., when the fleet is under real, sustained
+pressure. Under light load or a traffic shape that rarely produces power-driven ties, the
+named rule pays \S\ref{sec:counterexample}'s compute-blindness cost without a compensating
+benefit.
 
 \section{Discussion and Limitations}
 
@@ -390,11 +450,14 @@ current scope; see the project research log for that data if useful context is w
     independently; any data-center-scale claim would need to route through a separate
     extrapolation model as a narrow, explicitly-caveated aside, not as evidence this paper
     leans on directly.
-  \item \textbf{Scope of validation}: the experimental result in \S\ref{sec:eval} is
-    demonstrated under sustained fleet power pressure on a controlled synthetic workload ---
-    the condition that directly exercises the theoretical trade-off characterized in
-    \S\ref{sec:counterexample}. Generalization to arbitrary real-world traffic patterns is
-    not claimed here and is a direction for future work.
+  \item \textbf{Scope of validation}: the headline result is demonstrated under sustained
+    fleet power pressure on a controlled synthetic workload --- the condition that directly
+    exercises the theoretical trade-off characterized in \S\ref{sec:counterexample}. This is
+    not an unmeasured hedge: Table~\ref{tab:generalization} shows the win holds under a
+    second sustained-pressure condition and reverses under two conditions without sustained
+    pressure. We do not claim generalization to arbitrary real-world traffic beyond these four
+    measured conditions; characterizing the full boundary (e.g.\ a duty-cycle threshold above
+    which the trade becomes worthwhile) is a direction for future work.
   \item \textbf{Per-decision vs.\ per-trajectory optimality}: \S\ref{sec:formulation} is
     explicit that the welfare objective is myopic (per-decision). We do not claim, and
     \S\ref{sec:lemma1} does not require, that a sequence of such decisions is optimal in
