@@ -303,6 +303,29 @@ def pick_drf(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def pick_drf_power_tiebreak_p2c(candidates: list, rng) -> str:
+    """Power-of-Two-Choices (Mitzenmacher, "The Power of Two Choices in Randomized Load
+    Balancing", 1996/2001) applied to the DRF score itself -- unlike pick_p2c_whale/
+    pick_whale_argmin, NOT gated to whale-only traffic, since the mechanism under test here
+    is generic randomized decorrelation applied to the full (compute, load, power) signal,
+    not a whale-specific heuristic.
+
+    Motivation: pick_drf_power_tiebreak always routes every request to the single globally-
+    best replica by its own score -- deterministic, full-visibility, synchronized decision-
+    making that can create correlated pile-up (many close-together requests all picking the
+    SAME currently-best replica before its state updates). P2C's random 2-of-N sampling is
+    the textbook countermeasure: trade full visibility for decorrelated decisions. Uses
+    dominant_share_vector_power_priority (drf_power_tiebreak's own proven tie-break vector)
+    as the comparator over the sampled pair, not the plain magnitude-sort vector."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    if len(candidates) == 1:
+        return candidates[0].replica_id
+    sampled = rng.sample(candidates, 2)
+    best = min(sampled, key=dominant_share_vector_power_priority)
+    return best.replica_id
+
+
 def pick_p2c_whale(candidates: list, is_whale: bool, rng, tie_start: int = 0) -> str:
     """Whale-only Power of Two Choices (Mitzenmacher, "The Power of Two Choices in
     Randomized Load Balancing", 1996/2001): sampling 2 random candidates and picking the

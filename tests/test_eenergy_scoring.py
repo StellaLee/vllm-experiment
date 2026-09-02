@@ -16,7 +16,8 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       dominant_share_vector_power_priority_coincidence,
                       pick_drf_coincidence_tiebreak,
                       share_power_level, dominant_share_peak,
-                      dominant_share_vector_peak_priority, pick_drf_peak_power_tiebreak)
+                      dominant_share_vector_peak_priority, pick_drf_peak_power_tiebreak,
+                      pick_drf_power_tiebreak_p2c)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -603,6 +604,49 @@ def test_drf_peak_power_tiebreak_prefers_lower_power_level_over_lower_load_when_
 def test_drf_peak_power_tiebreak_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_drf_peak_power_tiebreak([])
+
+
+def test_drf_power_tiebreak_p2c_picks_the_better_of_two_sampled_candidates():
+    """Power-of-Two-Choices (Mitzenmacher, 1996/2001) applied to the DRF score itself,
+    not gated to whale-only traffic like pick_p2c_whale -- every request is routed by
+    sampling 2 candidates and comparing drf_power_tiebreak's own tie-break vector
+    (dominant_share, power, load), same scoring as pick_drf_power_tiebreak but over a
+    random 2-of-N sample instead of full visibility over every candidate."""
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, ramp_rate_w_per_s=95.0, ramp_ceiling_w_per_s=100.0)   # dom=0.95
+    r1 = _cand("r1", new_tokens=50, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)   # dom=0.5 (better)
+    r2 = _cand("r2", new_tokens=1, in_flight_after=1, ramp_rate_w_per_s=99.0, ramp_ceiling_w_per_s=100.0)   # dom=0.99 (worst)
+    fake_rng = _FakeRng([r0, r1])  # sample happens to exclude the worst candidate r2
+    assert pick_drf_power_tiebreak_p2c([r0, r1, r2], fake_rng) == "r1"
+
+
+def test_drf_power_tiebreak_p2c_never_sees_candidates_outside_its_sample():
+    """If the 2-of-3 sample excludes the globally best candidate, P2C must NOT reach past
+    the sample to find it -- that would defeat the whole point of bounded visibility."""
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, ramp_rate_w_per_s=95.0, ramp_ceiling_w_per_s=100.0)   # dom=0.95
+    r1 = _cand("r1", new_tokens=1, in_flight_after=1, ramp_rate_w_per_s=99.0, ramp_ceiling_w_per_s=100.0)   # dom=0.99 (worst)
+    r2 = _cand("r2", new_tokens=50, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)   # dom=0.5 (globally best)
+    fake_rng = _FakeRng([r0, r1])  # sample excludes the globally-best r2
+    assert pick_drf_power_tiebreak_p2c([r0, r1, r2], fake_rng) == "r0"  # best OF THE SAMPLE, not overall
+
+
+def test_drf_power_tiebreak_p2c_single_candidate_fleet_needs_no_sampling():
+    r0 = _cand("r0")
+    assert pick_drf_power_tiebreak_p2c([r0], rng=None) == "r0"
+
+
+def test_drf_power_tiebreak_p2c_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_power_tiebreak_p2c([], rng=None)
+
+
+def test_drf_power_tiebreak_p2c_with_real_rng_distributes_across_replicas():
+    """Not a fake-rng unit test -- exercises the actual random.Random path end to end to
+    confirm repeated routing under tied candidates doesn't collapse onto one replica."""
+    import random
+    cands = [_cand("r0"), _cand("r1"), _cand("r2")]  # all tied
+    rng = random.Random(42)
+    chosen = {pick_drf_power_tiebreak_p2c(cands, rng) for _ in range(30)}
+    assert chosen == {"r0", "r1", "r2"}
 
 
 def test_p2c_whale_with_real_rng_distributes_across_replicas():

@@ -137,6 +137,17 @@ def test_drf_peak_power_tiebreak_routes_away_from_replica_near_its_power_ceiling
     assert chosen == "r1"
 
 
+def test_drf_power_tiebreak_p2c_picks_better_of_the_sampled_pair():
+    """Integration-level smoke test: with a deterministic RNG forcing the sample, the
+    router must pick whichever sampled candidate has the lower drf_power_tiebreak score."""
+    states = _states()  # only 2 replicas, so the "sample" is just [r0, r1] regardless
+    states[0].ramp_rate_w_per_s = 95.0  # r0: near ceiling (dom share 0.95)
+    states[1].ramp_rate_w_per_s = 0.0   # r1: full headroom
+    r = Router(states, policy="drf_power_tiebreak_p2c", rng=_FirstKRng())
+    chosen = r.route(token_ids=[1, 2, 3])
+    assert chosen == "r1"
+
+
 def test_lmetric_power_avoids_pressured_replica_even_when_raw_lmetric_score_ties():
     """Integration-level smoke test mirroring the scoring-level test: two candidates with
     identical raw new_tokens*in_flight_after but different power pressure -- lmetric_power
