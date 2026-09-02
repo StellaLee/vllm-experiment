@@ -55,6 +55,21 @@ def pick_lmetric(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def pick_compute_only(candidates: list, tie_start: int = 0) -> str:
+    """Ablation isolating whether pick_lmetric's power-ramp-smoothing benefit comes from the
+    compute term alone or needs the load term too (session discussion: Share_compute is
+    structurally analogous to PES-IM's chunk-size lever -- avoid concentrating a large new
+    prefill/compute jump on one replica -- which raises the question of whether that alone,
+    with no load balancing and no power telemetry at all, already captures most of the
+    smoothing effect). Route to the candidate with the fewest new (uncached) prefill tokens,
+    full stop -- load and power play no role whatsoever, unlike lmetric's P-token x BS
+    product, where a large enough load gap can override the compute signal."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=lambda c: c.new_tokens)
+    return best.replica_id
+
+
 def lmetric_power_score(c) -> float:
     """LMETRIC's own multiplicative form (Zhang et al., OSDI'26, arXiv:2603.15202),
     extended with a continuous power penalty: new_tokens x in_flight_after x

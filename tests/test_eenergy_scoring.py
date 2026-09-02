@@ -17,7 +17,7 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       pick_drf_coincidence_tiebreak,
                       share_power_level, dominant_share_peak,
                       dominant_share_vector_peak_priority, pick_drf_peak_power_tiebreak,
-                      pick_drf_power_tiebreak_p2c)
+                      pick_drf_power_tiebreak_p2c, pick_compute_only)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -58,6 +58,33 @@ def test_lmetric_picks_minimum_new_tokens_times_in_flight():
         _cand("r2", new_tokens=50, in_flight_after=50),    # score 2500
     ]
     assert pick_lmetric(cands) == "r1"
+
+
+def test_compute_only_ignores_load_where_lmetric_would_be_swayed_by_it():
+    """Ablation isolating whether lmetric's power-ramp-smoothing benefit (session
+    discussion: does Share_compute alone already capture most of a PES-IM-chunking-style
+    smoothing effect, with no power telemetry and not even a load term) comes from the
+    compute term alone or needs the load term too. r0 has fewer new tokens but is heavily
+    loaded; r1 has more new tokens but is idle. lmetric's product can be swayed toward r1 by
+    a large enough load gap; compute_only ignores load entirely and must always pick r0."""
+    cands = [
+        _cand("r0", new_tokens=10, in_flight_after=50),   # lmetric score 500
+        _cand("r1", new_tokens=100, in_flight_after=1),   # lmetric score 100 (lmetric picks r1)
+    ]
+    assert pick_lmetric(cands) == "r1"       # swayed by the load term
+    assert pick_compute_only(cands) == "r0"  # load-blind: fewest new tokens wins regardless
+
+
+def test_compute_only_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_compute_only([])
+
+
+def test_compute_only_ties_rotate_via_tie_start():
+    cands = [_cand("r0", new_tokens=5), _cand("r1", new_tokens=5), _cand("r2", new_tokens=5)]
+    assert pick_compute_only(cands, tie_start=0) == "r0"
+    assert pick_compute_only(cands, tie_start=1) == "r1"
+    assert pick_compute_only(cands, tie_start=2) == "r2"
 
 
 def test_dominant_share_is_max_of_three_normalized_shares():

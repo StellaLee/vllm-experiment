@@ -207,6 +207,19 @@ def test_drf_power_tiebreak_adaptive_isolated_still_relaxes_for_genuinely_isolat
     assert r.adaptive_ceiling_isolated.ceiling() == 900.0
 
 
+def test_compute_only_prefers_replica_with_cached_prefix_ignoring_load():
+    """Integration-level analog of the lmetric cache-preference test: compute_only must also
+    steer toward a cache hit (fewer new tokens), and must NOT be swayed off it by load."""
+    states = _states()
+    r = Router(states, policy="compute_only")
+    long_prompt = list(range(64))  # 4 full 16-token blocks
+    r.route(long_prompt)  # both replicas start empty/idle; tie_start=0 picks first candidate (r0)
+    r.complete("r0")
+    # route the SAME prompt again: r0 now has it cached (0 new tokens), r1 doesn't
+    second = r.route(long_prompt)
+    assert second == "r0"
+
+
 def test_lmetric_power_avoids_pressured_replica_even_when_raw_lmetric_score_ties():
     """Integration-level smoke test mirroring the scoring-level test: two candidates with
     identical raw new_tokens*in_flight_after but different power pressure -- lmetric_power
