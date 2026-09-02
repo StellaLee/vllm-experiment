@@ -7,6 +7,11 @@
 \AtBeginDocument{%
   \providecommand\BibTeX{{Bib\TeX}}}
 
+%% acmart defines `lemma`/`proof` via amsthm but not `claim`/`corollary` -- needed for
+%% \S4.2's counterexample and \S4.3's corollary.
+\newtheorem{claim}{Claim}
+\newtheorem{corollary}{Corollary}
+
 %% Rights-management placeholders — fill in from the rights-confirmation
 %% email after acceptance. Not needed for the anonymous review submission.
 \setcopyright{acmlicensed}
@@ -42,10 +47,9 @@ load, to deliberately suppress power-ramp violations --- provably sacrifices thi
 we construct an explicit instance where it selects a Pareto-dominated candidate. Despite
 giving up the theoretical guarantee, this variant wins empirically on real 8$\times$4090
 hardware under sustained fleet power pressure: relative to the Pareto-safe rule, it cuts peak
-power-ramp rate by 40\% (with 8$\times$ tighter run-to-run variance) and cross-GPU ramp
-coincidence by 43\%, while leaving mean request latency statistically flat, across 3
-replicated trials. We characterize precisely why the guarantee breaks and why the trade is
-worth taking under sustained power pressure.
+power-ramp rate by 40\% (with 8$\times$ tighter run-to-run variance), while leaving mean
+request latency statistically flat, across 3 replicated trials. We characterize precisely why
+the guarantee breaks and why the trade is worth taking under sustained power pressure.
 \end{abstract}
 
 \begin{CCSXML}
@@ -103,6 +107,11 @@ deviation from that provable rule pay for itself in practice?}
   \item Hardware validation on a real 8$\times$4090 LLM-serving fleet: the power-prioritized
     rule delivers a large, tightly-replicated win on tail power-ramp metrics under sustained
     pressure, at no measurable mean-latency cost (\S\ref{sec:eval}).
+  \item An extension of the Pareto-non-domination guarantee to a live, fleet-calibrated ramp
+    ceiling in place of a fixed constant --- shown to require the ceiling be shared across
+    candidates rather than calibrated per-candidate --- and an insensitivity guarantee for the
+    round-filtered calibration scheme that avoids the naive scheme's self-defeating inflation
+    under sustained concentration (\S\ref{sec:ceiling-invariance}, \S\ref{sec:ceiling-boundedness}).
 \end{enumerate}
 
 \section{Background and Related Work}
@@ -122,10 +131,6 @@ deviation from that provable rule pay for itself in practice?}
     sampled load balancing with a proven exponential improvement in expected max load; a
     different mechanism family (randomized sampling vs.\ our full-visibility deterministic
     rule), noted for completeness.
-  \item \textbf{Coincidence factor / cross-machine power correlation} --- the cross-GPU
-    ramp-coincidence metric used in \S\ref{sec:eval} is drawn from a sibling paper's
-    grid-instrumentation framing, reused here as one of the two metrics the power-prioritized
-    rule is evaluated on.
 \end{itemize}
 
 \section{Problem Formulation}
@@ -179,6 +184,7 @@ $\sigma$ sorts a vector into descending order, and ties are broken by standard l
 comparison of the sorted vectors.
 
 \begin{lemma}
+\label{lem:sorted-nondominated}
 The candidate selected by the sorted rule is Pareto-non-dominated among the candidate set: no
 other candidate $c'$ satisfies $\mathit{Share}_i(c') \le \mathit{Share}_i(c^*)$ for all three
 resources $i$ with strict inequality for at least one.
@@ -242,6 +248,92 @@ across all three resources vs.\ a deliberate bias toward the one resource with a
 real-world cost --- and which one to deploy is an empirical question, not a theoretical one.
 \S\ref{sec:eval} answers it.
 
+\subsection{A live-calibrated ceiling preserves the guarantee, and requires it to be shared}
+\label{sec:ceiling-invariance}
+
+Both rules above assume $\mathit{Share_{power}}(c) = \max(\mathit{ramp\_rate}(c),0) / \kappa$
+for a fixed constant ceiling $\kappa$ (450~W/s, hand-calibrated from one offline burst test).
+A natural objection: does either guarantee survive replacing $\kappa$ with a value recalibrated
+live from the fleet's own recent ramp history --- as an \emph{adaptive-ceiling} variant of
+either rule would need?
+
+\begin{corollary}
+\label{cor:ceiling-invariance}
+Lemma~\ref{lem:sorted-nondominated} holds unchanged for any $\kappa(t) > 0$ that is a single
+scalar shared identically by every candidate at decision time $t$, regardless of how $\kappa(t)$
+is computed --- static, adaptively recalibrated from fleet history, or otherwise.
+\end{corollary}
+
+\begin{proof}
+The proof of Lemma~\ref{lem:sorted-nondominated} treats $s(c)$'s three coordinates as arbitrary
+reals; it never uses the fact that $\mathit{Share_{power}}$'s denominator is constant
+\emph{across} decisions, only that it is the same value for every candidate \emph{within} one
+decision, so the coordinate remains a well-defined, comparable per-candidate quantity for that
+decision's $\arg\min$. Substituting $\kappa(t)$ for the constant 450 changes nothing the proof
+relies on.
+\end{proof}
+
+We verified this directly, not just by inspection of the proof: re-running \S\ref{sec:lemma1}'s
+brute-force search with the ceiling itself independently randomized per trial (not just the raw
+shares) still produces zero violations across 200{,}000 trials
+(\texttt{verify\_ceiling\_invariance.py}, project research log).
+
+This is not merely a formality about a rule we don't run: the deployed
+\texttt{drf\_power\_tiebreak\_adaptive\_isolated} arm (\S\ref{sec:eval}) routes via the
+\emph{named} rule, not the sorted rule, so it does not inherit
+Corollary~\ref{cor:ceiling-invariance}'s guarantee --- it inherits the
+\S\ref{sec:counterexample} counterexample instead, unaffected by which ceiling value $D$,
+$\mathit{Share_{power}}$, and $\mathit{Share_{load}}$ happen to be computed against.
+Corollary~\ref{cor:ceiling-invariance} establishes that live calibration is compatible with the
+theory in principle --- a sorted-rule variant with the same adaptive calibration would inherit
+the safe guarantee unmodified --- but it does not upgrade the named rule's already-established
+status; the empirical case for \texttt{drf\_power\_tiebreak\_adaptive\_isolated}
+(\S\ref{sec:eval}) rests on measurement, not on this corollary.
+
+\textbf{Sharing is load-bearing.} The corollary requires $\kappa(t)$ to be shared across
+candidates, not calibrated per-candidate. Under a per-candidate $\kappa_c$, share-space
+non-domination can dissociate from physical reality: two candidates with identical
+compute/load but $(\mathit{raw\_ramp}, \kappa) = (0.9,\ 10)$ and $(0.1,\ 0.1)$ realize
+$\mathit{Share_{power}} = 0.09$ and $1.0$ respectively --- the sorted rule (correctly, per
+Lemma~\ref{lem:sorted-nondominated}) selects the first candidate as share-space
+non-dominated, even though it draws the physically \emph{larger} raw ramp. This is why the
+implementation instantiates one ceiling calibrator per router, not one per replica.
+
+\subsection{Round-filtered calibration is insensitive to concentration, not merely less sensitive}
+\label{sec:ceiling-boundedness}
+
+A live ceiling introduces its own hazard: a naive scheme that folds every observed ramp reading
+into a rolling percentile is self-defeating under sustained multi-replica pressure ---
+concentration (2+ replicas simultaneously elevated) is exactly the condition that fills the
+window with elevated values, so the ceiling inflates \emph{most} during the episodes it is
+supposed to guard against. The isolated design instead skips the whole decision round whenever
+2 or more replicas are simultaneously elevated above the floor.
+
+\begin{lemma}
+\label{lem:insensitivity}
+Let two fleet ramp-reading histories agree on every decision round with fewer than 2
+simultaneously-elevated replicas, and differ arbitrarily on rounds with 2 or more. The
+round-filtered calibration produces identical ceiling trajectories on both histories at every
+timestep.
+\end{lemma}
+
+\begin{proof}
+The round-filtered calibrator returns without modifying its window whenever a round's elevated
+count is $\ge 2$; the ceiling is a deterministic function (a fixed percentile) of the window's
+contents alone. Since the two histories only ever differ on rounds that are skipped entirely,
+the window's contents --- and hence the ceiling --- are identical at every step.
+\end{proof}
+
+We verified this over 2{,}000 randomized paired-history trials (concentration-round magnitudes
+scaled by a random factor up to $1000\times$ between the paired sequences): zero violations.
+Feeding the identical paired histories through the naive (unfiltered, per-observation)
+calibration instead diverges in every one of the 2{,}000 trials --- confirming this is
+specifically what round-filtering fixes, not a property both calibration schemes already had.
+In one representative trace (40 rounds, concentration-round magnitude scaled $20\times$ between
+the paired sequences), the round-filtered ceiling is bit-identical (2001.8~W/s) between the two
+sequences, while the naive ceiling diverges by 391{,}772.8~W/s
+(\texttt{verify\_ceiling\_boundedness.py}, project research log).
+
 \section{Experimental Validation}
 \label{sec:eval}
 
@@ -269,7 +361,6 @@ the metrics it was built for, at no measurable mean-latency cost.}
     Metric & Sorted & Named & Direction \\
     \midrule
     Max ramp (W/s) & $5010.6{\pm}1940.8$ & $\mathbf{3015.3{\pm}257.1}$ & $-40\%$, 8$\times$ tighter \\
-    Coincidence (\%) & $7.7{\pm}1.5$ & $\mathbf{4.4{\pm}1.2}$ & $-43\%$ \\
     TBT max (ms) & $2703.7{\pm}968.5$ & $\mathbf{2034.6{\pm}181.6}$ & $-25\%$, more stable \\
     Duty cycle & $0.281{\pm}0.021$ & $\mathbf{0.259{\pm}0.010}$ & improved \\
     TTFT mean (s) & $3.712{\pm}0.935$ & $3.942{\pm}0.271$ & flat, tighter std \\

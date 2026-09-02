@@ -33,10 +33,9 @@ to deliberately suppress power-ramp violations — provably sacrifices this guar
 construct an explicit instance where it selects a Pareto-dominated candidate. Despite giving
 up the theoretical guarantee, this variant wins empirically on real 8×4090 hardware under
 sustained fleet power pressure: relative to the Pareto-safe rule, it cuts peak power-ramp
-rate by 40% (with 8× tighter run-to-run variance) and cross-GPU ramp coincidence by 43%,
-while leaving mean request latency statistically flat, across 3 replicated trials. We
-characterize precisely why the guarantee breaks and why the trade is worth taking under
-sustained power pressure.
+rate by 40% (with 8× tighter run-to-run variance), while leaving mean request latency
+statistically flat, across 3 replicated trials. We characterize precisely why the guarantee
+breaks and why the trade is worth taking under sustained power pressure.
 
 ## 1. Introduction
 
@@ -62,6 +61,11 @@ provable rule pay for itself in practice?**
 4. Hardware validation on a real 8×4090 LLM-serving fleet: the power-prioritized rule
    delivers a large, tightly-replicated win on tail power-ramp metrics under sustained
    pressure, at no measurable mean-latency cost (§5).
+5. An extension of the Pareto-non-domination guarantee to a live, fleet-calibrated ramp
+   ceiling in place of a fixed constant — shown to require the ceiling be shared across
+   candidates rather than calibrated per-candidate — and an insensitivity guarantee for the
+   round-filtered calibration scheme that avoids the naive scheme's self-defeating inflation
+   under sustained concentration (§4.3, §4.4).
 
 ## 2. Background / Related Work
 
@@ -76,10 +80,6 @@ provable rule pay for itself in practice?**
 - **Power-of-Two-Choices** [3, 4] — sampled load balancing with a proven exponential
   improvement in expected max load; a different mechanism family (randomized sampling vs.
   our full-visibility deterministic rule), noted for completeness.
-- **Coincidence factor / cross-machine power correlation** — the cross-GPU ramp-coincidence
-  metric used in §5 is drawn from the sibling PES-IM paper's grid-instrumentation framing
-  (`../paper-pes-im/`), reused here as one of the two metrics the power-prioritized rule is
-  evaluated on.
 
 ## 3. Problem Formulation
 
@@ -161,7 +161,7 @@ the rule cannot see the compute difference at all, since compute only enters thr
 and `D` is tied. `min()` over identical keys returns whichever candidate is encountered
 first; when `B` is first in iteration order, the named rule selects the Pareto-dominated
 `B`. (Verified directly in code, not just argued: see
-`scratchpad/verify_pareto_lemma.py` in the project research log.)
+`scripts/eenergy/verify_pareto_lemma.py` in the project research log.)
 
 **Why this happens, and why the trade can still be worth it.** The named rule buys a
 deliberate, domain-motivated priority — never let a load difference override a power
@@ -173,6 +173,76 @@ avoid. The two rules represent a genuine, structural trade-off — provable fair
 all three resources vs. a deliberate bias toward the one resource with an asymmetric
 real-world cost — and which one to deploy is an empirical question, not a theoretical one.
 §5 answers it.
+
+### 4.3 A live-calibrated ceiling preserves the guarantee, and requires it to be shared
+
+Both rules above assume `Share_power(c) = max(ramp_rate(c), 0) / κ` for a fixed constant
+ceiling `κ` (450 W/s, hand-calibrated from one offline burst test). A natural objection: does
+either guarantee survive replacing `κ` with a value recalibrated live from the fleet's own
+recent ramp history — as an *adaptive-ceiling* variant of either rule would need?
+
+**Corollary.** Lemma 1 holds unchanged for any `κ(t) > 0` that is a single scalar shared
+identically by every candidate at decision time `t`, regardless of how `κ(t)` is computed —
+static, adaptively recalibrated from fleet history, or otherwise.
+
+**Proof.** The proof of Lemma 1 treats `s(c)`'s three coordinates as arbitrary reals; it
+never uses the fact that `Share_power`'s denominator is constant *across* decisions, only
+that it is the same value for every candidate *within* one decision, so the coordinate
+remains a well-defined, comparable per-candidate quantity for that decision's `argmin`.
+Substituting `κ(t)` for the constant 450 changes nothing the proof relies on. ∎
+
+We verified this directly, not just by inspection of the proof: re-running §4.1's
+brute-force search with the ceiling itself independently randomized per trial (not just the
+raw shares) still produces zero violations across 200,000 trials
+(`scripts/eenergy/verify_ceiling_invariance.py`, project research log).
+
+This is not merely a formality about a rule we don't run: the deployed
+`drf_power_tiebreak_adaptive_isolated` arm (§5) routes via the *named* rule, not the sorted
+rule, so it does not inherit this corollary's guarantee — it inherits §4.2's counterexample
+instead, unaffected by which ceiling value `D`, `Share_power`, and `Share_load` happen to be
+computed against. The corollary establishes that live calibration is compatible with the
+theory in principle — a sorted-rule variant with the same adaptive calibration would inherit
+the safe guarantee unmodified — but it does not upgrade the named rule's already-established
+status; the empirical case for `drf_power_tiebreak_adaptive_isolated` (§5) rests on
+measurement, not on this corollary.
+
+**Sharing is load-bearing.** The corollary requires `κ(t)` to be shared across candidates,
+not calibrated per-candidate. Under a per-candidate `κ_c`, share-space non-domination can
+dissociate from physical reality: two candidates with identical compute/load but
+`(raw_ramp, κ) = (0.9, 10)` and `(0.1, 0.1)` realize `Share_power = 0.09` and `1.0`
+respectively — the sorted rule (correctly, per Lemma 1) selects the first candidate as
+share-space non-dominated, even though it draws the physically *larger* raw ramp. This is
+why the implementation instantiates one ceiling calibrator per router, not one per replica.
+
+### 4.4 Round-filtered calibration is insensitive to concentration, not merely less sensitive
+
+A live ceiling introduces its own hazard: a naive scheme that folds every observed ramp
+reading into a rolling percentile is self-defeating under sustained multi-replica pressure —
+concentration (2+ replicas simultaneously elevated) is exactly the condition that fills the
+window with elevated values, so the ceiling inflates *most* during the episodes it is
+supposed to guard against. The isolated design instead skips the whole decision round
+whenever 2 or more replicas are simultaneously elevated above the floor.
+
+**Lemma 2.** Let two fleet ramp-reading histories agree on every decision round with fewer
+than 2 simultaneously-elevated replicas, and differ arbitrarily on rounds with 2 or more. The
+round-filtered calibration produces identical ceiling trajectories on both histories at every
+timestep.
+
+**Proof.** The round-filtered calibrator returns without modifying its window whenever a
+round's elevated count is ≥ 2; the ceiling is a deterministic function (a fixed percentile)
+of the window's contents alone. Since the two histories only ever differ on rounds that are
+skipped entirely, the window's contents — and hence the ceiling — are identical at every
+step. ∎
+
+We verified this over 2,000 randomized paired-history trials (concentration-round magnitudes
+scaled by a random factor up to 1000× between the paired sequences): zero violations. Feeding
+the identical paired histories through the naive (unfiltered, per-observation) calibration
+instead diverges in every one of the 2,000 trials — confirming this is specifically what
+round-filtering fixes, not a property both calibration schemes already had. In one
+representative trace (40 rounds, concentration-round magnitude scaled 20× between the paired
+sequences), the round-filtered ceiling is bit-identical (2001.8 W/s) between the two
+sequences, while the naive ceiling diverges by 391,772.8 W/s
+(`scripts/eenergy/verify_ceiling_boundedness.py`, project research log).
 
 ## 5. Experimental Validation
 
@@ -190,7 +260,6 @@ metrics it was built for, at no measurable mean-latency cost.**
 | metric | sorted rule (Lemma-1-safe) | named rule (power-prioritized) | direction |
 |---|---|---|---|
 | max power-ramp (W/s) | 5010.6 ± 1940.8 | **3015.3 ± 257.1** | **−40%, 8× tighter std** |
-| cross-GPU ramp coincidence (%) | 7.7 ± 1.5 | **4.4 ± 1.2** | **−43%** |
 | TBT max (ms) | 2703.7 ± 968.5 | **2034.6 ± 181.6** | **−25%, far more stable** |
 | duty cycle (fraction pressured) | 0.281 ± 0.021 | **0.259 ± 0.010** | improved |
 | TTFT mean (s) | 3.712 ± 0.935 | 3.942 ± 0.271 (**flat**, much tighter std) | no meaningful change |
