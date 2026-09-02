@@ -303,6 +303,56 @@ def pick_drf_power_tiebreak(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def dominant_share_vector_power_priority_full(c) -> tuple:
+    """Fix for the Pareto-domination counterexample (paper.tex Sec 4.2 / Claim 2 in
+    verify_pareto_lemma.py): dominant_share_vector_power_priority's 3-tuple (D, power, load)
+    can tie COMPLETELY even when compute differs, because D = max(compute, load, power)
+    collapses all three raw shares into one scalar and discards which dimension produced it
+    -- compute is otherwise never named explicitly in the tuple, so it becomes fully
+    invisible whenever it isn't the argmax coordinate for either candidate being compared.
+
+    This appends share_compute as an explicit fourth tie-break coordinate: (D, power, load,
+    compute). Same primary criterion (D) and same power-before-load priority as the plain
+    named rule -- this only changes behavior in the residual case where D, power, AND load
+    are all tied, which the plain rule breaks arbitrarily (by iteration order) and this
+    variant instead breaks using compute, restoring Pareto-non-domination (see
+    pick_drf_power_tiebreak_full's docstring for the proof sketch)."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    sp = share_power(c)
+    return (dominant_share(c), sp, share_load, share_compute)
+
+
+def pick_drf_power_tiebreak_full(candidates: list, tie_start: int = 0) -> str:
+    """Provably Pareto-non-dominated counterpart to pick_drf_power_tiebreak: same primary
+    criterion (route to the replica with the lowest dominant share D) and same
+    power-before-load tie-break priority, but the tie-break vector names all three raw
+    shares explicitly -- (D, share_power, share_load, share_compute) -- instead of stopping
+    at load and leaving compute reachable only through the lossy D = max(...) step.
+
+    Proof sketch that argmin over this 4-tuple is always Pareto-non-dominated: suppose c'
+    Pareto-dominates c* (every raw share of c' is <= the corresponding share of c*, strictly
+    for at least one). D is monotonic in each coordinate (a max of non-decreasing arguments
+    is non-decreasing), so domination implies D(c') <= D(c*); if strict, c' wins on the first
+    coordinate. If tied, domination also implies share_power(c') <= share_power(c*); if
+    strict, c' wins there. If tied, likewise for share_load. If D, power, AND load are all
+    tied between c' and c*, domination's required strict inequality has nowhere left to hide
+    except share_compute, so share_compute(c') < share_compute(c*) strictly, and c' wins on
+    the fourth coordinate. Every case terminates with c' (the dominator) winning -- no
+    dominated candidate can ever be selected. (Numerically verified, not just argued: see
+    verify_pareto_lemma_full.py in the project research log.)
+
+    Because tuple comparison short-circuits at the first differing coordinate, this is
+    behaviorally IDENTICAL to pick_drf_power_tiebreak whenever (D, power, load) alone already
+    distinguishes the candidates -- compute is consulted only in the rare residual-tie case,
+    so the fix is expected to change routing decisions (and therefore measured outcomes)
+    only rarely in practice."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=dominant_share_vector_power_priority_full)
+    return best.replica_id
+
+
 def pick_drf(candidates: list, tie_start: int = 0) -> str:
     """Condition 3 (ours). Route to the replica with the lexicographically lowest sorted
     share vector across the three independently-normalized resources -- Dominant Resource

@@ -17,7 +17,8 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       pick_drf_coincidence_tiebreak,
                       share_power_level, dominant_share_peak,
                       dominant_share_vector_peak_priority, pick_drf_peak_power_tiebreak,
-                      pick_drf_power_tiebreak_p2c, pick_compute_only)
+                      pick_drf_power_tiebreak_p2c, pick_compute_only,
+                      dominant_share_vector_power_priority_full, pick_drf_power_tiebreak_full)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -181,6 +182,69 @@ def test_drf_power_tiebreak_matches_plain_drf_when_dominant_shares_dont_tie():
     r1 = _cand("r1", new_tokens=50, in_flight_after=5, token_budget=100,
                max_num_seqs=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)   # dom=0.5
     assert pick_drf([r0, r1]) == pick_drf_power_tiebreak([r0, r1]) == "r1"
+
+
+def test_dominant_share_vector_power_priority_full_adds_compute_as_fourth_coordinate():
+    """dominant_share_vector_power_priority's 3-tuple (D, power, load) can tie completely
+    while compute differs -- D collapses all three raw shares into one scalar, and compute
+    is otherwise never named explicitly, so it becomes fully invisible whenever it isn't the
+    argmax. This variant appends compute as an explicit fourth coordinate: (D, power, load,
+    compute) -- same primary criterion and same power-before-load priority, but compute can
+    now always break a residual full tie instead of being silently dropped."""
+    c = _cand("r0", new_tokens=80, in_flight_after=7, token_budget=100,
+              max_num_seqs=10, ramp_rate_w_per_s=3.0, ramp_ceiling_w_per_s=10.0)
+    # compute=0.8 (dom), load=0.7, power=0.3
+    vec = dominant_share_vector_power_priority_full(c)
+    assert vec == (0.8, 0.3, 0.7, 0.8)
+    assert vec[0] == dominant_share(c)
+
+
+def test_drf_power_tiebreak_full_resolves_the_pareto_domination_counterexample():
+    """The exact instance from paper.tex Sec 4.2 / verify_pareto_lemma.py Claim 2: A
+    Pareto-dominates B (equal load and power, strictly lower compute), but D(A)=D(B)=0.9 and
+    load/power are ALSO tied, so plain pick_drf_power_tiebreak's 3-tuple (D, power, load) is
+    identical for both -- argmin over identical keys returns whichever is encountered first,
+    so with B first in iteration order it selects the dominated B. Adding compute as a fourth
+    tie-break coordinate must resolve this: A's lower compute now breaks the residual tie
+    regardless of iteration order."""
+    # A = (compute=0.3, load=0.9, power=0.9) -- Pareto-dominates B
+    a = _cand("A", new_tokens=30, in_flight_after=90, token_budget=100,
+              max_num_seqs=100, ramp_rate_w_per_s=90.0, ramp_ceiling_w_per_s=100.0)
+    # B = (compute=0.5, load=0.9, power=0.9) -- Pareto-dominated by A
+    b = _cand("B", new_tokens=50, in_flight_after=90, token_budget=100,
+              max_num_seqs=100, ramp_rate_w_per_s=90.0, ramp_ceiling_w_per_s=100.0)
+    # Confirm the bug reproduces first: with B first in iteration order, the OLD rule
+    # selects the dominated B.
+    assert pick_drf_power_tiebreak([b, a]) == "B"
+    # The fixed rule must select the dominator A, regardless of iteration order.
+    assert pick_drf_power_tiebreak_full([b, a]) == "A"
+    assert pick_drf_power_tiebreak_full([a, b]) == "A"
+
+
+def test_drf_power_tiebreak_full_matches_drf_power_tiebreak_when_only_load_and_power_differ():
+    """Behavioral-equivalence check: in the ORIGINAL illustrative case (compute ties, only
+    load/power differ), adding compute as a fourth coordinate must change nothing -- Python
+    tuple comparison short-circuits before ever reaching compute, since (D, power, load)
+    alone already distinguishes the two candidates. This is the basis for expecting the fix
+    to be behaviorally near-free in practice."""
+    r0 = _cand("r0", new_tokens=90, token_budget=100, in_flight_after=7, max_num_seqs=10,
+               ramp_rate_w_per_s=3.0, ramp_ceiling_w_per_s=10.0)  # compute=0.9(dom), load=0.7, power=0.3
+    r1 = _cand("r1", new_tokens=90, token_budget=100, in_flight_after=2, max_num_seqs=10,
+               ramp_rate_w_per_s=5.0, ramp_ceiling_w_per_s=10.0)  # compute=0.9(dom), load=0.2, power=0.5
+    assert pick_drf_power_tiebreak([r0, r1]) == pick_drf_power_tiebreak_full([r0, r1]) == "r0"
+
+
+def test_drf_power_tiebreak_full_matches_plain_drf_when_dominant_shares_dont_tie():
+    r0 = _cand("r0", new_tokens=1, in_flight_after=1, token_budget=100,
+               max_num_seqs=10, ramp_rate_w_per_s=95.0, ramp_ceiling_w_per_s=100.0)  # dom=0.95
+    r1 = _cand("r1", new_tokens=50, in_flight_after=5, token_budget=100,
+               max_num_seqs=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=100.0)   # dom=0.5
+    assert pick_drf([r0, r1]) == pick_drf_power_tiebreak_full([r0, r1]) == "r1"
+
+
+def test_drf_power_tiebreak_full_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_power_tiebreak_full([])
 
 
 def test_lmetric_power_score_is_tokens_times_bs_times_one_plus_share_power():

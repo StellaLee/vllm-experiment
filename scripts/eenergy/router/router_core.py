@@ -13,13 +13,13 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, pick_drf, pick_p
                       pick_drf_power_tiebreak, pick_lmetric_power, pick_lmetric_power_convex,
                       pick_whale_argmin_power_switch, pick_drf_coincidence_tiebreak,
                       pick_drf_peak_power_tiebreak, pick_drf_power_tiebreak_p2c,
-                      pick_compute_only)
+                      pick_compute_only, pick_drf_power_tiebreak_full)
 
 _POLICIES = ("round_robin", "lmetric", "drf", "p2c_whale", "whale_argmin", "constrained_lmetric",
              "pressure_switch", "drf_power_tiebreak", "lmetric_power", "lmetric_power_convex",
              "whale_argmin_power_switch", "drf_coincidence_tiebreak", "drf_peak_power_tiebreak",
              "drf_power_tiebreak_p2c", "drf_power_tiebreak_adaptive",
-             "drf_power_tiebreak_adaptive_isolated", "compute_only")
+             "drf_power_tiebreak_adaptive_isolated", "compute_only", "drf_power_tiebreak_full")
 
 # Admission-time whale classification cutoff (prompt tokens), reused from this project's
 # existing whale-aware-controller convention (scripts/mlsys/hotpatch_whale_aware_budget.py)
@@ -138,6 +138,9 @@ class Router:
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
         elif self.policy == "compute_only":
             replica_id = pick_compute_only(candidates, self._tie_cursor)
+            self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
+        elif self.policy == "drf_power_tiebreak_full":
+            replica_id = pick_drf_power_tiebreak_full(candidates, self._tie_cursor)
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
         else:
             replica_id = pick_pressure_switch(candidates, self._tie_cursor)

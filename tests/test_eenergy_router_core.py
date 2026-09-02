@@ -220,6 +220,22 @@ def test_compute_only_prefers_replica_with_cached_prefix_ignoring_load():
     assert second == "r0"
 
 
+def test_drf_power_tiebreak_full_matches_drf_power_tiebreak_when_only_power_differs():
+    """Integration-level check of the near-free-fix claim: with load equal and only power
+    differing, (D, power, load) alone already distinguishes the two candidates, so appending
+    compute as a fourth tie-break coordinate must not change the routed replica -- confirmed
+    through the full Router policy-dispatch path, not just the pure scoring function."""
+    def _pressured_states():
+        states = _states()
+        states[0].ramp_rate_w_per_s = 80.0  # r0: power=0.8
+        states[1].ramp_rate_w_per_s = 0.0   # r1: power=0.0 (lower -- both rules should pick this)
+        return states
+
+    r_old = Router(_pressured_states(), policy="drf_power_tiebreak")
+    r_full = Router(_pressured_states(), policy="drf_power_tiebreak_full")
+    assert r_old.route(token_ids=[1, 2, 3]) == r_full.route(token_ids=[1, 2, 3]) == "r1"
+
+
 def test_lmetric_power_avoids_pressured_replica_even_when_raw_lmetric_score_ties():
     """Integration-level smoke test mirroring the scoring-level test: two candidates with
     identical raw new_tokens*in_flight_after but different power pressure -- lmetric_power
