@@ -4,7 +4,7 @@ import json
 import statistics
 from collections import defaultdict
 
-ARMS = ["drf_fixed", "drf_power_tiebreak_full", "weighted_sum", "lmetric_power"]
+ARMS = ["drf_fixed", "drf_power_tiebreak_full", "weighted_sum", "lmetric_power", "round_robin"]
 
 # condition -> (new_prefix, old_prefix, {arm_override: old_prefix})
 CONDITIONS = {

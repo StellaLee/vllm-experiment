@@ -2622,3 +2622,87 @@ session's scratchpad — trivial one-off, not needed again). Aggregation:
 `aggregate_full_comparison.py` (prints the OLD-vs-NEW table per condition) and
 `check_dominance_reversals.py` (prints only the dominance-relation summary per condition) —
 both read directly from `logs/`, not yet committed.
+
+## Update 2026-09-04 (continued): `round_robin` (vLLM's actual default, condition-1 baseline)
+## added to the per-GPU-calibrated comparison as a 5th arm — dominated outright in 2 of 6
+## conditions, incomparable everywhere else
+
+**Motivation**: every arm in the 2026-09-04 per-GPU re-validation above is a *scored* policy
+(DRF-family or LMETRIC-family). `round_robin` — vLLM's own no-router default, and this
+project's Condition 1 baseline since the original design spec — had never been run under the
+corrected per-GPU ramp ceiling; its only existing data predates the calibration fix entirely.
+Added it as a 5th arm so the headline comparison covers "doing nothing" (round_robin), not
+just "which scoring rule is safest."
+
+**Ceiling-relevance caveat**: `pick_round_robin()` (`scoring.py`) never reads `ramp_ceiling` —
+its routing decision is a pure counter cycle, so `RAMP_CEILING_PER_GPU` has zero causal effect
+on `round_robin`'s behavior. It was rerun anyway (rather than reusing old-era data) purely for
+timing/hardware-state contemporaneity with the other 4 arms' fresh NEW runs, not because the
+calibration fix changes anything for this arm. Framing this as part of the "per-GPU
+calibration" batch is therefore accurate for logistics (same script, same day, same
+`RAMP_CEILING_PER_GPU` value passed through) but not for mechanism — unlike
+`drf_power_tiebreak_full` and `weighted_sum`, whose actual scores depend on the ceiling
+constant, `round_robin`'s NEW numbers differ from its OLD numbers only via ordinary run-to-run
+noise.
+
+**Methodology**: 18 fresh runs (6 conditions x 3 trials — the same 5 conditions as the 4-arm
+batch, plus BurstGPT), `N_REPLICAS=6 GPU_OFFSET=2` (GPUs 2-7, identical to every other arm's
+data, confirmed via `nvidia-smi` immediately before launch — GPUs 0-1 have never been part of
+any run in this comparison), `POLICY=round_robin`, orchestrated by
+`orchestrate/eenergy/run_pergpu_roundrobin_6conditions.sh` (harness args copied verbatim from
+`run_pergpu_4arms_5conditions.sh` and `run_burstgpt_perGPU_safetriad.sh`). All 18 runs
+completed cleanly, no reruns needed.
+
+**Results — round_robin's own numbers, NEW (per-GPU-calibrated) columns, 3-trial mean±std:**
+
+| condition | peak_power (W) | mean_ramp (W/s) | p99_ramp (W/s) | TTFT_mean (s) | TBT_mean (ms) |
+|---|---|---|---|---|---|
+| Heavy/Matched | 2635.6±37.9 | 151.4±6.5 | 1283±25 | 5.588±0.268 | 1241.9±12.6 |
+| Light/Cachehit | 1955.4±8.9 | 99.7±4.4 | 1899±135 | 0.074±0.001 | 48.2±1.3 |
+| Heavy/Closed-Loop | 2319.1±71.4 | 140.4±8.2 | 1891±382 | 0.607±0.019 | 482.8±22.2 |
+| Ramp & Route | 2504.3±68.4 | 197.1±6.7 | 2510±322 | 0.688±0.022 | 450.9±11.7 |
+| WildChat | 2382.9±27.7 | 118.4±0.8 | 1009±130 | 0.141±0.002 | 299.6±11.5 |
+| BurstGPT | 2199.3±15.2 | 223.2±2.8 | 1650.9±37.3 | 0.160±0.000 | 100.8±0.5 |
+
+(Ramp & Route has no OLD round_robin data — it never existed before this batch, unlike the
+other 5 conditions, which have old-era round_robin runs on record.)
+
+**Dominance relations involving `round_robin`, all conditions, NEW (per-GPU-calibrated):**
+
+- **Heavy/Matched**: incomparable — round_robin neither dominates nor is dominated by anything.
+- **Light/Cachehit**: **round_robin is dominated by all 4 other arms simultaneously**
+  (`drf_fixed`, `drf_power_tiebreak_full`, `weighted_sum`, and `lmetric_power` each
+  independently dominate it — full 5-metric sweep each time). This also held OLD (dominated by
+  `drf_fixed`, `weighted_sum`, and `lmetric_power` there too), so it's not a calibration
+  artifact — round_robin is robustly the worst arm in this condition. Mechanism: Cachehit's
+  workload has real cache-hit structure (see the 2026-08-31 update earlier in this doc);
+  round_robin's blindness to KV$ locality means it can't route cache-hit-bearing requests to
+  the replica already holding that prefix, unlike every scored arm (even the power-blind
+  `lmetric_power`, whose `P-token x BS` score at least reacts to P-token collapsing on a hit).
+- **Heavy/Closed-Loop**: incomparable.
+- **Ramp & Route**: incomparable (mixed: round_robin beats `drf_fixed` on peak_power/mean_ramp
+  but loses on TTFT/TBT, so neither dominates).
+- **WildChat**: **`lmetric_power` dominates `round_robin`** (all 5 metrics); round_robin
+  doesn't dominate or get dominated by anything else here.
+- **BurstGPT**: incomparable against all 3 arms with NEW data there (`drf_fixed`,
+  `drf_power_tiebreak_full`, `weighted_sum`; `lmetric_power` has no BurstGPT NEW run to compare
+  against). round_robin's peak_power and TTFT are best-in-class here, but its mean_ramp
+  (223.2 W/s) and TBT (100.8 ms) are worst-in-class, keeping every pairing incomparable.
+
+**Headline finding**: adding the "do nothing" baseline doesn't change the paper's core claim
+(no single arm dominates across all 6 conditions — round_robin included), but it does add a
+genuinely new data point: round_robin is the *only* arm dominated by every other arm at once
+anywhere in the grid (Light/Cachehit), which is a stronger and more legible failure than any
+of the score-vs-score reversals found among the 4 scored arms. It's a clean illustration of
+why *some* routing signal beats none, even before asking which scored rule is safest — useful
+framing for the paper's motivation section, distinct from the Pareto-safety argument (which is
+about score *design*, not about scoring vs. not-scoring at all).
+
+**Data and repro**: 18 new files (`logs/<condition>pergpu_records_round_robin_t{1,2,3}.jsonl` +
+`..._power_trace_round_robin_t{1,2,3}.csv`, `logs/burstgptpergpu_*_round_robin_t{1,2,3}.*`) on
+`183.147.142.123:/root/pli/vllm-experiment/`. Orchestration:
+`orchestrate/eenergy/run_pergpu_roundrobin_6conditions.sh` (new, committed locally).
+Aggregation: `aggregate_full_comparison.py` and `check_dominance_reversals.py` (both extended
+with `round_robin` in `ARMS`), `aggregate_pergpu.py` (extended with `round_robin` for the
+BurstGPT-only table; `check_dominance_reversals.py` also patched to skip arms with missing OLD
+data per-condition instead of crashing, needed for Ramp & Route's missing OLD round_robin).

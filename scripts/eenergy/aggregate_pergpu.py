@@ -3,7 +3,7 @@ import glob
 import json
 import statistics
 
-ARMS = ["drf_fixed", "drf_power_tiebreak_full", "weighted_sum"]
+ARMS = ["drf_fixed", "drf_power_tiebreak_full", "weighted_sum", "round_robin"]
 
 def load_records(path):
     """TBT_mean here = mean across requests of each request's own MAX inter-token gap

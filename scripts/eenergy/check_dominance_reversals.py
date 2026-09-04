@@ -4,7 +4,7 @@ import statistics
 from collections import defaultdict
 from itertools import permutations
 
-ARMS = ["drf_fixed", "drf_power_tiebreak_full", "weighted_sum", "lmetric_power"]
+ARMS = ["drf_fixed", "drf_power_tiebreak_full", "weighted_sum", "lmetric_power", "round_robin"]
 METRICS = ["peak", "mean_ramp", "p99_ramp", "ttft", "tbt"]  # all lower-is-better
 
 CONDITIONS = {
@@ -84,13 +84,19 @@ for cond, (new_prefix, old_prefix, overrides) in CONDITIONS.items():
     old_vals, new_vals = {}, {}
     for arm in ARMS:
         old_p = overrides.get(arm, old_prefix)
-        old_vals[arm] = aggregate(old_p, arm)
+        try:
+            old_vals[arm] = aggregate(old_p, arm)
+        except FileNotFoundError:
+            pass
         new_vals[arm] = aggregate(new_prefix, arm)
 
     print(f"\n=== {cond} ===")
     for label, vals in [("OLD", old_vals), ("NEW", new_vals)]:
+        present_arms = [a for a in ARMS if a in vals]
+        skipped = [a for a in ARMS if a not in vals]
         doms = []
-        for a, b in permutations(ARMS, 2):
+        for a, b in permutations(present_arms, 2):
             if dominates(vals[a], vals[b]):
                 doms.append(f"{a} DOMINATES {b}")
-        print(f"  {label}: {'; '.join(doms) if doms else 'no dominance (incomparable)'}")
+        note = f" (skipped, no data: {', '.join(skipped)})" if skipped else ""
+        print(f"  {label}: {'; '.join(doms) if doms else 'no dominance (incomparable)'}{note}")
