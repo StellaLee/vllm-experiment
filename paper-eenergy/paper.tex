@@ -673,6 +673,46 @@ does not fit this story as cleanly --- power pressure there is real but transien
 sustained, a third regime this paper's two-way (pressure / cache-hit) framing does not fully
 capture; we report it honestly as an open boundary rather than force it into the pattern.
 
+\textbf{Does any routing signal beat none? $\mathit{round\_robin}$ as the true floor.} Every
+arm compared so far uses some signal --- DRF-family or LMETRIC-family. We also ran vLLM's own
+shipped default, $\mathit{round\_robin}$, blind to load, cache state, and power alike, under
+the same per-GPU-calibrated conditions, 3 replicated trials each (research log, Update
+2026-09-04 continued).
+
+\begin{table}[t]
+  \caption{$\mathit{round\_robin}$'s dominance status vs.\ the 4 scored arms, per condition.}
+  \label{tab:roundrobin}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    Condition & Status \\
+    \midrule
+    Heavy/Closed-Loop & incomparable to all 4 (best peak/ramp/TBT; worst TTFT) \\
+    Heavy/Matched     & incomparable to all 4 \\
+    Light/Cachehit    & \textbf{dominated by all 4 simultaneously} \\
+    WildChat          & dominated by $\mathit{lmetric\_power}$ only \\
+    Ramp \& Route     & incomparable to all 4 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+It is cleanly beaten by every scored arm at once in exactly one condition ---
+Light/Cachehit --- where its blindness to KV\$ locality costs it a full sweep against all
+four, even against $\mathit{lmetric\_power}$, itself power-blind but at least reactive to
+$P\text{-}token$ collapsing on a cache hit. In the two sustained-power-pressure conditions
+where our proposed rule cleanly wins against $\mathit{lmetric\_power}$ (Heavy/Closed-Loop,
+Heavy/Matched), $\mathit{round\_robin}$ is incomparable to every scored arm rather than
+dominated: in Heavy/Closed-Loop specifically, it achieves the best peak power (2319.1~W), mean
+ramp (140.4~W/s), and TBT (482.8~ms) of all five arms, but the worst TTFT (0.607~s, +18.8\%
+over $\mathit{drf\_fixed}$'s 0.511~s) --- ignoring queue depth entirely avoids concentrating
+load into synchronized bursts, at the cost of not avoiding an already-overloaded replica.
+$\mathit{round\_robin}$ is not a counterexample to the Pareto-safety argument (it is not a
+scored rule the theory makes any claim about), but it is a useful floor: Light/Cachehit shows
+some routing signal reliably beats none, while the incomparable-but-real power-side wins
+elsewhere show ``no routing logic'' is not simply worse along every axis --- a caveat the
+scored-arms-only comparison above does not surface on its own.
+
 \textbf{Practical implication.} A deployer does not need to choose between the Pareto
 guarantee and a power-aware win: under the condition that motivates power-aware routing at
 all (sustained fleet power pressure), our proposed rule already delivers it, and the unsafe

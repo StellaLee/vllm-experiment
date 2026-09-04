@@ -529,6 +529,34 @@ real but transient rather than sustained, a third regime this paper's two-way
 (pressure / cache-hit) framing does not fully capture; we report it honestly as an open
 boundary rather than force it into the pattern.
 
+**Does any routing signal beat none? `round_robin` as the true floor.** Every arm compared so
+far uses some signal — DRF-family or LMETRIC-family. We also ran vLLM's own shipped default,
+`round_robin`, blind to load, cache state, and power alike, under the same per-GPU-calibrated
+conditions, 3 replicated trials each (research log, Update 2026-09-04 continued).
+
+| condition | `round_robin`'s status vs. the 4 scored arms |
+|---|---|
+| Heavy/Closed-Loop | incomparable to all 4 (best peak power, mean ramp, and TBT of all 5 arms; worst TTFT) |
+| Heavy/Matched | incomparable to all 4 |
+| Light/Cachehit | **dominated by all 4 simultaneously** |
+| WildChat | dominated by `lmetric_power` only |
+| Ramp & Route | incomparable to all 4 |
+
+It is cleanly beaten by every scored arm at once in exactly one condition — Light/Cachehit —
+where its blindness to KV$ locality costs it a full sweep against all four, even against
+`lmetric_power`, itself power-blind but at least reactive to `P-token` collapsing on a cache
+hit. In the two sustained-power-pressure conditions where our proposed rule cleanly wins
+against `lmetric_power` (Heavy/Closed-Loop, Heavy/Matched), `round_robin` is incomparable to
+every scored arm rather than dominated: in Heavy/Closed-Loop specifically, it achieves the
+best peak power (2319.1 W), mean ramp (140.4 W/s), and TBT (482.8 ms) of all five arms, but
+the worst TTFT (0.607 s, +18.8% over `drf_fixed`'s 0.511 s) — ignoring queue depth entirely
+avoids concentrating load into synchronized bursts, at the cost of not avoiding an
+already-overloaded replica. `round_robin` is not a counterexample to the Pareto-safety
+argument (it is not a scored rule the theory makes any claim about), but it is a useful floor:
+Light/Cachehit shows some routing signal reliably beats none, while the incomparable-but-real
+power-side wins elsewhere show "no routing logic" is not simply worse along every axis — a
+caveat the scored-arms-only comparison above does not surface on its own.
+
 **Practical implication.** A deployer does not need to choose between the Pareto guarantee
 and a power-aware win: under the condition that motivates power-aware routing at all
 (sustained fleet power pressure), our proposed rule already delivers it, and the unsafe
