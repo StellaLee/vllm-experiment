@@ -191,6 +191,14 @@ already deliver one?}
     analysis; \S\ref{sec:lemma1}'s guarantee is a per-decision egalitarian-welfare property,
     not a trajectory-level competitive bound, a distinction made explicit in
     \S\ref{sec:formulation}.
+  \item \textbf{Rate limiting in feedback control}~\cite{astrom2008feedback} ---
+    $\mathit{ramp\_ceiling}$ is, in the control-theoretic sense, a slew-rate bound:
+    $\mathit{Share_{power}}$ normalizes the plant's (the GPU's) rate of change against an
+    actuation limit, the same object a rate limiter or anti-windup compensator enforces in a
+    classical feedback loop. We do not build a controller in this sense --- routing is a
+    discrete per-request placement decision, not a continuous control signal --- but the
+    vocabulary is apt, and \S\ref{sec:ceiling-invariance}'s live-recalibrated ceiling is
+    exactly this constraint's set-point, estimated online rather than fixed offline (below).
 \end{itemize}
 
 \section{Problem Formulation}
@@ -251,18 +259,26 @@ resources $i$ with strict inequality for at least one.
 \end{lemma}
 
 \begin{proof}
-Suppose, for contradiction, some $c'$ dominates the selected $c^*$. Then $s(c') \le s(c^*)$
-coordinatewise with strict inequality somewhere. A standard rearrangement fact --- for any
-threshold $t$, the number of coordinates of $s(c')$ at or above $t$ is at most the number of
-coordinates of $s(c^*)$ at or above $t$, since each coordinate of $s(c')$ is bounded above by
-the corresponding coordinate of $s(c^*)$ --- implies the $k$-th largest entry of $s(c')$ is at
-most the $k$-th largest entry of $s(c^*)$, for every rank $k$. So $\sigma(s(c'))$ is
-coordinatewise $\le \sigma(s(c^*))$. Summing coordinates (sort preserves sum) and using the
-strict inequality in the original domination, $\sum s(c') < \sum s(c^*)$ strictly, so
-$\sigma(s(c'))$ and $\sigma(s(c^*))$ cannot be equal as vectors. Combined with the
-coordinatewise $\le$ just shown, the first rank at which they differ must favor $c'$
-strictly, so $\sigma(s(c')) <_{\mathrm{lex}} \sigma(s(c^*))$. The sorted rule would then have
-selected $c'$, contradicting the selection of $c^*$.
+For $v \in \mathbb{R}^3$, write $v_{(1)} \ge v_{(2)} \ge v_{(3)}$ for its order statistics, so
+$\sigma(v) = (v_{(1)}, v_{(2)}, v_{(3)})$. Suppose toward contradiction that $c'$
+Pareto-dominates $c^* = \arg\min_c \sigma(s(c))$: $s(c') \le s(c^*)$ coordinatewise, with
+strict inequality at some coordinate $i_0$.
+
+\emph{(i) $\sigma(s(c')) \le \sigma(s(c^*))$ coordinatewise.} For any threshold $t$ and any
+$i$, $s(c')_i \ge t \Rightarrow s(c^*)_i \ge s(c')_i \ge t$, so
+$\#\{i : s(c')_i \ge t\} \le \#\{i : s(c^*)_i \ge t\}$. The $k$-th order statistic is the
+least $t$ with $\#\{i : v_i \ge t\} \ge k$; a pointwise-smaller counting function cannot raise
+this threshold, so $s(c')_{(k)} \le s(c^*)_{(k)}$ for every $k$.
+
+\emph{(ii) The inequality is strict as vectors.} Sorting permutes coordinates, so
+$\sum_k s(c')_{(k)} = \sum_i s(c')_i < \sum_i s(c^*)_i = \sum_k s(c^*)_{(k)}$, the middle
+inequality from domination at $i_0$. Hence $\sigma(s(c')) \ne \sigma(s(c^*))$.
+
+\emph{(iii) Lexicographic order.} Two coordinatewise-$\le$ vectors that differ somewhere are
+ordered lexicographically at their first differing coordinate, in the direction of (i)'s
+inequality there: $\sigma(s(c')) <_{\mathrm{lex}} \sigma(s(c^*))$.
+
+\emph{(iv)} The sorted rule then selects $c'$ over $c^*$, contradicting $c^*$'s selection.
 \end{proof}
 
 We additionally verified this claim by brute-force search: 200{,}000 randomly generated
@@ -328,19 +344,24 @@ $\arg\min_c T(c)$ is Pareto-non-dominated at every decision.
 \end{corollary}
 
 \begin{proof}
-Suppose some $c'$ Pareto-dominates the selected $c^* = \arg\min T$. Since $D$ is the max of
-three coordinates each weakly no larger for $c'$, $D(c') \le D(c^*)$ (max is monotone under
-coordinatewise $\le$). If $D(c') < D(c^*)$, $T(c')$ is lexicographically smaller at the first
-coordinate, contradicting $c^*$'s selection. If $D(c') = D(c^*)$, compare
-$\mathit{Share_{power}}$: if strictly smaller for $c'$, $T(c')$ wins lexicographically ---
-contradiction. If tied, compare $\mathit{Share_{load}}$ the same way. If $D$,
-$\mathit{Share_{power}}$, and $\mathit{Share_{load}}$ are all tied between $c'$ and $c^*$,
-then since $c'$ dominates $c^*$ (which requires at least one of compute/load/power strictly
-smaller for $c'$, and we have just shown load and power are not it),
-$\mathit{Share_{compute}}$ must be the strict coordinate:
-$\mathit{Share_{compute}}(c') < \mathit{Share_{compute}}(c^*)$. Then $T(c')$ wins
-lexicographically at the fourth coordinate. In every case $T(c') <_{\mathrm{lex}} T(c^*)$,
-contradicting $c^*$'s selection as the minimizer.
+Write $s = (\mathit{Share_{compute}}, \mathit{Share_{load}}, \mathit{Share_{power}})$ and
+suppose $c'$ Pareto-dominates $c^* = \arg\min_c T(c)$: $s(c') \le s(c^*)$ coordinatewise,
+strict somewhere. $D = \max(s)$ is monotone under coordinatewise $\le$, so
+$D(c') \le D(c^*)$. Three exhaustive cases:
+\begin{itemize}
+  \item \textbf{$D(c') < D(c^*)$.} $T(c') <_{\mathrm{lex}} T(c^*)$ at coordinate 1.
+  \item \textbf{$D(c') = D(c^*)$, and $\mathit{Share_{power}}(c') \le \mathit{Share_{power}}(c^*)$
+    strict.} $T(c') <_{\mathrm{lex}} T(c^*)$ at coordinate 2. (Symmetrically for
+    $\mathit{Share_{load}}$ at coordinate 3, if $D$ and $\mathit{Share_{power}}$ tie but
+    $\mathit{Share_{load}}$ does not.)
+  \item \textbf{$D$, $\mathit{Share_{power}}$, $\mathit{Share_{load}}$ all tied between $c'$
+    and $c^*$.} Domination requires a strict inequality in $s(c') \le s(c^*)$; the first
+    three coordinates being tied forces it onto $\mathit{Share_{compute}}$:
+    $\mathit{Share_{compute}}(c') < \mathit{Share_{compute}}(c^*)$, so
+    $T(c') <_{\mathrm{lex}} T(c^*)$ at coordinate 4.
+\end{itemize}
+Every case gives $T(c') <_{\mathrm{lex}} T(c^*)$, contradicting $c^*$'s selection as
+$\arg\min_c T(c)$.
 \end{proof}
 
 This is a genuine closed-form proof, not just a brute-force check --- it happens to be
@@ -372,7 +393,15 @@ with a continuous power penalty, $(1 + \mathit{Share_{power}})$. Restated in thi
 normalized shares (holding $\mathit{token\_budget}$ and $\mathit{max\_num\_seqs}$ fixed
 across candidates, so raw counts equal shares), this is $\mathit{lmetric\_power}(c) =
 \mathit{Share_{compute}}(c) \cdot \mathit{Share_{load}}(c) \cdot (1 +
-\mathit{Share_{power}}(c))$, routing to the minimum.
+\mathit{Share_{power}}(c))$, routing to the minimum. This design has a real theoretical
+lineage worth naming: a continuous, always-differentiable penalty added to an
+otherwise-unconstrained objective is the routing analogue of Lyapunov drift-plus-penalty
+scheduling~\cite{neely2010stochastic} --- trade off instantaneous cost against a soft,
+ever-present penalty on the hazardous quantity, rather than enforcing a hard constraint on
+it. That lineage is precisely what makes Claim~\ref{claim:lmetric-power} informative: a soft
+penalty provably cannot substitute for the hard, per-decision Pareto constraint
+Lemma~\ref{lem:sorted-nondominated} and its Corollary enforce, no matter how principled its
+continuous-optimization motivation.
 
 \begin{claim}
 \label{claim:lmetric-power}
@@ -423,7 +452,12 @@ Both rules above assume $\mathit{Share_{power}}(c) = \max(\mathit{ramp\_rate}(c)
 for a fixed constant ceiling $\kappa$ (450~W/s, hand-calibrated from one offline burst test).
 A natural objection: does either guarantee survive replacing $\kappa$ with a value recalibrated
 live from the fleet's own recent ramp history --- as an \emph{adaptive-ceiling} variant of
-either rule would need?
+either rule would need? In the rate-limiter framing of \S\ref{sec:formulation}, this is
+exactly the question of whether the limiter's set-point can be estimated online, by a
+feedback loop reading the plant's own ramp history, rather than fixed offline --- and
+\S\ref{sec:ceiling-boundedness} shows the specific estimator this paper uses is robust to
+exactly the disturbance (concentrated multi-replica pressure) it would otherwise be most
+exposed to.
 
 \begin{corollary}
 \label{cor:ceiling-invariance}
@@ -477,8 +511,11 @@ A live ceiling introduces its own hazard: a naive scheme that folds every observ
 into a rolling percentile is self-defeating under sustained multi-replica pressure ---
 concentration (2+ replicas simultaneously elevated) is exactly the condition that fills the
 window with elevated values, so the ceiling inflates \emph{most} during the episodes it is
-supposed to guard against. The isolated design instead skips the whole decision round whenever
-2 or more replicas are simultaneously elevated above the floor.
+supposed to guard against. In feedback-control terms, concentration is a disturbance
+correlated with the estimator's own input, not independent noise it can average away --- a
+naive estimator's gain on exactly this disturbance is what Lemma~\ref{lem:insensitivity}
+below rules out. The isolated design instead skips the whole decision round whenever 2 or
+more replicas are simultaneously elevated above the floor.
 
 \begin{lemma}
 \label{lem:insensitivity}

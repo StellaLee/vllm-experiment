@@ -147,6 +147,13 @@ guarantee to get a power-aware win in practice, or does the safe rule already de
   regret/competitive-ratio analysis; Lemma 1's guarantee is a per-decision
   egalitarian-welfare property, not a trajectory-level competitive bound, a distinction made
   explicit in §3.
+- **Rate limiting in feedback control** [8] — `ramp_ceiling` is, in the control-theoretic
+  sense, a slew-rate bound: `Share_power` normalizes the plant's (the GPU's) rate of change
+  against an actuation limit, the same object a rate limiter or anti-windup compensator
+  enforces in a classical feedback loop. We do not build a controller in this sense — routing
+  is a discrete per-request placement decision, not a continuous control signal — but the
+  vocabulary is apt, and §4.3's live-recalibrated ceiling is exactly this constraint's
+  set-point, estimated online rather than fixed offline (below).
 
 ## 3. Problem Formulation
 
@@ -193,18 +200,25 @@ broken by standard lexicographic comparison of the sorted vectors.
 candidate set: no other candidate `c'` satisfies `Share_i(c') ≤ Share_i(c*)` for all three
 resources `i` with strict inequality for at least one.
 
-**Proof.** Suppose, for contradiction, some `c'` dominates the selected `c*`. Then
-`s(c') ≤ s(c*)` coordinatewise with strict inequality somewhere. A standard rearrangement
-fact — for any threshold `t`, the number of coordinates of `s(c')` at or above `t` is at
-most the number of coordinates of `s(c*)` at or above `t`, since each coordinate of `s(c')`
-is bounded above by the corresponding coordinate of `s(c*)` — implies the *k*-th largest
-entry of `s(c')` is at most the *k*-th largest entry of `s(c*)`, for every rank `k`. So
-`σ(s(c'))` is coordinatewise ≤ `σ(s(c*))`. Summing coordinates (sort preserves sum) and using
-the strict inequality in the original domination, `Σ s(c') < Σ s(c*)` strictly, so
-`σ(s(c'))` and `σ(s(c*))` cannot be equal as vectors. Combined with the coordinatewise `≤`
-just shown, the first rank at which they differ must favor `c'` strictly, so
-`σ(s(c')) <_lex σ(s(c*))`. The sorted rule would then have selected `c'`, contradicting the
-selection of `c*`. ∎
+**Proof.** For `v ∈ ℝ³`, write `v_(1) ≥ v_(2) ≥ v_(3)` for its order statistics, so
+`σ(v) = (v_(1), v_(2), v_(3))`. Suppose toward contradiction that `c'` Pareto-dominates
+`c* = argmin_c σ(s(c))`: `s(c') ≤ s(c*)` coordinatewise, with strict inequality at some
+coordinate `i₀`.
+
+*(i) `σ(s(c')) ≤ σ(s(c*))` coordinatewise.* For any threshold `t` and any `i`,
+`s(c')_i ≥ t ⟹ s(c*)_i ≥ s(c')_i ≥ t`, so `#{i : s(c')_i ≥ t} ≤ #{i : s(c*)_i ≥ t}`. The
+`k`-th order statistic is the least `t` with `#{i : v_i ≥ t} ≥ k`; a pointwise-smaller
+counting function cannot raise this threshold, so `s(c')_(k) ≤ s(c*)_(k)` for every `k`.
+
+*(ii) The inequality is strict as vectors.* Sorting permutes coordinates, so
+`Σ_k s(c')_(k) = Σ_i s(c')_i < Σ_i s(c*)_i = Σ_k s(c*)_(k)`, the middle inequality from
+domination at `i₀`. Hence `σ(s(c')) ≠ σ(s(c*))`.
+
+*(iii) Lexicographic order.* Two coordinatewise-`≤` vectors that differ somewhere are
+ordered lexicographically at their first differing coordinate, in the direction of (i)'s
+inequality there: `σ(s(c')) <_lex σ(s(c*))`.
+
+*(iv)* The sorted rule then selects `c'` over `c*`, contradicting `c*`'s selection. ∎
 
 We additionally verified this claim by brute-force search: 200,000 randomly generated
 candidate sets (2-5 candidates, 3 shares each) produced zero violations.
@@ -255,17 +269,20 @@ strategy: the rule we prove safe below and validate on hardware in §5.
 
 **Corollary.** `argmin_c T(c)` is Pareto-non-dominated at every decision.
 
-**Proof.** Suppose some `c'` Pareto-dominates the selected `c* = argmin T`. Since `D` is the
-max of three coordinates each weakly no larger for `c'`, `D(c') ≤ D(c*)` (max is monotone
-under coordinatewise `≤`). If `D(c') < D(c*)`, `T(c')` is lexicographically smaller at the
-first coordinate, contradicting `c*`'s selection. If `D(c') = D(c*)`, compare
-`Share_power`: if strictly smaller for `c'`, `T(c')` wins lexicographically — contradiction.
-If tied, compare `Share_load` the same way. If `D`, `Share_power`, and `Share_load` are all
-tied between `c'` and `c*`, then since `c'` dominates `c*` (which requires at least one of
-compute/load/power strictly smaller for `c'`, and we have just shown load and power are not
-it), `Share_compute` must be the strict coordinate: `Share_compute(c') < Share_compute(c*)`.
-Then `T(c')` wins lexicographically at the fourth coordinate. In every case `T(c') <_lex
-T(c*)`, contradicting `c*`'s selection as the minimizer. ∎
+**Proof.** Write `s = (Share_compute, Share_load, Share_power)` and suppose `c'`
+Pareto-dominates `c* = argmin_c T(c)`: `s(c') ≤ s(c*)` coordinatewise, strict somewhere.
+`D = max(s)` is monotone under coordinatewise `≤`, so `D(c') ≤ D(c*)`. Three exhaustive cases:
+
+- **`D(c') < D(c*)`.** `T(c') <_lex T(c*)` at coordinate 1.
+- **`D(c') = D(c*)`, and `Share_power(c') ≤ Share_power(c*)` strict.** `T(c') <_lex T(c*)`
+  at coordinate 2. (Symmetrically for `Share_load` at coordinate 3, if `D` and
+  `Share_power` tie but `Share_load` does not.)
+- **`D`, `Share_power`, `Share_load` all tied between `c'` and `c*`.** Domination requires a
+  strict inequality in `s(c') ≤ s(c*)`; the first three coordinates being tied forces it onto
+  `Share_compute`: `Share_compute(c') < Share_compute(c*)`, so `T(c') <_lex T(c*)` at
+  coordinate 4.
+
+Every case gives `T(c') <_lex T(c*)`, contradicting `c*`'s selection as `argmin_c T(c)`. ∎
 
 This is a genuine closed-form proof, not just a brute-force check — it happens to be simpler
 than Lemma 1's, since a fixed coordinate order needs no rearrangement argument. We also
@@ -278,7 +295,13 @@ LMETRIC's own multiplicative score, `new_tokens × in_flight_after`, with a cont
 penalty, `(1 + Share_power)`. Restated in this paper's normalized shares (holding
 `token_budget` and `max_num_seqs` fixed across candidates, so raw counts equal shares), this
 is `lmetric_power(c) = Share_compute(c) · Share_load(c) · (1 + Share_power(c))`, routing to
-the minimum.
+the minimum. This design has a real theoretical lineage worth naming: a continuous,
+always-differentiable penalty added to an otherwise-unconstrained objective is the routing
+analogue of Lyapunov drift-plus-penalty scheduling [9] — trade off instantaneous cost against
+a soft, ever-present penalty on the hazardous quantity, rather than enforcing a hard
+constraint on it. That lineage is precisely what makes Claim 2 informative: a soft penalty
+provably cannot substitute for the hard, per-decision Pareto constraint Lemma 1 and its
+Corollary enforce, no matter how principled its continuous-optimization motivation.
 
 **Claim 2.** `lmetric_power` can select a Pareto-dominated candidate, via a different
 mechanism than Claim 1: any candidate with `Share_compute = 0` (a full prefix-cache hit — no
@@ -338,7 +361,11 @@ flips, exactly where Claim 2's mechanism predicts it should.
 Both rules above assume `Share_power(c) = max(ramp_rate(c), 0) / κ` for a fixed constant
 ceiling `κ` (450 W/s, hand-calibrated from one offline burst test). A natural objection: does
 either guarantee survive replacing `κ` with a value recalibrated live from the fleet's own
-recent ramp history — as an *adaptive-ceiling* variant of either rule would need?
+recent ramp history — as an *adaptive-ceiling* variant of either rule would need? In the
+rate-limiter framing of §2, this is exactly the question of whether the limiter's set-point
+can be estimated online, by a feedback loop reading the plant's own ramp history, rather than
+fixed offline — and §4.4 shows the specific estimator this paper uses is robust to exactly
+the disturbance (concentrated multi-replica pressure) it would otherwise be most exposed to.
 
 **Corollary.** Lemma 1 holds unchanged for any `κ(t) > 0` that is a single scalar shared
 identically by every candidate at decision time `t`, regardless of how `κ(t)` is computed —
@@ -382,8 +409,11 @@ A live ceiling introduces its own hazard: a naive scheme that folds every observ
 reading into a rolling percentile is self-defeating under sustained multi-replica pressure —
 concentration (2+ replicas simultaneously elevated) is exactly the condition that fills the
 window with elevated values, so the ceiling inflates *most* during the episodes it is
-supposed to guard against. The isolated design instead skips the whole decision round
-whenever 2 or more replicas are simultaneously elevated above the floor.
+supposed to guard against. In feedback-control terms, concentration is a disturbance
+correlated with the estimator's own input, not independent noise it can average away — a
+naive estimator's gain on exactly this disturbance is what Lemma 2 below rules out. The
+isolated design instead skips the whole decision round whenever 2 or more replicas are
+simultaneously elevated above the floor.
 
 **Lemma 2.** Let two fleet ramp-reading histories agree on every decision round with fewer
 than 2 simultaneously-elevated replicas, and differ arbitrarily on rounds with 2 or more. The
@@ -591,3 +621,7 @@ alternative might still be preferred.
 7. P. Li, Y. Han, A. Wierman, and S. Ren. "Fairness-Regularized Online Optimization with
    Switching Costs." *Advances in Neural Information Processing Systems (NeurIPS '25)*, 2025.
    arXiv:2512.11131.
+8. K. J. Åström and R. M. Murray. *Feedback Systems: An Introduction for Scientists and
+   Engineers.* Princeton University Press, 2008.
+9. M. J. Neely. *Stochastic Network Optimization with Application to Communication and
+   Queueing Systems.* Synthesis Lectures on Communication Networks, Morgan & Claypool, 2010.
