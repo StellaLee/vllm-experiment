@@ -6,4 +6,4 @@ while ! grep -q "ALL THREE CACHEHIT ARMS COMPLETE" logs/run_three_arms_cachehit_
   sleep 20
 done
 echo "=== cachehit batch done, starting closedloopheavy batch ==="
-bash run_five_arms_closedloopheavy.sh
+bash orchestrate/eenergy/run_five_arms_closedloopheavy.sh

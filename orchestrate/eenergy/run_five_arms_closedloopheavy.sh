@@ -5,9 +5,9 @@
 # drf_power_tiebreak_p2c).
 set -x
 cd /root/pli/vllm-experiment
-bash run_drf_fixed_closedloopheavy.sh
-bash run_drf_power_tiebreak_closedloopheavy.sh
-bash run_drf_coincidence_tiebreak_closedloopheavy.sh
-bash run_drf_peak_power_tiebreak_closedloopheavy.sh
-bash run_drf_power_tiebreak_p2c_closedloopheavy.sh
+bash orchestrate/eenergy/run_drf_fixed_closedloopheavy.sh
+bash orchestrate/eenergy/run_drf_power_tiebreak_closedloopheavy.sh
+bash orchestrate/eenergy/run_drf_coincidence_tiebreak_closedloopheavy.sh
+bash orchestrate/eenergy/run_drf_peak_power_tiebreak_closedloopheavy.sh
+bash orchestrate/eenergy/run_drf_power_tiebreak_p2c_closedloopheavy.sh
 echo "=== ALL FIVE CLOSEDLOOPHEAVY ARMS COMPLETE ==="

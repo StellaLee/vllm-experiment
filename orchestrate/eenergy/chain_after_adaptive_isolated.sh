@@ -8,5 +8,5 @@ while ! grep -q "ALL ADAPTIVE_ISOLATED CONDITIONS COMPLETE" logs/chain_after_clo
   sleep 20
 done
 echo "=== adaptive_isolated batch done, rerunning drf_fixed closedloopheavy ==="
-bash run_drf_fixed_closedloopheavy.sh
+bash orchestrate/eenergy/run_drf_fixed_closedloopheavy.sh
 echo "=== DRF_FIXED CLOSEDLOOPHEAVY RERUN COMPLETE ==="

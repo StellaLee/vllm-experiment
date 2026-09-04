@@ -8,7 +8,7 @@ run_batch(){ # budget t0 t1
   local budget=$1 t0=$2 t1=$3
   local trials=$(seq -s' ' $t0 $t1)
   echo "[$(STAMP)] budget=$budget trials=$t0-$t1" >> $LOG
-  env GPU=0 TAG=convdiverse_conc6_widened_interleaved_gpu0 CONC=6 WHALE_MIN=18000 BUDGETS="$budget" TRIALS="$trials" PORT=8073 ./orchestrate_pesim_gate.sh >> $LOG 2>&1
+  env GPU=0 TAG=convdiverse_conc6_widened_interleaved_gpu0 CONC=6 WHALE_MIN=18000 BUDGETS="$budget" TRIALS="$trials" PORT=8073 ./orchestrate/pesim/orchestrate_pesim_gate.sh >> $LOG 2>&1
   local rc=$?
   echo "[$(STAMP)] budget=$budget trials=$t0-$t1 done, exit=$rc" >> $LOG
 }

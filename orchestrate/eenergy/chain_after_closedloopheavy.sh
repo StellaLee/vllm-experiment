@@ -6,4 +6,4 @@ while ! grep -q "ALL FIVE CLOSEDLOOPHEAVY ARMS COMPLETE" logs/chain_after_cacheh
   sleep 20
 done
 echo "=== closedloopheavy batch done, starting adaptive_isolated batch ==="
-bash run_adaptive_isolated_all_conditions.sh
+bash orchestrate/eenergy/run_adaptive_isolated_all_conditions.sh

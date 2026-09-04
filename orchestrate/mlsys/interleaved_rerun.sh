@@ -8,7 +8,7 @@ run_batch(){ # conc tag budget t0 t1
   local conc=$1 tag=$2 budget=$3 t0=$4 t1=$5
   local trials=$(seq -s' ' $t0 $t1)
   echo "[$(STAMP)] CONC=$conc budget=$budget trials=$t0-$t1" >> $LOG
-  env GPU=0 TAG=$tag CONC=$conc WHALE_MIN=18000 BUDGETS="$budget" TRIALS="$trials" PORT=8073 ./orchestrate_pesim_gate.sh >> $LOG 2>&1
+  env GPU=0 TAG=$tag CONC=$conc WHALE_MIN=18000 BUDGETS="$budget" TRIALS="$trials" PORT=8073 ./orchestrate/pesim/orchestrate_pesim_gate.sh >> $LOG 2>&1
   local rc=$?
   echo "[$(STAMP)] CONC=$conc budget=$budget trials=$t0-$t1 done, exit=$rc" >> $LOG
 }

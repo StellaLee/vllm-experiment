@@ -5,7 +5,7 @@
 # concentration episodes).
 set -x
 cd /root/pli/vllm-experiment
-bash run_drf_power_tiebreak_adaptive_isolated_matched.sh
-bash run_drf_power_tiebreak_adaptive_isolated_cachehit.sh
-bash run_drf_power_tiebreak_adaptive_isolated_closedloopheavy.sh
+bash orchestrate/eenergy/run_drf_power_tiebreak_adaptive_isolated_matched.sh
+bash orchestrate/eenergy/run_drf_power_tiebreak_adaptive_isolated_cachehit.sh
+bash orchestrate/eenergy/run_drf_power_tiebreak_adaptive_isolated_closedloopheavy.sh
 echo "=== ALL ADAPTIVE_ISOLATED CONDITIONS COMPLETE ==="
