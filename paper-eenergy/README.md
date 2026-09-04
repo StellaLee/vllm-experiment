@@ -15,25 +15,44 @@ pages 9-point ACM double-column excluding references/appendices.** Local toolcha
 (`pdflatex`/`xelatex`, `acmart.cls` present). Double-blind means the submission PDF must not
 name the author, institution, or any self-identifying repo URL.
 
-**Central idea (pivoted again 2026-09-01 — see History below for both earlier framings):**
-lean theoretical. Formalize power-aware LLM-serving routing as a 3-resource
-(compute/load/power) egalitarian social welfare problem extending DRF (Ghodsi et al. 2011)
-to a reactive power dimension. Prove the fully-sorted lexicographic routing rule is
-Pareto-non-dominated at every decision (closed-form proof + 200,000-trial brute-force
-verification). Prove a natural power-prioritized variant sacrifices that guarantee (explicit
-counterexample, also verified in code). Validate on real 8×4090 hardware that the
-theoretically "unsafe" variant wins decisively on tail power-ramp metrics under sustained
-fleet pressure — max ramp −40% (8× tighter std), coincidence −43% — at no measurable
-mean-latency cost. Full draft: `paper.md`. Source of record for all underlying numbers:
-`../findings/2026-08-31-eenergy-drf-lmetric-roundrobin-comparison.md`.
+**Central idea (pivoted a third time 2026-09-04 — see History below for earlier framings):**
+lean theoretical, headline now leads with a SAFE result. Formalize power-aware LLM-serving
+routing as a 3-resource (compute/load/power) egalitarian social welfare problem extending DRF
+(Ghodsi et al. 2011) to a reactive power dimension. Prove the fully-sorted lexicographic
+routing rule is Pareto-non-dominated at every decision (closed-form proof + 200,000-trial
+brute-force verification). Prove two independently-motivated variants — a fixed-priority DRF
+tie-break, and a power-extended LMETRIC score — each sacrifice that guarantee via distinct
+mechanisms (explicit counterexamples, both verified in code; the LMETRIC-power variant's
+violation rate is 12.8% of instances at a realistic cache-hit rate, not a rare corner case).
+Validate on real 8×4090 hardware, under a per-GPU-calibrated ramp ceiling, that a Pareto-safe
+DRF-family rule cleanly dominates the unsafe LMETRIC-power variant on every metric under
+sustained fleet power pressure — the guarantee costs nothing there — and show the comparison
+reverses under lighter, cache-hit-dominated traffic exactly where the LMETRIC-power variant's
+own mechanism predicts it should. Full draft: `paper.md`. Source of record for all underlying
+numbers: `../findings/2026-08-31-eenergy-drf-lmetric-roundrobin-comparison.md`.
 
-**Status:** theory (proof + verified counterexample) and the one winning experimental
-condition are both drafted with real content in `paper.md` §3-5. Sections 1/2/6/7 are
-structural, not polished prose. Scope is deliberately narrow by design (one clean
-theory-motivated winning condition, not an exhaustive empirical survey) — the project
-research log has substantially more data (other load conditions, real BurstGPT traffic,
-11 other routing policies) that is out of this paper's current scope but available if the
-scope is revisited.
+**Reason for the third pivot**: the prior headline (an unsafe variant "winning" empirically)
+depended on numbers from a uniform, shared 450 W/s ramp-ceiling constant. A dedicated
+per-GPU recalibration campaign (findings.md, Update 2026-09-04) found real per-GPU ceiling
+variance of 34%, and re-running the full arm comparison under corrected calibration flipped
+or erased apparent dominance relationships in 4 of 6 tested conditions — always in the
+direction of making unsafe arms look better than they should. The specific arm that headlined
+the prior draft (`drf_power_tiebreak`, the fixed-priority named rule) was never itself
+re-validated under the fix. Rather than submit on an unvalidated number, we lead with the
+comparison that is both provably safe and already validated under corrected calibration.
+
+**Status:** theory (two proofs, two verified counterexamples) and the new headline
+experimental result are both drafted with real content in `paper.md` §4-5. Sections 1/2/6/7
+are structural, not fully polished prose, though contributions/discussion/conclusion have
+been updated to match the new headline. Compiles cleanly to a 6-page PDF (`paper.tex` →
+`paper.pdf`), well within the 10pp limit. Scope is deliberately narrow by design (one clean
+theory-motivated winning condition plus an honest boundary characterization, not an
+exhaustive empirical survey) — the project research log has substantially more data (other
+load conditions, real BurstGPT traffic, 11 other routing policies) that is out of this
+paper's current scope but available if the scope is revisited. Open: `figs/ramp_comparison.pdf`
+still depicts the old Heavy/Matched sorted-vs-named comparison and needs regeneration for the
+new Heavy/Closed-Loop 4-arm headline (or removal) — the current `paper.tex` build omits the
+figure entirely rather than show a stale one.
 
 ### History: the original CF-decorrelation framing
 

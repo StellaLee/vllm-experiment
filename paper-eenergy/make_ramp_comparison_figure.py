@@ -1,9 +1,14 @@
-"""Generates figs/ramp_comparison.pdf (paper.tex Figure 1 / paper.md's Figure 1 note): fleet-
-aggregate power and ramp rate, sorted rule vs. named rule, all 3 replicated trials of each,
-Heavy/Matched condition (the condition Table 1 reports).
+"""Generates figs/ramp_comparison.pdf (paper.tex/paper.md's Figure 1): fleet-aggregate power
+and ramp rate, proposed rule (drf_power_tiebreak_full) vs. unsafe lmetric_power, all 3
+replicated trials of each, Heavy/Closed-Loop condition (the condition Table 1 reports) --
+under the corrected per-GPU-calibrated ramp ceiling, not the old uniform 450 W/s constant.
 
-Source data: raw per-GPU power_trace CSVs from the openloopwhalelongoutmatched_ batch
-(drf_fixed and drf_power_tiebreak, trials 1-3), pulled from the 8x4090 server
+drf_fixed and weighted_sum are omitted from the trace plot (already fully reported in
+Table 1) to keep the figure at 2 arms x 3 trials = 6 lines per panel, matching the prior
+figure's readability -- a 4-arm trace plot would be illegible at this size.
+
+Source data: raw per-GPU power_trace CSVs from the closedloopheavypergpu_ batch
+(drf_power_tiebreak_full and lmetric_power, trials 1-3), pulled from the 8x4090 server
 (/root/pli/vllm-experiment/logs/ on 183.147.142.123) into DATA_DIR below. Not committed to
 this repo (raw trace CSVs, not source) -- re-pull that batch's power_trace files to rerun.
 """
@@ -17,16 +22,22 @@ import matplotlib.ticker as mticker
 
 DATA_DIR = os.environ.get(
     "EENERGY_TRACE_DIR",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"),
 )
 GPU_INDICES = [2, 3, 4, 5, 6, 7]
-RAMP_CEILING_W_PER_S = 450.0
+# Per-GPU calibrated ramp ceilings (W/s), from the 2026-09-03 per-GPU calibration check
+# (scripts/eenergy/calibrate_ramp_ceiling.py, logs/ramp_ceiling_per_gpu.json) -- replaces
+# the old uniform 450 W/s constant. Shown as a band, not a single line, since the ceiling
+# now varies per replica.
+PER_GPU_CEILING_W_PER_S = {2: 450.2, 3: 509.8, 4: 449.6, 5: 409.2, 6: 512.9, 7: 359.5}
+CEILING_LO = min(PER_GPU_CEILING_W_PER_S.values())
+CEILING_HI = max(PER_GPU_CEILING_W_PER_S.values())
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "figs", "ramp_comparison.pdf")
 WINDOW_S = 100.0
 TRIALS = [1, 2, 3]
 
-C_SORTED = "#4C6E9E"
-C_NAMED = "#C0562B"
+C_PROPOSED = "#4C6E9E"
+C_UNSAFE = "#C0562B"
 C_CEIL = "#8A8478"
 
 
@@ -69,7 +80,7 @@ def windowed(series, w=WINDOW_S):
 
 
 def trial_path(arm, trial):
-    return os.path.join(DATA_DIR, f"openloopwhalelongoutmatched_power_trace_{arm}_t{trial}.csv")
+    return os.path.join(DATA_DIR, f"closedloopheavypergpu_power_trace_{arm}_t{trial}.csv")
 
 
 def plot_arm(ax1, ax2, arm, color, alpha, label):
@@ -99,16 +110,18 @@ def main():
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7.0, 3.3), sharex=True,
                                     gridspec_kw={"height_ratios": [1, 1.2], "hspace": 0.12})
 
-    sorted_max = plot_arm(ax1, ax2, "drf_fixed", C_SORTED, 0.6, "Sorted rule (Pareto-safe)")
-    named_max = plot_arm(ax1, ax2, "drf_power_tiebreak", C_NAMED, 0.75,
-                          "Named rule (power-prioritized, featured)")
+    proposed_max = plot_arm(ax1, ax2, "drf_power_tiebreak_full", C_PROPOSED, 0.6,
+                             "Proposed rule (drf_power_tiebreak_full, Pareto-safe)")
+    unsafe_max = plot_arm(ax1, ax2, "lmetric_power", C_UNSAFE, 0.75,
+                           "lmetric_power (unsafe)")
 
     ax1.set_ylabel("Fleet power (W)")
     ax1.legend(loc="lower right", handlelength=1.6, borderaxespad=0.3)
     ax1.margins(x=0.01)
 
-    ax2.axhline(RAMP_CEILING_W_PER_S, color=C_CEIL, lw=0.9, ls="--", label="Ramp ceiling (450 W/s)")
-    ax2.axhline(-RAMP_CEILING_W_PER_S, color=C_CEIL, lw=0.9, ls="--")
+    ax2.axhspan(CEILING_LO, CEILING_HI, color=C_CEIL, alpha=0.18, lw=0,
+                label=f"Per-GPU ramp ceiling ({CEILING_LO:.0f}–{CEILING_HI:.0f} W/s)")
+    ax2.axhspan(-CEILING_HI, -CEILING_LO, color=C_CEIL, alpha=0.18, lw=0)
     ax2.set_ylabel("Fleet power ramp (W/s)")
     ax2.set_xlabel("Time (s)")
     ax2.margins(x=0.01)
@@ -123,8 +136,8 @@ def main():
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     fig.savefig(OUT, bbox_inches="tight", pad_inches=0.03)
     print("saved:", OUT)
-    print("sorted per-trial max |ramp|:", [round(x, 1) for x in sorted_max])
-    print("named per-trial max |ramp|:", [round(x, 1) for x in named_max])
+    print("proposed rule per-trial max |ramp|:", [round(x, 1) for x in proposed_max])
+    print("lmetric_power per-trial max |ramp|:", [round(x, 1) for x in unsafe_max])
 
 
 if __name__ == "__main__":

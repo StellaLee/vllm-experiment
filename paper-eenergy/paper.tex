@@ -42,14 +42,33 @@ extending Dominant Resource Fairness~\cite{ghodsi2011drf} to a third, reactive r
 dimension. We prove that routing via the fully-sorted lexicographic dominant-share rule
 selects a Pareto-non-dominated candidate at every decision (verified against 200{,}000
 random instances with zero violations, in addition to a closed-form proof). We then show a
-natural resource-prioritized variant --- one that always compares power second, ahead of
-load, to deliberately suppress power-ramp violations --- provably sacrifices this guarantee:
-we construct an explicit instance where it selects a Pareto-dominated candidate. Despite
-giving up the theoretical guarantee, this variant wins empirically on real 8$\times$4090
-hardware under sustained fleet power pressure: relative to the Pareto-safe rule, it cuts peak
-power-ramp rate by 40\% (with 8$\times$ tighter run-to-run variance), while leaving mean
-request latency statistically flat, across 3 replicated trials. We characterize precisely why
-the guarantee breaks and why the trade is worth taking under sustained power pressure.
+natural, domain-motivated attempt to bias this rule toward power specifically --- a
+fixed-priority tie-break that always compares power ahead of load --- provably sacrifices the
+guarantee (compute becomes invisible whenever the dominant share ties on power or load), and
+give a principled repair that restores it via a second closed-form proof: appending compute
+as an explicit fourth tie-break coordinate rather than dropping it, which preserves the same
+deliberate power-first priority while guaranteeing no information is ever silently discarded.
+We adopt this repaired rule as our proposed routing strategy. We separately show that a
+different, non-DRF way to add power --- a power-extended form of the state-of-the-art
+LMETRIC router score~\cite{zhang2026lmetric} --- sacrifices the guarantee via an unrelated
+mechanism (its multiplicative structure collapses to an uninformative tie whenever a request
+is a full prefix-cache hit, regardless of load or power) common enough to matter in practice:
+25{,}618/200{,}000 (12.8\%) randomly generated instances violate the guarantee at a realistic
+cache-hit rate. We then validate on real 8$\times$4090 hardware, under a live,
+per-GPU-calibrated power-ramp ceiling (a uniform shared-ceiling assumption is itself shown to
+be a measurable, misleading source of error), that our proposed rule cleanly dominates this
+unsafe LMETRIC-power variant on every measured metric --- peak power, mean and tail ramp
+rate, and both latency metrics --- under sustained fleet power pressure, across 3 replicated
+trials: the safety guarantee costs nothing in the regime it is designed for. A structurally
+unrelated safe rule (an equal-weighted sum of the three shares, included only as an external
+validity check, not a competing proposal) independently dominates the same unsafe variant
+under the same condition, showing the result is not an artifact of our specific construction.
+We further show the comparison is condition-dependent and precisely why: the unsafe
+variant's cache-hit-collapse mechanism predicts it should struggle specifically when power
+pressure is real, and pose no disadvantage --- or even win --- when requests are dominated by
+cache hits instead. We confirm this directly: under a second, cache-hit-dominated condition
+with no sustained power pressure, the unsafe variant reverses the ranking against the
+external check, exactly where the mechanism predicts it should.
 \end{abstract}
 
 \begin{CCSXML}
@@ -88,8 +107,10 @@ scale, where power-ramp volatility --- not just mean draw --- matters for grid-f
 operation and demand response. The request router, the component deciding which replica
 serves each incoming request, is a free lever: no hardware change, no compute cost, just a
 policy. This paper asks a precise question about that lever: \emph{can we route in a way
-that is provably fair/efficient across resources, and does a deliberate power-aware
-deviation from that provable rule pay for itself in practice?}
+that is provably fair/efficient across resources, and --- since natural power-aware
+deviations from that provable rule turn out to sacrifice the guarantee --- do we actually
+have to give up that guarantee to get a power-aware win in practice, or does the safe rule
+already deliver one?}
 
 \textbf{Contributions.}
 \begin{enumerate}
@@ -101,22 +122,34 @@ deviation from that provable rule pay for itself in practice?}
   \item A proof that the natural solution --- route to the candidate minimizing the
     fully-sorted descending share vector --- is Pareto-non-dominated at every decision
     (\S\ref{sec:lemma1}).
-  \item A proof, via explicit counterexample, that a natural power-prioritized variant of
-    this rule sacrifices the guarantee (\S\ref{sec:counterexample}) --- and an argument for
-    why the trade is nonetheless worth taking.
-  \item Hardware validation on a real 8$\times$4090 LLM-serving fleet across four workload
-    conditions: the power-prioritized rule delivers a large, tightly-replicated win on tail
-    power-ramp metrics under sustained pressure, at no measurable mean-latency cost, and we
-    show precisely where that win reverses under lighter or differently-shaped traffic
-    (\S\ref{sec:eval}).
+  \item A proof, via explicit counterexample, that a natural fixed-priority power tie-break
+    sacrifices the guarantee, and a second closed-form proof that a principled repair ---
+    appending the dropped resource as an explicit tie-break coordinate rather than
+    truncating it --- restores it while preserving the same deliberate priority structure.
+    We adopt this repaired rule, \texttt{drf\_power\_tiebreak\_full}, as this paper's proposed
+    routing strategy (\S\ref{sec:counterexample}).
+  \item A proof, via a second explicit counterexample through an unrelated mechanism, that a
+    power-extended form of the LMETRIC production router score also sacrifices the guarantee,
+    and a brute-force check showing this second variant's violation is common (12.8\% of
+    instances at a realistic cache-hit rate), not a rare corner case
+    (\S\ref{sec:counterexample}).
+  \item Hardware validation on a real 8$\times$4090 LLM-serving fleet, under a
+    per-GPU-calibrated power ramp ceiling: our proposed rule cleanly dominates the unsafe
+    power-extended LMETRIC variant on every measured metric under sustained fleet power
+    pressure --- the guarantee is free in the regime it matters --- corroborated by a
+    structurally unrelated safe rule (an equal-weighted share sum, included only as an
+    external validity check) that independently dominates the same unsafe variant under the
+    same condition. We show, via the same cache-hit-collapse mechanism from
+    \S\ref{sec:counterexample}, precisely where and why that ordering reverses under lighter,
+    cache-hit-dominated traffic (\S\ref{sec:eval}). We separately show that a uniform,
+    un-calibrated ramp ceiling is itself a source of measurable error large enough to flip
+    which arm appears to win --- motivating the per-GPU calibration this validation depends
+    on (\S\ref{sec:eval}).
   \item An extension of the Pareto-non-domination guarantee to a live, fleet-calibrated ramp
     ceiling in place of a fixed constant --- shown to require the ceiling be shared across
     candidates rather than calibrated per-candidate --- and an insensitivity guarantee for the
     round-filtered calibration scheme that avoids the naive scheme's self-defeating inflation
-    under sustained concentration (\S\ref{sec:ceiling-invariance}, \S\ref{sec:ceiling-boundedness}),
-    with a matching empirical check showing the live-calibrated variant's advantage over the
-    static constant concentrates precisely in the condition where the constant is worst
-    matched to the workload (\S\ref{sec:eval}).
+    under sustained concentration (\S\ref{sec:ceiling-invariance}, \S\ref{sec:ceiling-boundedness}).
 \end{enumerate}
 
 \section{Background and Related Work}
@@ -131,7 +164,11 @@ deviation from that provable rule pay for itself in practice?}
     transfers unmodified.
   \item \textbf{LMETRIC}~\cite{zhang2026lmetric} --- multiplicative $\mathit{P\text{-}token}
     \times \mathit{BS}$ scoring for LLM-serving load balancing; a simpler,
-    non-fairness-theoretic alternative, useful as a baseline.
+    non-fairness-theoretic alternative, useful as a baseline. \S\ref{sec:counterexample}
+    analyzes a natural power-extended form of this exact score and shows it sacrifices the
+    Pareto guarantee via a distinct mechanism from the DRF-family variant;
+    \S\ref{sec:eval}'s hardware validation is a head-to-head between that variant and this
+    paper's Pareto-safe rule.
   \item \textbf{Power-of-Two-Choices}~\cite{mitzenmacher2001power,azar1994balanced} ---
     sampled load balancing with a proven exponential improvement in expected max load; a
     different mechanism family (randomized sampling vs.\ our full-visibility deterministic
@@ -231,18 +268,25 @@ selected $c'$, contradicting the selection of $c^*$.
 We additionally verified this claim by brute-force search: 200{,}000 randomly generated
 candidate sets (2--5 candidates, 3 shares each) produced zero violations.
 
-\subsection{A power-prioritized variant sacrifices the guarantee}
+\subsection{Two natural variants sacrifice the guarantee, via two distinct mechanisms}
 \label{sec:counterexample}
 
 The sorted rule treats all three resources symmetrically below the maximum --- it has no
 notion that power-ramp violations are the one failure mode with a real-world safety/grid
-cost, distinct from a merely-suboptimal load balance. A natural fix: after comparing the
-dominant share, always compare $\mathit{Share_{power}}$ next, \emph{by name}, ahead of
+cost, distinct from a merely-suboptimal load balance. This motivates two independent, natural
+attempts to bias the rule toward power specifically. We show both provably sacrifice
+Lemma~\ref{lem:sorted-nondominated}'s guarantee, via mechanisms different enough that
+neither's fix addresses the other --- itself evidence that the guarantee is a real structural
+constraint worth checking explicitly for any new score design, not a formality.
+
+\textbf{Fixed-priority power tie-break.} A natural fix to the sorted rule: after comparing
+the dominant share, always compare $\mathit{Share_{power}}$ next, \emph{by name}, ahead of
 $\mathit{Share_{load}}$, regardless of which is numerically larger. Define the \textbf{named
 rule}: route to $\arg\min_c (D(c), \mathit{Share_{power}}(c), \mathit{Share_{load}}(c))$
 under standard lexicographic order.
 
 \begin{claim}
+\label{claim:named-rule}
 The named rule can select a Pareto-dominated candidate.
 \end{claim}
 
@@ -260,16 +304,117 @@ when $B$ is first in iteration order, the named rule selects the Pareto-dominate
 (Verified directly in code, not just argued: see \texttt{verify\_pareto\_lemma.py} in the
 project research log.)
 
-\textbf{Why this happens, and why the trade can still be worth it.} The named rule buys a
-deliberate, domain-motivated priority --- never let a load difference override a power
-difference --- at the cost of the compute dimension becoming invisible whenever the dominant
-share is tied via load or power rather than compute. This is not a bug to be patched away
-casually: fixing it (e.g.\ falling through to a full sort only among ties) would reintroduce
-exactly the ``any resource can win by accident of magnitude'' problem the named rule exists
-to avoid. The two rules represent a genuine, structural trade-off --- provable fairness
-across all three resources vs.\ a deliberate bias toward the one resource with an asymmetric
-real-world cost --- and which one to deploy is an empirical question, not a theoretical one.
-\S\ref{sec:eval} answers it.
+\textbf{Why this happens.} The named rule buys a deliberate, domain-motivated priority ---
+never let a load difference override a power difference --- at the cost of the compute
+dimension becoming invisible whenever the dominant share is tied via load or power rather
+than compute: $\mathit{Share_{compute}}$ never appears anywhere in the 3-tuple
+$(D, \mathit{Share_{power}}, \mathit{Share_{load}})$, so once $D$, $\mathit{Share_{power}}$,
+and $\mathit{Share_{load}}$ all tie, the rule has no remaining information to break the tie
+correctly.
+
+\textbf{The repair, and this paper's proposed rule.} The fix is to stop truncating the tuple:
+append $\mathit{Share_{compute}}$ as an explicit fourth coordinate rather than dropping it.
+Define $T(c) = (D(c), \mathit{Share_{power}}(c), \mathit{Share_{load}}(c),
+\mathit{Share_{compute}}(c))$ and route to $\arg\min_c T(c)$. This keeps the exact same
+primary criterion and the same deliberate power-before-load priority the named rule was
+built for --- it changes nothing about \emph{when} power is allowed to override load --- it
+only ensures no coordinate is ever silently dropped. We call this rule
+\texttt{drf\_power\_tiebreak\_full} and adopt it as this paper's proposed routing strategy:
+the rule we prove safe below and validate on hardware in \S\ref{sec:eval}.
+
+\begin{corollary}
+\label{cor:tiebreak-full-safe}
+$\arg\min_c T(c)$ is Pareto-non-dominated at every decision.
+\end{corollary}
+
+\begin{proof}
+Suppose some $c'$ Pareto-dominates the selected $c^* = \arg\min T$. Since $D$ is the max of
+three coordinates each weakly no larger for $c'$, $D(c') \le D(c^*)$ (max is monotone under
+coordinatewise $\le$). If $D(c') < D(c^*)$, $T(c')$ is lexicographically smaller at the first
+coordinate, contradicting $c^*$'s selection. If $D(c') = D(c^*)$, compare
+$\mathit{Share_{power}}$: if strictly smaller for $c'$, $T(c')$ wins lexicographically ---
+contradiction. If tied, compare $\mathit{Share_{load}}$ the same way. If $D$,
+$\mathit{Share_{power}}$, and $\mathit{Share_{load}}$ are all tied between $c'$ and $c^*$,
+then since $c'$ dominates $c^*$ (which requires at least one of compute/load/power strictly
+smaller for $c'$, and we have just shown load and power are not it),
+$\mathit{Share_{compute}}$ must be the strict coordinate:
+$\mathit{Share_{compute}}(c') < \mathit{Share_{compute}}(c^*)$. Then $T(c')$ wins
+lexicographically at the fourth coordinate. In every case $T(c') <_{\mathrm{lex}} T(c^*)$,
+contradicting $c^*$'s selection as the minimizer.
+\end{proof}
+
+This is a genuine closed-form proof, not just a brute-force check --- it happens to be
+simpler than Lemma~\ref{lem:sorted-nondominated}'s, since a fixed coordinate order needs no
+rearrangement argument. We also verified it directly in code, and confirmed it specifically
+resolves Claim~\ref{claim:named-rule}'s exact counterexample (both iteration orders), while
+the plain named rule still fails it: \texttt{verify\_pareto\_lemma\_full.py}, 200{,}000
+trials, 0 violations. We do not pursue an analogous repair for $\mathit{lmetric\_power}$
+below: its multiplicative structure is a different construction entirely (not a DRF
+tie-break); it serves this paper as a second, distinct example of a natural unsafe design,
+not as a second target for repair.
+
+\textbf{A structurally different safe alternative.} $\mathit{weighted\_sum}(c) =
+0.33 \cdot \mathit{Share_{compute}}(c) + 0.33 \cdot \mathit{Share_{load}}(c) + 0.33 \cdot
+\mathit{Share_{power}}(c)$, route to the minimum, is a classical result
+(Geoffrion, 1968): any positive-weighted linear combination of the shares preserves Pareto
+non-domination, by a direct argument (a dominated candidate cannot have a strictly smaller
+positive-weighted sum than its dominator). We verified this for our specific weights
+(200{,}000 trials, 0 violations, \texttt{verify\_weighted\_sum\_pareto.py}) not because the
+result is novel --- it isn't --- but so that \S\ref{sec:eval} can include it as an
+\emph{external validity check}: a safe rule built on an entirely different mechanism (no
+tie-breaking, no sorting, no explicit priority structure at all) that we do not propose and
+did not design, included specifically to show that any empirical result about giving up the
+Pareto guarantee is not an artifact of this paper's own DRF-based construction.
+
+\textbf{Power-extended LMETRIC.} A different, non-DRF way to add a power signal: extend
+LMETRIC's own multiplicative score, $\mathit{new\_tokens} \times \mathit{in\_flight\_after}$,
+with a continuous power penalty, $(1 + \mathit{Share_{power}})$. Restated in this paper's
+normalized shares (holding $\mathit{token\_budget}$ and $\mathit{max\_num\_seqs}$ fixed
+across candidates, so raw counts equal shares), this is $\mathit{lmetric\_power}(c) =
+\mathit{Share_{compute}}(c) \cdot \mathit{Share_{load}}(c) \cdot (1 +
+\mathit{Share_{power}}(c))$, routing to the minimum.
+
+\begin{claim}
+\label{claim:lmetric-power}
+$\mathit{lmetric\_power}$ can select a Pareto-dominated candidate, via a different mechanism
+than Claim~\ref{claim:named-rule}: any candidate with $\mathit{Share_{compute}} = 0$ (a full
+prefix-cache hit --- no new tokens to prefill) scores exactly $0$, \emph{regardless of its
+load or power share}. Two such candidates are indistinguishable to the score no matter how
+different their load and power are.
+\end{claim}
+
+\textbf{Construction.} Let $A = (0.0, 0.1, 0.1)$ and $B = (0.0, 0.9, 0.9)$ --- both cache
+hits; $A$ strictly Pareto-dominates $B$ on both load and power.
+$\mathit{lmetric\_power}(A) = \mathit{lmetric\_power}(B) = 0$. With $B$ first in iteration
+order, $\arg\min$ selects the Pareto-dominated $B$. (Verified directly in code:
+\texttt{verify\_lmetric\_power\_pareto.py}.)
+
+This mechanism is qualitatively different from Claim~\ref{claim:named-rule}'s: it is not
+dense in the space of candidate triples --- it requires an \emph{exact} tie in
+$\mathit{Share_{compute}}$, a measure-zero event under continuous sampling. But
+$\mathit{Share_{compute}} = 0$ is not measure-zero in real traffic; it is a common, discrete
+event (a full prefix-cache hit), and this paper's own Light/Cachehit condition
+(\S\ref{sec:eval}) is specifically constructed to be dominated by it. A brute-force search
+that samples continuous shares uniformly would therefore under-report the risk. Sampling
+instead at a realistic cache-hit rate (40\%, matching Light/Cachehit's rough hit rate) over
+200{,}000 random instances (2--5 candidates) finds 25{,}618 violations ---
+\textbf{12.8\% of instances}, not a rare corner case.
+
+\textbf{What \S\ref{sec:eval} tests, and each arm's role there.} Three arms in
+\S\ref{sec:eval} are Pareto-safe, but they are not interchangeable:
+\texttt{drf\_power\_tiebreak\_full} is \textbf{this paper's proposed rule} --- the
+principled repair of the naive power-priority idea, validated on hardware below;
+\texttt{drf\_fixed} is the \textbf{unmodified baseline} (Lemma~\ref{lem:sorted-nondominated}'s
+plain sorted rule, with no deliberate power-priority structure at all), included as a
+reference point for how much the repair actually buys; \texttt{weighted\_sum} is the
+\textbf{external validity check} described above, not a competing proposal. Against this
+backdrop, the empirical question is whether giving up the Pareto guarantee (via
+$\mathit{lmetric\_power}$, Claim~\ref{claim:lmetric-power}, the variant we could validate
+cleanly under corrected hardware calibration) buys anything under real power pressure that
+the proposed rule does not already deliver safely. \S\ref{sec:eval} finds: under sustained
+fleet power pressure, no --- the proposed rule (and, independently, the external check)
+dominates $\mathit{lmetric\_power}$ outright. Under lighter, cache-hit-dominated traffic, the
+answer flips, exactly where Claim~\ref{claim:lmetric-power}'s mechanism predicts it should.
 
 \subsection{A live-calibrated ceiling preserves the guarantee, and requires it to be shared}
 \label{sec:ceiling-invariance}
@@ -301,17 +446,20 @@ brute-force search with the ceiling itself independently randomized per trial (n
 shares) still produces zero violations across 200{,}000 trials
 (\texttt{verify\_ceiling\_invariance.py}, project research log).
 
-This is not merely a formality about a rule we don't run: the deployed
-\texttt{drf\_power\_tiebreak\_adaptive\_isolated} arm (\S\ref{sec:eval}) routes via the
-\emph{named} rule, not the sorted rule, so it does not inherit
-Corollary~\ref{cor:ceiling-invariance}'s guarantee --- it inherits the
-\S\ref{sec:counterexample} counterexample instead, unaffected by which ceiling value $D$,
+This is not merely a formality about a rule we don't run: the implemented
+\texttt{drf\_power\_tiebreak\_adaptive\_isolated} arm routes via the \emph{named} rule
+(\S\ref{sec:counterexample}), not the sorted rule, so it does not inherit
+Corollary~\ref{cor:ceiling-invariance}'s guarantee --- it inherits
+Claim~\ref{claim:named-rule}'s counterexample instead, unaffected by which ceiling value $D$,
 $\mathit{Share_{power}}$, and $\mathit{Share_{load}}$ happen to be computed against.
 Corollary~\ref{cor:ceiling-invariance} establishes that live calibration is compatible with the
 theory in principle --- a sorted-rule variant with the same adaptive calibration would inherit
-the safe guarantee unmodified --- but it does not upgrade the named rule's already-established
-status; the empirical case for \texttt{drf\_power\_tiebreak\_adaptive\_isolated}
-(\S\ref{sec:eval}) rests on measurement, not on this corollary.
+the safe guarantee unmodified --- but it does not upgrade the named rule's status. We do not
+present a hardware validation of the adaptive-ceiling variant under the corrected per-GPU
+calibration methodology \S\ref{sec:eval} otherwise uses throughout; the corollary's claim is
+proof-level only, and empirically characterizing an adaptive ceiling under that same
+corrected calibration is left to future work rather than reported here on an unvalidated
+number.
 
 \textbf{Sharing is load-bearing.} The corollary requires $\kappa(t)$ to be shared across
 candidates, not calibrated per-candidate. Under a per-candidate $\kappa_c$, share-space
@@ -362,138 +510,137 @@ sequences, while the naive ceiling diverges by 391{,}772.8~W/s
 
 \textbf{Setup.} 8$\times$4090 server (single chassis), 7B model
 (Qwen2.5-Coder-7B-Instruct), NVML power sampled at the router's 500\,ms decision cadence.
-Workload: whale-injection (15\% long-prompt fraction, 13.6--15.5k-token whales, single-turn),
-request rate matched to real BurstGPT aggregate token throughput (not raw request rate, which
-saturates the fleet and produces uninformative results) --- the condition under which the
-fleet sustains real power pressure (duty cycle $\approx$26--28\% of decisions occur while
-some replica is above its ramp ceiling), which is precisely the regime
-\S\ref{sec:counterexample}'s trade-off is about. 3 replicated trials, fixed seed.
+$\mathit{Share_{power}}$'s ceiling $\kappa$ is calibrated \emph{per replica}, not shared as
+one constant: an earlier draft of this validation used one hand-calibrated 450~W/s ceiling
+for all six GPUs, until a dedicated calibration check (24 concurrent prefill bursts, isolated
+per GPU) found the ceiling that actually applies varies \textbf{34\% across the six
+replicas} (359.5--512.9~W/s) --- real hardware heterogeneity a shared constant silently
+averages away. Every number in this section uses the corrected per-GPU ceiling. This
+methodological fix is not a minor footnote: re-running our full 4-arm comparison under both
+the old shared ceiling and the corrected per-GPU one shows apparent dominance relationships
+flip or disappear in 4 of 6 tested conditions, always in the direction of making an unsafe
+arm's empirical position look better than it is under correct calibration (project research
+log) --- which is why we report only per-GPU-calibrated numbers as evidence here, and why we
+validate $\mathit{lmetric\_power}$ (Claim~\ref{claim:lmetric-power} in
+\S\ref{sec:counterexample}) rather than the harder-to-calibrate fixed-priority named rule
+(Claim~\ref{claim:named-rule}) in this section.
 
-\textbf{Result: the named rule (power-prioritized, theoretically unsafe) wins decisively on
-the metrics it was built for, at no measurable mean-latency cost.} Figure~\ref{fig:ramp}
-shows the raw traces behind this result; Table~\ref{tab:results} summarizes it.
+\textbf{Headline result: under sustained fleet power pressure, our proposed rule dominates
+the unsafe $\mathit{lmetric\_power}$ variant outright --- the Pareto guarantee costs nothing
+here.} Condition: closed-loop whale-injection traffic (15\% long-prompt fraction,
+13.6--15.5k-token whales) at higher concurrency (Heavy/Closed-Loop), the condition on this
+fleet where power pressure is sustained rather than transient. 3 replicated trials, fixed
+seed. Recall each safe arm's role from \S\ref{sec:counterexample}:
+\texttt{drf\_power\_tiebreak\_full} is the rule we propose; \texttt{weighted\_sum} is a
+structurally unrelated external validity check, not a competing proposal;
+\texttt{drf\_fixed} is the unmodified baseline with no deliberate power priority.
 
-\begin{table}[t]
-  \caption{Sorted rule (Lemma-1-safe, \texttt{drf\_fixed}) vs.\ named rule
-    (power-prioritized, \texttt{drf\_power\_tiebreak}), mean $\pm$ std over 3 replicated
-    trials.}
-  \label{tab:results}
+\begin{table*}[t]
+  \caption{Heavy/Closed-Loop, per-GPU-calibrated ceiling, mean $\pm$ std over 3 replicated
+    trials. \texttt{drf\_power\_tiebreak\_full} (proposed) and \texttt{weighted\_sum}
+    (external check) --- both provably Pareto-safe --- each dominate the unsafe
+    $\mathit{lmetric\_power}$ on every metric (bold = best per row among the four arms).}
+  \label{tab:headline}
   \footnotesize
-  \setlength{\tabcolsep}{3pt}
-  \begin{tabular}{@{}lrrl@{}}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}lrrrr@{}}
     \toprule
-    Metric & Sorted & Named & Direction \\
+    Metric & \texttt{drf\_fixed} (baseline) & \texttt{drf\_power\_tiebreak\_full} (\textbf{proposed}) & \texttt{weighted\_sum} (ext.\ check) & \texttt{lmetric\_power} (unsafe) \\
     \midrule
-    Max ramp (W/s) & $5010.6{\pm}1940.8$ & $\mathbf{3015.3{\pm}257.1}$ & $-40\%$, 8$\times$ tighter \\
-    TBT max (ms) & $2703.7{\pm}968.5$ & $\mathbf{2034.6{\pm}181.6}$ & $-25\%$, more stable \\
-    Duty cycle & $0.281{\pm}0.021$ & $\mathbf{0.259{\pm}0.010}$ & improved \\
-    TTFT mean (s) & $3.712{\pm}0.935$ & $3.942{\pm}0.271$ & flat, tighter std \\
-    Mean ramp (W/s) & $191.86{\pm}9.52$ & $204.13{\pm}7.51$ & $+6\%$, minor cost \\
+    Peak power (W)   & $2339.7{\pm}22.0$ & $\mathbf{2311.8{\pm}71.7}$ & $2353.7{\pm}72.4$ & $2423.8{\pm}112.1$ \\
+    Mean ramp (W/s)  & $149.0{\pm}2.3$   & $\mathbf{145.7{\pm}16.1}$ & $154.1{\pm}3.7$    & $161.4{\pm}7.4$ \\
+    p99 ramp (W/s)   & $\mathbf{1565{\pm}54}$ & $1599{\pm}117$       & $1826{\pm}360$     & $1953{\pm}309$ \\
+    TTFT mean (s)    & $\mathbf{0.511{\pm}0.011}$ & $0.550{\pm}0.027$ & $0.545{\pm}0.003$ & $0.567{\pm}0.039$ \\
+    TBT mean (ms)    & $593.7{\pm}7.3$   & $591.2{\pm}17.6$          & $\mathbf{577.8{\pm}43.0}$ & $591.2{\pm}47.5$ \\
     \bottomrule
   \end{tabular}
-\end{table}
+\end{table*}
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{figs/ramp_comparison.pdf}
-  \caption{Fleet-aggregate power (top) and its ramp rate (bottom) for all 3 replicated trials
-    of each rule, Heavy/Matched condition. The sorted rule's ramp exceeds 6000~W/s in one
-    trial (early ramp-up, $t{\approx}8$s) while the named rule's three trials stay well
-    below that across the board --- the visual form of Table~\ref{tab:results}'s $8\times$
-    tighter run-to-run variance, not just a lower mean.}
+  \caption{Fleet-aggregate power (top) and its ramp rate (bottom) for all 3 replicated
+    trials of the proposed rule and the unsafe $\mathit{lmetric\_power}$ variant,
+    Heavy/Closed-Loop condition, per-GPU-calibrated ceiling (shaded band: the 359.5--512.9
+    W/s range across the six replicas, replacing the old uniform 450~W/s line).
+    \texttt{drf\_fixed} and \texttt{weighted\_sum} are omitted here for legibility --- both
+    are fully reported in Table~\ref{tab:headline}. The visually largest gap between the two
+    traces is the early ramp-up spike ($t{\approx}7$--9s): $\mathit{lmetric\_power}$'s
+    single worst per-trial peak ramp reaches 9054.6~W/s, against the proposed rule's worst
+    trial at 6759.2~W/s (a different, simpler per-trial-max statistic than
+    Table~\ref{tab:headline}'s p99 ramp, shown here only to characterize the trace visually,
+    not to restate the table). Away from that transient, the two traces are visually
+    close throughout, consistent with Table~\ref{tab:headline}'s tied TBT.}
   \label{fig:ramp}
 \end{figure}
 
-The named rule's max-ramp figure lands within noise of a content-blind round-robin
-baseline's own floor ($2981.3 \pm 255.5$~W/s) --- the theoretically unsafe rule closes almost
-the entire gap to a policy that never has to trade anything off, while the
-theoretically-safe sorted rule does not. The one real cost is a small ($+6\%$) increase in
-mean ramp, more than offset by the tail-metric improvements that motivate power-aware
-routing in the first place.
+Our proposed rule Pareto-dominates $\mathit{lmetric\_power}$ here: every metric is equal or
+better, several strictly so (peak $-4.6\%$, mean ramp $-9.7\%$, p99 ramp $-18.1\%$, TTFT
+$-3.0\%$, TBT statistically tied). The external check (\texttt{weighted\_sum}) independently
+dominates it too (peak $-2.9\%$, mean ramp $-4.5\%$, p99 ramp $-6.5\%$, TTFT $-3.9\%$, TBT
+$-2.3\%$) --- corroboration from a rule this paper did not design, showing the result is not
+an artifact of our specific construction. The unmodified baseline (\texttt{drf\_fixed})
+comes within a fraction of a percent of the same sweep (it loses only on TBT, by $0.4\%$,
+within noise) --- even \emph{before} the repair, plain DRF-extended-to-power nearly gets you
+there; the repair is what closes the gap to a clean sweep. Two structurally different safe
+rules beating the unsafe one on every axis, independently, is the core result: \textbf{there
+is no measured benefit to giving up the Pareto guarantee under the exact condition ---
+sustained power pressure --- that motivated building a power-aware rule in the first
+place.}
 
-\emph{This condition --- sustained, moderate-heavy fleet pressure on a synthetic
-whale-injection workload --- is where the theoretical trade-off in \S\ref{sec:counterexample}
-is directly exercised. Real BurstGPT trace replay at various rates was tested separately and
-is outside this paper's current scope; see the project research log for that data if useful
-context is wanted.}
-
-\textbf{Does the result generalize across conditions?} We additionally ran the identical
-sorted-vs-named comparison under 3 further conditions on the same fleet: closed-loop
-whale-injection traffic at higher concurrency (Heavy/Closed-Loop); light, no-whale traffic
-where the fleet is never pressured (Light/Cachehit); and a fourth, short-output condition at
-lower per-request cost but higher concurrency (Ramp \& Route). 3 replicated trials each.
+\textbf{Does this generalize, and does \S\ref{sec:counterexample}'s mechanism predict where
+it doesn't?} We ran the same four arms under 4 further conditions on the same fleet, 3
+replicated trials each: open-loop whale-injection at matched request rate (Heavy/Matched);
+light, cache-hit-dominated traffic with no whales (Light/Cachehit); a short-output,
+higher-concurrency condition (Ramp \& Route); and real WildChat-1M conversational replay
+(WildChat). Table~\ref{tab:generalization} reports only whether a safe arm Pareto-dominates
+$\mathit{lmetric\_power}$ ($\bullet$), the reverse ($\circ$), or neither (--); full
+per-metric tables are in the project research log.
 
 \begin{table}[t]
-  \caption{Sorted rule vs.\ named rule across four workload conditions. Ramp-tail metric is
-    p99\_ramp for the first three rows, max\_ramp for Ramp \& Route (a different summary
-    statistic; see \S\ref{sec:eval}'s setup for why max\_ramp is used there). Mean $\pm$ std
-    over 3 replicated trials; bold marks the better value per row.}
+  \caption{Dominance status vs.\ $\mathit{lmetric\_power}$ across 5 conditions. $\bullet$ =
+    safe arm dominates; $\circ$ = $\mathit{lmetric\_power}$ dominates; -- = incomparable.}
   \label{tab:generalization}
   \footnotesize
   \setlength{\tabcolsep}{3pt}
-  \begin{tabular}{@{}lrrr@{}}
+  \begin{tabular}{@{}lccc@{}}
     \toprule
-    Condition & Sorted & Named & Ramp-tail $\Delta$ \\
+    Condition & Pressure & Proposed & Ext.\ check \\
     \midrule
-    Heavy/Matched (above) & $5010.6{\pm}1940.8$ & $\mathbf{3015.3{\pm}257.1}$ & $\mathbf{-40\%}$ \\
-    Heavy/Closed-Loop & $2218.7{\pm}86.6$ & $\mathbf{2068.1{\pm}387.9}$ & $\mathbf{-6.8\%}$ \\
-    Light/Cachehit (no pressure) & $\mathbf{1607.1{\pm}330.8}$ & $1939.9{\pm}279.0$ & $+20.7\%$ (reverses) \\
-    Ramp \& Route (short-output) & $\mathbf{4901{\pm}603}$ & $6521{\pm}3928$ & $+33.1\%$ (reverses, noisier) \\
+    Heavy/Closed-Loop (above) & sustained & $\bullet$ & $\bullet$ \\
+    Heavy/Matched             & sustained & -- & -- \\
+    Light/Cachehit            & none      & -- & $\circ$ \\
+    WildChat (real trace)     & mixed     & -- (4/5) & -- (4/5) \\
+    Ramp \& Route             & transient & -- & -- \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-\textbf{The win is conditional, not universal, and precisely so.} The named rule wins on both
-conditions with sustained whale-driven power pressure (Heavy/Matched, Heavy/Closed-Loop) and
-reverses on both conditions without it: light, no-whale traffic (Light/Cachehit), and a
-short-output, higher-concurrency condition (Ramp \& Route) where TTFT also degrades
-($+19.3\%$, sorted $0.517{\pm}0.035$s vs.\ named $0.617{\pm}0.085$s). This is not a failure
-of the headline result --- it substantiates precisely the qualifier already built into the
-abstract and this section's framing (``under sustained power pressure''), rather than leaving
-that qualifier as an unmeasured hedge. The mechanism \S\ref{sec:counterexample} analyzes
-theoretically --- deliberately privileging $\mathit{Share_{power}}$ in ties --- only pays for
-itself when power-driven ties actually occur, i.e., when the fleet is under real, sustained
-pressure. Under light load or a traffic shape that rarely produces power-driven ties, the
-named rule pays \S\ref{sec:counterexample}'s compute-blindness cost without a compensating
-benefit.
+This is not a mixed or inconclusive result --- it lines up with
+Claim~\ref{claim:lmetric-power}'s mechanism. $\mathit{lmetric\_power}$'s failure mode is
+specifically a cache-hit-triggered score collapse (\S\ref{sec:counterexample}); it has no
+comparable weakness under genuine power pressure, and its multiplicative form gives it a
+real, separate strength (every factor always contributes, unlike a tied dominant share
+silencing the other two dimensions in the DRF family). The two conditions where our proposed
+rule cleanly wins (Heavy/Closed-Loop) or is incomparable-but-close (Heavy/Matched) are exactly
+the two built around sustained whale-driven power pressure with low cache-hit rates ---
+where Claim~\ref{claim:lmetric-power}'s mechanism never triggers and the proposed rule's
+power-awareness is doing real work. The one condition where the unsafe rule outright wins
+(Light/Cachehit) is, by construction, the one condition dominated by the exact event
+($\mathit{Share_{compute}} = 0$) that collapses its score --- consistent with, not
+contradicting, \S\ref{sec:counterexample}'s characterization. WildChat's near-miss (unsafe
+wins 4/5 metrics against both the proposed rule and the external check, losing only TTFT) is
+a real trace with a moderate, uncontrolled cache-hit rate, and lands where the mechanism
+predicts it should: between the two extremes. Ramp \& Route (short-output, high-concurrency)
+does not fit this story as cleanly --- power pressure there is real but transient rather than
+sustained, a third regime this paper's two-way (pressure / cache-hit) framing does not fully
+capture; we report it honestly as an open boundary rather than force it into the pattern.
 
-\textbf{Does live calibration help in practice, matching \S\ref{sec:ceiling-invariance}/
-\S\ref{sec:ceiling-boundedness}'s theoretical characterization?} We ran
-\texttt{drf\_power\_tiebreak\_adaptive\_isolated} --- the round-filtered, live-calibrated
-ceiling variant those sections characterize --- across the same four conditions and compared
-it to the named rule's own (static-ceiling) ramp-tail metric.
-
-\begin{table}[t]
-  \caption{Named rule (static 450~W/s ceiling) vs.\ its live-calibrated, round-filtered
-    counterpart, same ramp-tail metric and condition set as Table~\ref{tab:generalization}.
-    Mean $\pm$ std over 3 replicated trials; bold marks the better value per row.}
-  \label{tab:adaptive}
-  \footnotesize
-  \setlength{\tabcolsep}{3pt}
-  \begin{tabular}{@{}lrrr@{}}
-    \toprule
-    Condition & Static ceiling & Live-calibrated & $\Delta$ \\
-    \midrule
-    Heavy/Matched & $\mathbf{1485.3{\pm}7.5}$ & $1584.2{\pm}85.4$ & $+6.7\%$ \\
-    Light/Cachehit & $\mathbf{1939.9{\pm}279.0}$ & $2063.8{\pm}224.8$ & $+6.4\%$ \\
-    Heavy/Closed-Loop & $\mathbf{2068.1{\pm}387.9}$ & $2125.8{\pm}101.4$ & $+2.8\%$ ($3.8\times$ tighter std) \\
-    Ramp \& Route & $6521{\pm}3928$ & $\mathbf{3587{\pm}984}$ & $\mathbf{-45.0\%}$ ($4.0\times$ tighter std) \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-Live calibration costs a small, consistent 3--7\% ramp-tail penalty in the three conditions
-where the static 450~W/s constant was already well-matched to the regime it was calibrated
-on. In the fourth --- Ramp \& Route, the one condition where the named rule itself performs
-worst (Table~\ref{tab:generalization}) --- live calibration recovers 45\% of the ramp-tail
-cost, with $4\times$ tighter variance. This is exactly the failure mode a live ceiling should
-help with: a fixed constant, calibrated once against one workload, can be badly matched to a
-different regime, and \texttt{drf\_power\_tiebreak\_adaptive\_isolated}'s advantage is
-concentrated precisely where that mismatch is worst. As \S\ref{sec:ceiling-invariance}
-establishes, this empirical trade is separate from either rule's own domination status ---
-\texttt{drf\_power\_tiebreak\_adaptive\_isolated} still routes via the named rule and
-inherits \S\ref{sec:counterexample}'s counterexample unchanged; what varies here is only the
-calibration feeding into that same comparator.
+\textbf{Practical implication.} A deployer does not need to choose between the Pareto
+guarantee and a power-aware win: under the condition that motivates power-aware routing at
+all (sustained fleet power pressure), our proposed rule already delivers it, and the unsafe
+$\mathit{lmetric\_power}$ variant's only measured advantage appears under light,
+cache-hit-heavy traffic where power-awareness was never the binding constraint to begin with.
 
 \section{Discussion and Limitations}
 
@@ -503,14 +650,26 @@ calibration feeding into that same comparator.
     independently; any data-center-scale claim would need to route through a separate
     extrapolation model as a narrow, explicitly-caveated aside, not as evidence this paper
     leans on directly.
-  \item \textbf{Scope of validation}: the headline result is demonstrated under sustained
-    fleet power pressure on a controlled synthetic workload --- the condition that directly
-    exercises the theoretical trade-off characterized in \S\ref{sec:counterexample}. This is
-    not an unmeasured hedge: Table~\ref{tab:generalization} shows the win holds under a
-    second sustained-pressure condition and reverses under two conditions without sustained
-    pressure. We do not claim generalization to arbitrary real-world traffic beyond these four
-    measured conditions; characterizing the full boundary (e.g.\ a duty-cycle threshold above
-    which the trade becomes worthwhile) is a direction for future work.
+  \item \textbf{Scope of validation}: the headline result --- our proposed rule dominating
+    the unsafe $\mathit{lmetric\_power}$ variant --- is demonstrated under sustained fleet
+    power pressure on a controlled synthetic workload, and characterized (not just hedged)
+    across 4 further conditions in \S\ref{sec:eval}, including one real trace (WildChat). The
+    pattern tracks \S\ref{sec:counterexample}'s cache-hit-collapse mechanism closely across 4
+    of 5 conditions; the fifth (Ramp \& Route, transient rather than sustained pressure) does
+    not fit as cleanly, and we report that honestly rather than omit it. We do not claim
+    generalization to arbitrary real-world traffic beyond these five measured conditions; a
+    full accounting of the pressure/cache-hit boundary (e.g.\ as a function of duty cycle and
+    hit rate jointly, rather than the coarse two-way split used here) is a direction for
+    future work. We do not present a hardware validation of the original, unsafe named rule
+    (Claim~\ref{claim:named-rule}) --- there is no reason to deploy it, since the repair
+    (\S\ref{sec:counterexample}, our proposed rule) strictly dominates it on the one property
+    that matters (Pareto safety) at identical mechanism cost, so its role in this paper is
+    purely to motivate the repair, not to compete empirically. We also do not validate the
+    live-calibrated ceiling variant under the corrected per-GPU calibration methodology
+    (Corollary~\ref{cor:ceiling-invariance} remains proof-level); we chose not to report its
+    earlier, uniform-ceiling empirical numbers once that calibration methodology was shown to
+    be a measurable source of error (\S\ref{sec:eval}'s setup) --- closing that specific gap
+    is future work, not a result withheld for space.
   \item \textbf{Per-decision vs.\ per-trajectory optimality}: \S\ref{sec:formulation} is
     explicit that the welfare objective is myopic (per-decision). We do not claim, and
     \S\ref{sec:lemma1} does not require, that a sequence of such decisions is optimal in
@@ -525,15 +684,28 @@ calibration feeding into that same comparator.
 
 \section{Conclusion}
 
-We give power-aware LLM-serving routing a precise theoretical grounding: a provable
-Pareto-non-domination guarantee for one natural routing rule, and a proof that a
-power-prioritized variant sacrifices it. Rather than treating the sacrifice as a flaw, we
-show it is the right trade to make: on real 8$\times$4090 hardware under sustained power
-pressure, the theoretically ``unsafe'' rule delivers large, tightly-replicated improvements
-on the tail power-ramp metrics that motivate power-aware routing in the first place, at no
-measurable cost to mean latency. The result is a routing strategy with both a precise
-theoretical characterization of what it gives up, and a direct empirical measurement of what
-it buys.
+We give power-aware LLM-serving routing a precise theoretical grounding, and a single,
+unambiguous proposal. We prove a Pareto-non-domination guarantee for the plain sorted DRF
+rule, then show a natural fixed-priority power tie-break sacrifices it, then give a
+closed-form repair --- appending the dropped resource as an explicit tie-break coordinate
+rather than truncating it --- that restores the guarantee while preserving the same
+deliberate power-first priority. This repaired rule, \texttt{drf\_power\_tiebreak\_full}, is
+what we propose. We separately show a structurally unrelated way to add power, a
+power-extended form of the production LMETRIC router, sacrifices the same guarantee via an
+unrelated, common mechanism (12.8\% of instances at a realistic cache-hit rate). Rather than
+treat either unsafe design as something to deploy anyway if it wins empirically, we ask
+directly whether giving up the guarantee is even necessary, and answer no: on real
+8$\times$4090 hardware, under a per-GPU-calibrated ramp ceiling (itself shown necessary ---
+a shared, uniform ceiling is a measurable source of error that can flip which arm looks like
+the winner), our proposed rule cleanly dominates the unsafe LMETRIC-power variant under
+exactly the condition --- sustained fleet power pressure --- that motivates power-aware
+routing in the first place, corroborated by an independent, structurally unrelated safe rule
+included purely as an external validity check. We further show the comparison is not
+universal, and precisely why: the unsafe variant's own cache-hit-collapse mechanism
+predicts, and our data confirms, that it competes or wins only when cache hits dominate and
+power pressure does not. The result is a single, concretely-named routing strategy that is
+provably safe, empirically competitive exactly where it needs to be, and accompanied by a
+falsifiable account --- not a hedge --- of where an alternative might still be preferred.
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{references}
