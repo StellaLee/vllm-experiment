@@ -169,6 +169,17 @@ already deliver one?}
     Pareto guarantee via a distinct mechanism from the DRF-family variant;
     \S\ref{sec:eval}'s hardware validation is a head-to-head between that variant and this
     paper's Pareto-safe rule.
+  \item \textbf{Power-aware ML system design (Zeus, Perseus)}~\cite{you2023zeus,
+    chung2024perseus} --- Zeus tunes per-job GPU frequency/power-limit configuration to
+    navigate the energy/performance tradeoff for recurring DNN training jobs; Perseus
+    schedules computation energy across pipeline stages to remove bloat from large-model
+    training, both without hardware modification. Both act \emph{within} a single training
+    job, treating power as a knob the system itself tunes at the GPU-configuration level. This
+    paper acts at a different layer and a different timescale: routing decides which
+    already-running, already-power-configured inference replica serves each incoming request,
+    not how much power any one GPU is allowed to draw. The two layers are complementary, not
+    competing --- a fleet could run Zeus/Perseus-style per-GPU power management underneath a
+    power-aware router of the kind this paper proposes.
   \item \textbf{Power-of-Two-Choices}~\cite{mitzenmacher2001power,azar1994balanced} ---
     sampled load balancing with a proven exponential improvement in expected max load; a
     different mechanism family (randomized sampling vs.\ our full-visibility deterministic
@@ -398,10 +409,16 @@ lineage worth naming: a continuous, always-differentiable penalty added to an
 otherwise-unconstrained objective is the routing analogue of Lyapunov drift-plus-penalty
 scheduling~\cite{neely2010stochastic} --- trade off instantaneous cost against a soft,
 ever-present penalty on the hazardous quantity, rather than enforcing a hard constraint on
-it. That lineage is precisely what makes Claim~\ref{claim:lmetric-power} informative: a soft
-penalty provably cannot substitute for the hard, per-decision Pareto constraint
-Lemma~\ref{lem:sorted-nondominated} and its Corollary enforce, no matter how principled its
-continuous-optimization motivation.
+it. It is also the path of least engineering resistance for anyone already running LMETRIC in
+production: no new normalization scheme, no tie-break ordering to design, no interaction with
+a DRF-style dominant-share computation to reason about --- just one multiplicative factor
+appended to a score the system is already computing. We check this specific variant, rather
+than some other power-extension, precisely because it is the one an engineer would reach for
+first, not a foil constructed to fail. That lineage is precisely what makes
+Claim~\ref{claim:lmetric-power} informative: a soft penalty provably cannot substitute for the
+hard, per-decision Pareto constraint Lemma~\ref{lem:sorted-nondominated} and its Corollary
+enforce, no matter how principled its continuous-optimization motivation, nor how little
+engineering effort it costs to add.
 
 \begin{claim}
 \label{claim:lmetric-power}
@@ -677,7 +694,11 @@ capture; we report it honestly as an open boundary rather than force it into the
 arm compared so far uses some signal --- DRF-family or LMETRIC-family. We also ran vLLM's own
 shipped default, $\mathit{round\_robin}$, blind to load, cache state, and power alike, under
 the same per-GPU-calibrated conditions, 3 replicated trials each (research log, Update
-2026-09-04 continued).
+2026-09-04 continued). We do not expect $\mathit{round\_robin}$ to be uniformly dominated: a
+rule with zero signal also has zero opportunity to concentrate load onto an already-stressed
+replica, so its risk profile is qualitatively different from a scored rule's, not simply
+worse. The result below confirms exactly that shape: $\mathit{round\_robin}$ is beaten
+outright in one condition and incomparable --- not dominated --- in the other four.
 
 \begin{table}[t]
   \caption{$\mathit{round\_robin}$'s dominance status vs.\ the 4 scored arms, per condition.}

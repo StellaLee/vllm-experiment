@@ -26,7 +26,13 @@ for the full research log, including conditions outside this paper's current sco
 Sections 4-5 below are drafted from verified results (every lemma/claim is checked against
 brute-force search in addition to a closed-form proof; the experimental numbers are real,
 replicated hardware data, all under the corrected per-GPU ramp-ceiling calibration).
-Sections 1, 2, 6, 7 are structural drafts pending a final consistency pass.*
+**Update (2026-09-06):** Sections 1, 2, 6, 7 reviewed and finalized (no remaining
+placeholders); §2 gained a related-work item distinguishing this paper's routing-layer
+mechanism from within-job GPU power/energy tuning systems (Zeus, Perseus); §4.2.2 gained a
+sentence motivating `lmetric_power` as the natural, minimal-effort power-extension an
+engineer would reach for, not a constructed foil; §5's round_robin discussion now states
+up front why a mixed dominated/incomparable result is the expected shape, not a surprise to
+reconcile after the fact.*
 
 ---
 
@@ -127,27 +133,37 @@ guarantee to get a power-aware win in practice, or does the safe rule already de
   natural power-extended form of this exact score and shows it sacrifices the Pareto
   guarantee via a distinct mechanism from the DRF-family variant in §4.2.1; §5's hardware
   validation is a head-to-head between that variant and this paper's Pareto-safe rule.
-- **Power-of-Two-Choices** [3, 4] — sampled load balancing with a proven exponential
+- **Power-aware ML system design (Zeus, Perseus)** [3, 4] — Zeus tunes per-job GPU
+  frequency/power-limit configuration to navigate the energy/performance tradeoff for
+  recurring DNN training jobs; Perseus schedules computation energy across pipeline stages to
+  remove bloat from large-model training, both without hardware modification. Both act
+  *within* a single training job, treating power as a knob the system itself tunes at the
+  GPU-configuration level. This paper acts at a different layer and a different timescale:
+  routing decides which already-running, already-power-configured inference replica serves
+  each incoming request, not how much power any one GPU is allowed to draw. The two layers
+  are complementary, not competing — a fleet could run Zeus/Perseus-style per-GPU power
+  management underneath a power-aware router of the kind this paper proposes.
+- **Power-of-Two-Choices** [5, 6] — sampled load balancing with a proven exponential
   improvement in expected max load; a different mechanism family (randomized sampling vs.
   our full-visibility deterministic rule), noted for completeness.
-- **Power capping as an alternative mechanism** [5] — a natural objection to a routing-layer
+- **Power capping as an alternative mechanism** [7] — a natural objection to a routing-layer
   intervention is: why not simply power-cap each GPU directly? Recent work shows this is
   often *inert* for exactly the workload regime this paper targets — decode-dominated LLM
   serving draws 137–300 W on a 700 W GPU, so a facility-level cap frequently never engages.
   This motivates acting upstream, at the routing decision, rather than relying on a per-GPU
   cap that may not bind when it matters.
-- **Grid-integrated AI infrastructure** [6] — broader strategies for aligning AI workload
+- **Grid-integrated AI infrastructure** [8] — broader strategies for aligning AI workload
   management with grid operating conditions, at the facility/life-cycle level. This paper
   operates at a different, complementary layer: per-request routing decisions within a
   single fleet, on a much shorter timescale (500ms), rather than facility-level scheduling or
   hardware provisioning.
-- **Online optimization with switching costs** [7] — a related framing where an action's cost
+- **Online optimization with switching costs** [9] — a related framing where an action's cost
   of *change*, not just its instantaneous cost, is explicitly penalized; `Share_power`'s
   ramp-rate term is conceptually a switching-cost signal. We do not adopt that literature's
   regret/competitive-ratio analysis; Lemma 1's guarantee is a per-decision
   egalitarian-welfare property, not a trajectory-level competitive bound, a distinction made
   explicit in §3.
-- **Rate limiting in feedback control** [8] — `ramp_ceiling` is, in the control-theoretic
+- **Rate limiting in feedback control** [10] — `ramp_ceiling` is, in the control-theoretic
   sense, a slew-rate bound: `Share_power` normalizes the plant's (the GPU's) rate of change
   against an actuation limit, the same object a rate limiter or anti-windup compensator
   enforces in a classical feedback loop. We do not build a controller in this sense — routing
@@ -297,11 +313,17 @@ penalty, `(1 + Share_power)`. Restated in this paper's normalized shares (holdin
 is `lmetric_power(c) = Share_compute(c) · Share_load(c) · (1 + Share_power(c))`, routing to
 the minimum. This design has a real theoretical lineage worth naming: a continuous,
 always-differentiable penalty added to an otherwise-unconstrained objective is the routing
-analogue of Lyapunov drift-plus-penalty scheduling [9] — trade off instantaneous cost against
+analogue of Lyapunov drift-plus-penalty scheduling [11] — trade off instantaneous cost against
 a soft, ever-present penalty on the hazardous quantity, rather than enforcing a hard
-constraint on it. That lineage is precisely what makes Claim 2 informative: a soft penalty
-provably cannot substitute for the hard, per-decision Pareto constraint Lemma 1 and its
-Corollary enforce, no matter how principled its continuous-optimization motivation.
+constraint on it. It is also the path of least engineering resistance for anyone already
+running LMETRIC in production: no new normalization scheme, no tie-break ordering to design,
+no interaction with a DRF-style dominant-share computation to reason about — just one
+multiplicative factor appended to a score the system is already computing. We check this
+specific variant, rather than some other power-extension, precisely because it is the one an
+engineer would reach for first, not a foil constructed to fail. That lineage is precisely what
+makes Claim 2 informative: a soft penalty provably cannot substitute for the hard,
+per-decision Pareto constraint Lemma 1 and its Corollary enforce, no matter how principled its
+continuous-optimization motivation, nor how little engineering effort it costs to add.
 
 **Claim 2.** `lmetric_power` can select a Pareto-dominated candidate, via a different
 mechanism than Claim 1: any candidate with `Share_compute = 0` (a full prefix-cache hit — no
@@ -532,7 +554,12 @@ boundary rather than force it into the pattern.
 **Does any routing signal beat none? `round_robin` as the true floor.** Every arm compared so
 far uses some signal — DRF-family or LMETRIC-family. We also ran vLLM's own shipped default,
 `round_robin`, blind to load, cache state, and power alike, under the same per-GPU-calibrated
-conditions, 3 replicated trials each (research log, Update 2026-09-04 continued).
+conditions, 3 replicated trials each (research log, Update 2026-09-04 continued). We do not
+expect `round_robin` to be uniformly dominated: a rule with zero signal also has zero
+opportunity to concentrate load onto an already-stressed replica, so its risk profile is
+qualitatively different from a scored rule's, not simply worse. The result below confirms
+exactly that shape: `round_robin` is beaten outright in one condition and incomparable — not
+dominated — in the other four.
 
 | condition | `round_robin`'s status vs. the 4 scored arms |
 |---|---|
@@ -633,23 +660,29 @@ alternative might still be preferred.
    "LMetric: Simple is Better — Multiplication May Be All You Need for LLM Request
    Scheduling." *Proceedings of the 20th USENIX Symposium on Operating Systems Design and
    Implementation (OSDI '26)*, 2026. arXiv:2603.15202.
-3. M. Mitzenmacher. "The Power of Two Choices in Randomized Load Balancing." *IEEE
+3. J. You, J.-W. Chung, and M. Chowdhury. "Zeus: Understanding and Optimizing GPU Energy
+   Consumption of DNN Training." *Proceedings of the 20th USENIX Symposium on Networked
+   Systems Design and Implementation (NSDI '23)*, 2023.
+4. J.-W. Chung, Y. Gu, I. Jang, L. Meng, N. Bansal, and M. Chowdhury. "Reducing Energy Bloat
+   in Large Model Training." *Proceedings of the 30th ACM Symposium on Operating Systems
+   Principles (SOSP '24)*, 2024. arXiv:2312.06902.
+5. M. Mitzenmacher. "The Power of Two Choices in Randomized Load Balancing." *IEEE
    Transactions on Parallel and Distributed Systems*, 12(10):1094-1104, 2001. (Originally
    presented as part of the author's 1996 PhD thesis, UC Berkeley.)
-4. Y. Azar, A. Z. Broder, A. M. Karlin, and E. Upfal. "Balanced Allocations." *Proceedings of
+6. Y. Azar, A. Z. Broder, A. M. Karlin, and E. Upfal. "Balanced Allocations." *Proceedings of
    the 26th Annual ACM Symposium on Theory of Computing (STOC '94)*, 1994. (The original
    static balls-into-bins result underlying the power-of-two-choices line of work cited
    above.)
-5. B. Ma, A. Afzal, J. Eitzinger, and G. Wellein. "The Illusion of Power Capping in LLM
+7. B. Ma, A. Afzal, J. Eitzinger, and G. Wellein. "The Illusion of Power Capping in LLM
    Decode: A Phase-Aware Energy Characterisation Across Attention Architectures." arXiv
    preprint arXiv:2605.11999, 2026.
-6. A. A. Chien, U. Gupta, S. Ren, A. Sriraman, and B. Tomlinson. "Strategies and Design for
+8. A. A. Chien, U. Gupta, S. Ren, A. Sriraman, and B. Tomlinson. "Strategies and Design for
    Increasing AI Sustainability." *Nature Reviews Clean Technology*, 2026.
    doi:10.1038/s44359-026-00195-w.
-7. P. Li, Y. Han, A. Wierman, and S. Ren. "Fairness-Regularized Online Optimization with
+9. P. Li, Y. Han, A. Wierman, and S. Ren. "Fairness-Regularized Online Optimization with
    Switching Costs." *Advances in Neural Information Processing Systems (NeurIPS '25)*, 2025.
    arXiv:2512.11131.
-8. K. J. Åström and R. M. Murray. *Feedback Systems: An Introduction for Scientists and
-   Engineers.* Princeton University Press, 2008.
-9. M. J. Neely. *Stochastic Network Optimization with Application to Communication and
-   Queueing Systems.* Synthesis Lectures on Communication Networks, Morgan & Claypool, 2010.
+10. K. J. Åström and R. M. Murray. *Feedback Systems: An Introduction for Scientists and
+    Engineers.* Princeton University Press, 2008.
+11. M. J. Neely. *Stochastic Network Optimization with Application to Communication and
+    Queueing Systems.* Synthesis Lectures on Communication Networks, Morgan & Claypool, 2010.
