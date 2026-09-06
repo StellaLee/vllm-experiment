@@ -460,8 +460,12 @@ sequences, while the naive ceiling diverges by 391,772.8 W/s
 
 ## 5. Experimental Validation
 
-**Setup.** 8×4090 server (single chassis), 7B model (Qwen2.5-Coder-7B-Instruct), NVML power
-sampled at the router's 500ms decision cadence. `Share_power`'s ceiling `κ` is calibrated
+**Setup.** 8×4090 server (single chassis), 7B model (Qwen2.5-Coder-7B-Instruct). The router's
+own live power reads (used to compute `Share_power` at routing time) poll NVML every 500ms;
+the ground-truth power trace this section's numbers are computed from is logged independently,
+by a separate sidecar process, at a 50ms sampling interval — the two serve different purposes
+(a live, cheap-enough-for-every-decision signal vs. a high-resolution trace for offline ramp/
+peak analysis) and should not be conflated. `Share_power`'s ceiling `κ` is calibrated
 *per replica*, not shared as one constant: an earlier draft of this validation used one
 hand-calibrated 450 W/s ceiling for all six GPUs, until a dedicated calibration check (24
 concurrent prefill bursts, isolated per GPU) found the ceiling that actually applies varies
