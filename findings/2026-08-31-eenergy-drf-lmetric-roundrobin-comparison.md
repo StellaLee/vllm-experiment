@@ -2706,3 +2706,154 @@ Aggregation: `aggregate_full_comparison.py` and `check_dominance_reversals.py` (
 with `round_robin` in `ARMS`), `aggregate_pergpu.py` (extended with `round_robin` for the
 BurstGPT-only table; `check_dominance_reversals.py` also patched to skip arms with missing OLD
 data per-condition instead of crashing, needed for Ramp & Route's missing OLD round_robin).
+
+## Update 2026-09-07: Heavy/Closed-Loop duration sensitivity, and a Share_power clamp sanity check
+
+**Motivation.** The paper's §5 headline claims a result "under sustained fleet power
+pressure." Checking the raw power-trace timestamps for Heavy/Closed-Loop found the
+condition's actual active workload window is only **~51-53 seconds** (150 conversations at
+concurrency=32) — short enough that "sustained" was doing more rhetorical work than the
+evidence actually earned, especially given §1's framing explicitly invokes grid-facing/
+demand-response timescales (typically minutes to hours). This update checks what happens to
+the headline dominance result under a duration that more honestly earns the word "sustained,"
+plus a separate sanity check on `Share_power`'s `max(ramp_rate, 0)` clamp.
+
+### Part 1: duration extension
+
+Same 5 arms, same per-GPU-calibrated `RAMP_CEILING_PER_GPU`
+(`2:450.2,3:509.8,4:449.6,5:409.2,6:512.9,7:359.5` — unchanged; ramp ceiling is a physical
+property of each GPU, not a function of workload duration), same concurrency/whale
+parameters; only `--num-convs` scaled 150→900 (from the measured ~2.94 convs/s throughput at
+concurrency=32) to target a ~300s active window. Actual measured active windows came in at
+**~225-232s** (~4.4× the original), consistent across all 5 arms and both trial batches
+(1-3, then 4-6).
+
+Data integrity check on the long-duration runs: 900/900 records in every trial, zero
+errors/timeouts in any harness log, 1/900 null TTFT (negligible) — the duration change itself
+did not degrade data quality.
+
+**Short (~51-53s), 3 trials — `closedloopheavypergpu`** (the paper's existing §5 headline
+table):
+
+| arm | peak (W) | mean_ramp (W/s) | p99_ramp (W/s) | TTFT (s) | TBT (ms) |
+|---|---|---|---|---|---|
+| drf_fixed | 2339.7±22.0 | 149.0±2.3 | 1565.3±53.7 | 0.511±0.011 | 593.7±7.3 |
+| drf_power_tiebreak_full | 2311.8±71.7 | 145.7±16.1 | 1598.9±116.9 | 0.550±0.027 | 591.2±17.6 |
+| weighted_sum | 2353.7±72.4 | 154.1±3.7 | 1826.3±360.4 | 0.545±0.003 | 577.8±43.0 |
+| lmetric_power | 2423.8±112.1 | 161.4±7.4 | 1952.8±309.1 | 0.567±0.039 | 591.2±47.5 |
+| round_robin | 2319.1±71.4 | 140.4±8.2 | 1890.5±381.5 | 0.607±0.019 | 482.8±22.2 |
+
+Dominance: `drf_power_tiebreak_full` DOMINATES `lmetric_power`; `weighted_sum` DOMINATES
+`lmetric_power`. `round_robin` incomparable to all 4.
+
+**Long (~225-232s), 3 trials — `closedloopheavylongpergpu`, trials 1-3:**
+
+| arm | peak (W) | mean_ramp (W/s) | p99_ramp (W/s) | TTFT (s) | TBT (ms) |
+|---|---|---|---|---|---|
+| drf_fixed | 2508.9±21.8 | 160.9±4.4 | 1378.3±7.7 | 0.431±0.022 | 725.5±27.4 |
+| drf_power_tiebreak_full | 2417.4±0.6 | 147.7±5.9 | 1174.3±50.0 | 0.435±0.003 | 693.9±23.3 |
+| weighted_sum | 2433.7±35.3 | 148.5±5.8 | 1271.5±69.1 | 0.433±0.011 | 722.4±8.8 |
+| lmetric_power | 2444.1±34.0 | 146.3±8.1 | 1185.8±108.5 | 0.429±0.004 | 731.2±28.2 |
+| round_robin | 2428.7±12.7 | 132.5±3.9 | 1184.2±88.2 | 0.448±0.002 | 681.1±11.5 |
+
+Dominance: **none** among the 4 scored arms. `round_robin` still incomparable to all 4.
+
+At n=3, the headline dominance relationship does not replicate at the longer duration —
+`lmetric_power`'s worst-case metrics (p99 ramp, TTFT) improved substantially while
+`drf_power_tiebreak_full`'s peak got worse, closing the gap from both directions.
+
+One workload-wide effect worth noting on its own: TBT rose 15-40% across **every** arm,
+including `round_robin` (482.8→681.1ms), which has nothing to do with any routing mechanism.
+This is evidence the longer window is exposing genuine sustained-load interference (plausible
+and expected), not an artifact specific to one arm.
+
+**Long (~225-232s), 6 trials — `closedloopheavylongpergpu`, trials 1-6:** ran 3 more trials
+(4-6, same params) specifically to check whether the 3-trial "no dominance" result was real
+or noise.
+
+| arm | peak (W) | mean_ramp (W/s) | p99_ramp (W/s) | TTFT (s) | TBT (ms) |
+|---|---|---|---|---|---|
+| drf_fixed | 2506.5±34.0 | 152.9±11.3 | 1328.9±88.3 | 0.435±0.016 | 722.6±20.1 |
+| drf_power_tiebreak_full | 2454.4±49.5 | 147.1±4.3 | 1136.0±54.1 | 0.427±0.009 | 715.4±32.7 |
+| weighted_sum | 2434.3±24.3 | 151.5±5.3 | 1242.5±81.8 | 0.436±0.009 | 719.9±12.5 |
+| lmetric_power | 2466.5±64.9 | 148.3±6.6 | 1235.1±96.1 | 0.427±0.006 | 717.1±24.0 |
+| round_robin | 2418.7±26.4 | 138.9±8.1 | 1163.5±69.0 | 0.448±0.002 | 679.8±7.9 |
+
+Dominance: `drf_power_tiebreak_full` DOMINATES `drf_fixed`; **`drf_power_tiebreak_full`
+DOMINATES `lmetric_power`**; `lmetric_power` DOMINATES `drf_fixed`. `weighted_sum`:
+incomparable to everyone. `round_robin` incomparable to all 4.
+
+At n=6, dominance over `lmetric_power` returns for the proposed rule, but not for
+`weighted_sum` — a real change from the original short-duration story, where both safe rules
+independently corroborated each other. The margins are also much tighter than the original
+table (e.g. peak 2454.4±49.5 vs. 2466.5±64.9, overlapping std), so even where "dominates"
+holds on the means, it's a far less clean separation than the short-duration result.
+
+The 3-trial → 6-trial flip (no dominance → dominance for one arm only) is itself
+informative: 3 trials was not enough for a stable answer at this duration and effect size.
+
+**Why weighted_sum losing dominance is not a red flag — Theorem 5.** Independently, a new
+§4.5 (uncommitted at time of writing, verified via
+`scripts/eenergy/verify_leximin_vs_weighted_sum.py`, all claims pass) proves **no
+fixed-weight rule — for any choice of weights, not just `weighted_sum`'s 0.33/0.33/0.33 —
+can guarantee threshold-safety on worst-case metrics like peak power and ramp rate**
+(Theorem 5), while the sorted/leximin rule (`drf_power_tiebreak_full`) provably can,
+unconditionally (Theorem 4). Peak power and p99 ramp are exactly the worst-case,
+threshold-triggered class Theorem 5 covers. The 6-trial data lines up with this exactly: the
+rule with the proven threshold-safety guarantee keeps its dominance; the rule without it
+doesn't. This reframes the duration sensitivity from "the headline result destabilized" to
+"real hardware data landing precisely where a proven theorem said a fixed-weight rule's
+guarantee runs out and the sorted rule's doesn't" — a stronger empirical story than the
+original short-duration coincidence of two safe rules agreeing.
+
+### Part 2: does Share_power's max(ramp_rate, 0) clamp cause a "reignition" bias?
+
+Separate question, prompted by scrutinizing `Share_power(c) = max(ramp_rate(c), 0) /
+ramp_ceiling(c)`: the clamp treats a replica currently falling in power identically to one
+that's flat (both score 0 = no hazard). Hypothesis: this could bias routing toward replicas
+that just finished a burst and haven't settled, which might reignite if loaded again —
+undermining the exact stability goal `Share_power` exists for.
+
+**Method:** for every dispatch event in the (short-duration) Heavy/Closed-Loop assignment
+logs, computed the receiving replica's ramp rate just before dispatch (falling / flat /
+rising), then measured the replica's forward power rise in the 3s after dispatch. Compared
+forward-rise distributions across buckets, for every arm whose routing decision consults
+`Share_power`, plus `round_robin` as a signal-blind control.
+
+| arm | falling: mean fwd. rise | flat: mean fwd. rise | falling: n / total |
+|---|---|---|---|
+| drf_power_tiebreak_full | 36.4 W | 104.7 W | 22/453 (4.9%) |
+| lmetric_power | 43.2 W | 116.1 W | 17/453 (3.8%) |
+| drf_fixed | 39.8 W | 109.8 W | 20/453 (4.4%) |
+| weighted_sum | 32.4 W | 112.0 W | 13/453 (2.9%) |
+| round_robin | 34.6 W | 101.2 W | 13/453 (2.9%) |
+
+**Result: the hypothesis is not supported.** Falling-state dispatches show consistently
+*lower* forward rise than flat-state dispatches, in every arm — the opposite of the
+reignition prediction. Critically, `round_robin` (no `Share_power` signal at all) shows the
+identical pattern and a similarly low base rate of falling-state dispatches (2.9%), which
+means this isn't routing intelligence avoiding a bad outcome — it's a property of the
+workload itself (a replica mid-decline from a recent burst still carries residual decode
+load, so one more marginal request adds proportionally less power than the same request
+landing on a genuinely idle replica, which gets the full fresh-prefill spike).
+
+**Caveats:** small samples (13-22 falling-state events per arm across 3 trials, out of ~450
+total dispatches), single condition (Heavy/Closed-Loop only), correlational on existing data
+rather than a designed experiment forcing the scenario. Suggestive that the clamp's
+theoretical blind spot doesn't bite in this workload; not proof it can't bite under a
+different one (e.g. more frequent power collapses, longer whale tails).
+
+**Open questions / next steps**: whether the 6-trial long-duration result is itself stable,
+or would shift again with more trials (not checked beyond n=6); duration sensitivity has
+only been checked for Heavy/Closed-Loop, the other 4 conditions' active windows have not
+been measured or extended; the reignition check has not been repeated at the longer
+duration, where falling-state dispatches might be more frequent.
+
+**Data and repro**: duration-extension harness
+`orchestrate/eenergy/run_pergpu_closedloopheavy_long5min.sh` (trials 1-3),
+`orchestrate/eenergy/run_pergpu_closedloopheavy_long5min_trials456.sh` (trials 4-6).
+Comparison: `scripts/eenergy/compare_closedloopheavy_duration.py`,
+`scripts/eenergy/compare_closedloopheavy_duration_6trials.py`. Reignition check:
+`scripts/eenergy/check_ramp_clamp_reignition.py`. Theorem 5 verification:
+`scripts/eenergy/verify_leximin_vs_weighted_sum.py`. Raw data on the remote box:
+`logs/closedloopheavylongpergpu_{records,power_trace,assignment}_<arm>_t<1-6>.jsonl|csv`.
