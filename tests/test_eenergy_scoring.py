@@ -19,7 +19,8 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       dominant_share_vector_peak_priority, pick_drf_peak_power_tiebreak,
                       pick_drf_power_tiebreak_p2c, pick_compute_only,
                       dominant_share_vector_power_priority_full, pick_drf_power_tiebreak_full,
-                      weighted_sum_score, pick_weighted_sum)
+                      weighted_sum_score, pick_weighted_sum,
+                      lmetric_power_pareto_score, pick_lmetric_power_pareto)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -372,6 +373,45 @@ def test_lmetric_power_convex_prefers_lower_power_replica_when_raw_lmetric_score
     r0 = _cand("r0", new_tokens=10, in_flight_after=10, ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0)  # power=0.8
     r1 = _cand("r1", new_tokens=10, in_flight_after=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)  # power=0.0
     assert pick_lmetric_power_convex([r0, r1]) == "r1"
+
+
+def test_lmetric_power_pareto_score_is_product_of_one_plus_each_share():
+    c = _cand("r0", new_tokens=10, in_flight_after=5, token_budget=100, max_num_seqs=10,
+              ramp_rate_w_per_s=5.0, ramp_ceiling_w_per_s=10.0)
+    # share_compute=0.1, share_load=0.5, share_power=0.5
+    # score = 1.1 * 1.5 * 1.5 = 2.475
+    assert lmetric_power_pareto_score(c) == pytest.approx(2.475)
+
+
+def test_lmetric_power_pareto_distinguishes_two_cache_hits_that_plain_lmetric_power_ties():
+    """The exact fix over lmetric_power_score: two candidates both with new_tokens=0 (full
+    cache hit) score IDENTICALLY under lmetric_power_score (0 * anything = 0) regardless of
+    load/power, so it can pick the more-loaded/more-pressured one arbitrarily -- this is
+    Claim 2's Pareto-domination counterexample. lmetric_power_pareto_score can't tie here:
+    (1+0) is never zero, so load/power still differentiate the two candidates."""
+    r0 = _cand("r0", new_tokens=0, in_flight_after=9, max_num_seqs=10,
+               ramp_rate_w_per_s=9.0, ramp_ceiling_w_per_s=10.0)  # cache hit, heavily loaded+pressured
+    r1 = _cand("r1", new_tokens=0, in_flight_after=1, max_num_seqs=10,
+               ramp_rate_w_per_s=1.0, ramp_ceiling_w_per_s=10.0)  # cache hit, lightly loaded+pressured
+    assert lmetric_power_score(r0) == lmetric_power_score(r1) == 0.0  # plain lmetric_power ties
+    assert lmetric_power_pareto_score(r0) > lmetric_power_pareto_score(r1)  # pareto variant doesn't
+    assert pick_lmetric_power_pareto([r0, r1]) == "r1"
+
+
+def test_lmetric_power_pareto_matches_lmetric_power_ranking_when_no_cache_hits():
+    """Away from the zero-collapse case (share_compute > 0 for every candidate), both
+    formulas should agree on which replica is best, since neither degenerates."""
+    cands = [
+        _cand("r0", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r2", new_tokens=50, in_flight_after=50, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+    ]
+    assert pick_lmetric_power_pareto(cands) == pick_lmetric_power(cands) == "r1"
+
+
+def test_lmetric_power_pareto_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_lmetric_power_pareto([])
 
 
 def test_lmetric_power_convex_raises_on_empty_candidates():

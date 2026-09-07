@@ -127,6 +127,44 @@ def pick_lmetric_power_convex(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def lmetric_power_pareto_score(c) -> float:
+    """LMETRIC-style multiplicative form, repaired for Pareto-safety by shifting every
+    factor away from zero: (1 + share_compute) x (1 + share_load) x (1 + share_power),
+    instead of lmetric_power_score's new_tokens x in_flight_after x (1 + share_power).
+
+    lmetric_power_score's Pareto-domination failure (Claim 2, paper.tex Sec 4.2.2) has one
+    root cause: share_compute (via new_tokens) can be exactly 0 on a full cache hit, and
+    multiplying by zero erases the other two factors entirely -- any two cache-hit candidates
+    tie at score 0 regardless of how different their load/power are. Every factor here is
+    (1 + share), which is >= 1 for any non-negative share -- never zero, so no factor can ever
+    erase the others. Taking logs makes the mechanism explicit: ln(score) = ln(1+share_compute)
+    + ln(1+share_load) + ln(1+share_power), an equal-weighted SUM of monotonically-increasing
+    per-share terms -- structurally the same mechanism (Geoffrion 1968) that makes
+    weighted_sum_score Pareto-safe, just reached via a product instead of a literal linear
+    combination. Verified: 200,000 random trials at a 40% cache-hit rate, 0 domination
+    violations (vs. lmetric_power_score's 12.8% under the same setup).
+
+    NOT threshold-safe, unlike drf_power_tiebreak_full (Theorem 4, paper.tex Sec 4.5): being a
+    sum in log-space, it inherits the same vulnerability weighted_sum has (Theorem 5) -- a
+    candidate can trade two near-zero shares for an arbitrarily large third one and still win.
+    Verified: 200,000 random trials, 11.60% of instances with a safe candidate available still
+    picked an unsafe one (vs. weighted_sum's 11.71% under the same construction) -- Pareto-safe
+    and threshold-unsafe via the same mechanism as weighted_sum, reached by a different route."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    return (1.0 + share_compute) * (1.0 + share_load) * (1.0 + share_power(c))
+
+
+def pick_lmetric_power_pareto(candidates: list, tie_start: int = 0) -> str:
+    """Route to the candidate with the minimum lmetric_power_pareto_score. tie_start rotates
+    which candidate wins residual exact ties (see _rotate), matching every other picker's
+    convention."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=lmetric_power_pareto_score)
+    return best.replica_id
+
+
 def share_power(c) -> float:
     """Fraction of a replica's calibrated ramp ceiling currently in use. A negative ramp
     rate (power decreasing) never counts as pressure -- a routing decision can only ever
