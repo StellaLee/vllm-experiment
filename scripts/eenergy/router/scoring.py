@@ -419,6 +419,65 @@ def pick_drf_power_tiebreak_full(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def coincidence_ceiling_factor(candidates: list, elevated_frac: float = 0.5, beta: float = 1.0) -> float:
+    """Fleet-wide multiplier (<= 1) on every candidate's ramp ceiling, shared identically
+    across the whole candidate set at this decision -- shrinks as more replicas are
+    CURRENTLY, simultaneously elevated (each candidate's own share_power > elevated_frac,
+    against its own static ceiling), directly targeting fleet-aggregate coincident-ramp risk
+    rather than the per-replica-only signal every other rule in this project reads. A single
+    elevated replica (n=0 or 1) is not a coincidence and leaves the ceiling unchanged
+    (factor=1.0); each additional simultaneously-elevated replica beyond the first tightens
+    every candidate's effective ceiling by the same shared factor.
+
+    This is one scalar, shared identically by every candidate at decision time, computed
+    however is useful -- exactly the object the live-ceiling corollary (Sec 4.3) already
+    covers ("Lemma 1 holds unchanged for any kappa(t) > 0 that is a single scalar shared
+    identically by every candidate... regardless of how kappa(t) is computed"), so
+    Pareto-non-domination and threshold-safety carry over by the same argument, not a new
+    proof: nothing about that corollary's reasoning depends on kappa(t) being static,
+    windowed, or (as here) reactive to the current round's coincidence count."""
+    n_elevated = sum(1 for c in candidates if share_power(c) > elevated_frac)
+    return 1.0 / (1.0 + beta * max(0, n_elevated - 1))
+
+
+def dominant_share_vector_power_priority_full_coincidence_ceiling(c, factor: float) -> tuple:
+    """Same tie-break vector as dominant_share_vector_power_priority_full (D, share_power,
+    share_load, share_compute), but share_power (and therefore D, its max) is computed
+    against c's static ramp ceiling scaled by the shared coincidence factor (see
+    coincidence_ceiling_factor) instead of the raw, always-fixed ceiling. Scaling every
+    candidate's ceiling by the same factor doesn't change their relative ORDER by
+    share_power alone -- what it changes is share_power's MAGNITUDE relative to
+    share_compute/share_load, so during a genuine multi-replica coincidence event, power
+    pressure is more likely to become (or stay) the dominant, decision-driving share for
+    every candidate, fleet-wide, not just for whichever replica happens to be individually
+    hottest."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    effective_ceiling = c.ramp_ceiling_w_per_s * factor
+    sp = max(c.ramp_rate_w_per_s, 0.0) / effective_ceiling
+    dominant = max(share_compute, share_load, sp)
+    return (dominant, sp, share_load, share_compute)
+
+
+def pick_drf_power_tiebreak_full_coincidence_ceiling(candidates: list, tie_start: int = 0) -> str:
+    """drf_power_tiebreak_full, but Share_power is computed against a ceiling that shrinks
+    with the CURRENT round's fleet-wide coincidence count (coincidence_ceiling_factor)
+    instead of each candidate's raw static ceiling -- directly targets the actual evaluation
+    metric this project reports (fleet-AGGREGATE peak/ramp), which every previously-tested
+    rule in this project does not: they all read only a candidate's own local ramp state, so
+    two replicas could each look individually safe while ramping together, which is exactly
+    what the fleet-aggregate metric penalizes and no per-candidate-only rule can see coming.
+    Same primary criterion (route to the lowest dominant share) and same power-before-load
+    priority as drf_power_tiebreak_full; only the ceiling feeding Share_power changes."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    factor = coincidence_ceiling_factor(candidates)
+    rotated = _rotate(candidates, tie_start)
+    best = min(rotated,
+               key=lambda c: dominant_share_vector_power_priority_full_coincidence_ceiling(c, factor))
+    return best.replica_id
+
+
 def pick_drf(candidates: list, tie_start: int = 0) -> str:
     """Condition 3 (ours). Route to the replica with the lexicographically lowest sorted
     share vector across the three independently-normalized resources -- Dominant Resource

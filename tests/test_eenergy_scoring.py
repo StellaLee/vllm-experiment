@@ -20,7 +20,10 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       pick_drf_power_tiebreak_p2c, pick_compute_only,
                       dominant_share_vector_power_priority_full, pick_drf_power_tiebreak_full,
                       weighted_sum_score, pick_weighted_sum,
-                      lmetric_power_pareto_score, pick_lmetric_power_pareto)
+                      lmetric_power_pareto_score, pick_lmetric_power_pareto,
+                      coincidence_ceiling_factor,
+                      dominant_share_vector_power_priority_full_coincidence_ceiling,
+                      pick_drf_power_tiebreak_full_coincidence_ceiling)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -412,6 +415,69 @@ def test_lmetric_power_pareto_matches_lmetric_power_ranking_when_no_cache_hits()
 def test_lmetric_power_pareto_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_lmetric_power_pareto([])
+
+
+def test_coincidence_ceiling_factor_is_one_when_zero_or_one_replica_elevated():
+    """A single elevated replica is not a coincidence -- the shared ceiling must stay
+    unchanged (factor=1.0), matching the fixed-ceiling rule's existing behavior exactly."""
+    none_elevated = [_cand("r0", ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+                      _cand("r1", ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)]
+    assert coincidence_ceiling_factor(none_elevated) == 1.0
+
+    one_elevated = [_cand("r0", ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0),
+                     _cand("r1", ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)]
+    assert coincidence_ceiling_factor(one_elevated) == 1.0
+
+
+def test_coincidence_ceiling_factor_shrinks_with_more_simultaneously_elevated_replicas():
+    two_elevated = [_cand("r0", ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0),
+                     _cand("r1", ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0),
+                     _cand("r2", ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)]
+    assert coincidence_ceiling_factor(two_elevated) == pytest.approx(0.5)
+
+    three_elevated = [_cand("r0", ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0),
+                       _cand("r1", ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0),
+                       _cand("r2", ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0)]
+    assert coincidence_ceiling_factor(three_elevated) == pytest.approx(1.0 / 3.0)
+
+
+def test_coincidence_ceiling_pick_matches_plain_full_when_no_coincidence():
+    """Away from any coincidence event (factor=1.0), this rule must be behaviorally identical
+    to drf_power_tiebreak_full -- the whole point is that it only changes behavior when a
+    genuine multi-replica coincidence is present."""
+    cands = [
+        _cand("r0", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r2", new_tokens=50, in_flight_after=50, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+    ]
+    assert pick_drf_power_tiebreak_full_coincidence_ceiling(cands) == pick_drf_power_tiebreak_full(cands) == "r1"
+
+
+def test_coincidence_ceiling_flips_the_decision_when_fleet_is_coincidentally_pressured():
+    """The core property this design targets: r0 has moderate local power pressure and low
+    compute; r1 has zero power but high compute. Without any fleet-wide coincidence,
+    drf_power_tiebreak_full prefers r0 (D=0.4 < 0.6). r2/r3 are two OTHER replicas already
+    strongly elevated (D=0.9, never competitive themselves) whose mere presence signals a
+    genuine multi-replica coincidence event -- under that signal, the coincidence-aware rule
+    shrinks every candidate's effective ceiling, making r0's own power pressure loom larger
+    (D=0.8) and flipping the pick to r1 (D=0.6), the candidate paying compute cost instead of
+    adding to an already-coincidentally-pressured fleet."""
+    r0 = _cand("r0", new_tokens=10, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=4.0, ramp_ceiling_w_per_s=10.0)   # compute=0.1, load=0.1, power=0.4
+    r1 = _cand("r1", new_tokens=60, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)   # compute=0.6, load=0.1, power=0.0
+    r2 = _cand("r2", new_tokens=90, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0)   # compute=0.9, power=0.8 (elevated)
+    r3 = _cand("r3", new_tokens=90, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0)   # compute=0.9, power=0.8 (elevated)
+
+    assert pick_drf_power_tiebreak_full([r0, r1, r2, r3]) == "r0"
+    assert pick_drf_power_tiebreak_full_coincidence_ceiling([r0, r1, r2, r3]) == "r1"
+
+
+def test_coincidence_ceiling_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_power_tiebreak_full_coincidence_ceiling([])
 
 
 def test_lmetric_power_convex_raises_on_empty_candidates():
