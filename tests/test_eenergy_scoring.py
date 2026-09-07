@@ -23,7 +23,10 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       lmetric_power_pareto_score, pick_lmetric_power_pareto,
                       coincidence_ceiling_factor,
                       dominant_share_vector_power_priority_full_coincidence_ceiling,
-                      pick_drf_power_tiebreak_full_coincidence_ceiling)
+                      pick_drf_power_tiebreak_full_coincidence_ceiling,
+                      dominant_share_no_power, dominant_share_vector_no_power,
+                      pick_drf_no_power, weighted_sum_score_no_power,
+                      pick_weighted_sum_no_power)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -478,6 +481,39 @@ def test_coincidence_ceiling_flips_the_decision_when_fleet_is_coincidentally_pre
 def test_coincidence_ceiling_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_drf_power_tiebreak_full_coincidence_ceiling([])
+
+
+def test_dominant_share_no_power_ignores_power_entirely():
+    """Two candidates identical on compute/load but wildly different on power must be
+    ranked IDENTICALLY by the power-blind rule -- power never enters the computation."""
+    low_power = _cand("r0", new_tokens=10, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)
+    high_power = _cand("r1", new_tokens=10, in_flight_after=5, ramp_rate_w_per_s=9.0, ramp_ceiling_w_per_s=10.0)
+    assert dominant_share_no_power(low_power) == dominant_share_no_power(high_power)
+    assert dominant_share_vector_no_power(low_power) == dominant_share_vector_no_power(high_power)
+
+
+def test_drf_no_power_picks_lower_compute_load_ignoring_power_pressure():
+    r0 = _cand("r0", new_tokens=90, in_flight_after=1, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)  # compute=0.9
+    r1 = _cand("r1", new_tokens=10, in_flight_after=1, ramp_rate_w_per_s=9.0, ramp_ceiling_w_per_s=10.0)  # compute=0.1, power=0.9
+    # plain drf (power-aware) would weigh r1's power pressure; drf_no_power can't see it at all
+    assert pick_drf_no_power([r0, r1]) == "r1"
+
+
+def test_drf_no_power_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_no_power([])
+
+
+def test_weighted_sum_no_power_is_half_compute_plus_half_load():
+    c = _cand("r0", new_tokens=10, in_flight_after=5, token_budget=100, max_num_seqs=10,
+              ramp_rate_w_per_s=100.0, ramp_ceiling_w_per_s=10.0)  # huge power pressure, must be ignored
+    # share_compute=0.1, share_load=0.5 -> 0.5*0.1 + 0.5*0.5 = 0.3
+    assert weighted_sum_score_no_power(c) == pytest.approx(0.3)
+
+
+def test_weighted_sum_no_power_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_weighted_sum_no_power([])
 
 
 def test_lmetric_power_convex_raises_on_empty_candidates():

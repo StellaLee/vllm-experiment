@@ -315,6 +315,57 @@ def pick_weighted_sum(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def dominant_share_no_power(c) -> float:
+    """Power-blind dominant share: max(share_compute, share_load) only -- share_power never
+    enters the computation at all, unlike dominant_share(c). Exists to answer a foundational
+    question this project had not directly tested: does adding power awareness to the
+    routing decision itself actually help the power/ramp outcomes it's meant to protect, or
+    does a plain 2-resource (compute/load) DRF rule do just as well (or better) on those same
+    metrics? weighted_sum_score_no_power and plain lmetric (already power-blind by
+    construction -- new_tokens x in_flight_after has no power term) are this rule's
+    power-blind siblings for the same comparison."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    return max(share_compute, share_load)
+
+
+def dominant_share_vector_no_power(c) -> tuple:
+    """Power-blind counterpart to dominant_share_vector(c): sorted (share_compute,
+    share_load) only, no share_power coordinate anywhere in the tuple."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    return tuple(sorted((share_compute, share_load), reverse=True))
+
+
+def pick_drf_no_power(candidates: list, tie_start: int = 0) -> str:
+    """Power-blind DRF: route to the replica with the lowest sorted (share_compute,
+    share_load) vector. Same lexicographic-tie-break structure as pick_drf, just missing the
+    third (power) resource entirely -- not power routed to a fixed weight of zero, genuinely
+    absent from the share vector."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=dominant_share_vector_no_power)
+    return best.replica_id
+
+
+def weighted_sum_score_no_power(c, w_compute: float = 0.5, w_load: float = 0.5) -> float:
+    """Power-blind counterpart to weighted_sum_score: linear combination of share_compute and
+    share_load only (equal weights by default), no share_power term anywhere in the formula."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    return w_compute * share_compute + w_load * share_load
+
+
+def pick_weighted_sum_no_power(candidates: list, tie_start: int = 0) -> str:
+    """Route to the candidate with the minimum weighted_sum_score_no_power. tie_start rotates
+    which candidate wins residual exact ties (see _rotate), matching every other picker's
+    convention."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=weighted_sum_score_no_power)
+    return best.replica_id
+
+
 def dominant_share(c) -> float:
     """Share_compute, Share_load, Share_power for one candidate, each normalized to that
     replica's own configured capacity (no cross-resource weight); returns the max, i.e. the
