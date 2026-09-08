@@ -3064,3 +3064,154 @@ Analysis: `scripts/eenergy/check_no_power_comparison.py`,
 `check_coincidence_ceiling_6conditions.py`, `check_lmetric_vs_coincidence.py`,
 `check_drf_no_power_all_conditions.py`, `check_lmetric_all_conditions.py`,
 `check_ws_lp_coincidence_ceiling.py`, `check_cachehit_lmetric_power_pareto.py`.
+
+## Update 2026-09-08 (continued): coincidence-ceiling generalizes across rule families, one mechanism investigation stays open, and a fourth empirical champion emerges — decision: do not chase it
+
+### Part 6: compute_only/load_only verified, and the old 2026-09-02 finding about compute_only does not replicate
+
+Extended `compute_only`/`load_only` to n=6 on Heavy/Closed-Loop long: the exact p99_ramp tie
+seen at n=3 (1059.7/1059.7) didn't survive — now 1096.0±55.2 vs. 1132.2±95.3 — but the core
+finding holds: both still clearly beat `drf_no_power`'s p99_ramp (1198.5), with unremarkable
+variance.
+
+Separately, re-ran `compute_only`/`load_only` fresh on Heavy/Matched (the condition of the
+original 2026-09-02 finding) to check replication. **The old claim — "compute_only has the
+worst, 16x-noisier p99_ramp" — does not replicate.** Today `compute_only` is mid-pack (4th of
+7, p99_ramp=1316.3±102.7), not worst; that title now goes to `load_only` (1509.4±64.8), which
+didn't exist as a policy in 2026-09-02 so was never in that comparison. The one part that does
+replicate: `compute_only` has the worst TTFT both times (5.345 today vs. 5.122 originally).
+That 2026-09-02 finding was single-run, 3 trials, no replication check — exactly the kind of
+result this project has repeatedly found doesn't survive re-testing.
+
+**Why compute_only's TTFT is bad specifically on Heavy/Closed-Loop-long and Heavy/Matched,
+and not on Light/Cachehit**: both conditions are `--min-turns 1 --max-turns 1` (every
+conversation a single fresh turn), giving ~0.0-0.1% cache-hit rate (mean new/raw ≈
+0.994-0.996) — almost no real `Share_compute` signal to differentiate candidates, so
+`compute_only` degenerates toward tie-rotation (confirmed: its whale-placement distribution
+on Heavy/Closed-Loop-long is nearly identical to `round_robin`'s, CV 0.135 vs 0.132), unable
+to avoid an overloaded replica. Light/Cachehit has substantial partial cache reuse (mean
+new/raw ≈ 0.69) — a real signal — and there `compute_only`'s TTFT (0.066) is completely
+unremarkable, tied with everyone. The weakness moved rather than disappeared, though: on
+Cachehit, `compute_only`'s p99_ramp becomes the worst among scored arms instead (dominated by
+both `lmetric` and `lmetric_power`) — whichever metric depends on load-awareness is where
+load-blindness costs something; which metric that is depends on which signal actually carries
+information in a given condition.
+
+### Part 7: three mechanism hypotheses for drf_no_power's worse p99_ramp, all ruled out or unconfirmed
+
+Puzzle: on Heavy/Closed-Loop long, `compute_only` and `load_only` (single-resource rules) both
+beat `drf_no_power`'s p99_ramp (their `max()` combination) — counterintuitive, since combining
+signals should naively be at least as good as either alone. Three hypotheses checked directly
+against data, in order:
+
+1. **Whale-placement evenness** (do less-even whale distributions across replicas explain the
+   gap?) — **falsified**. `drf_no_power`'s per-GPU whale-count CV (0.088) is *tighter* than
+   `round_robin`'s/`compute_only`'s (0.132/0.135), yet `drf_no_power` still has the worse
+   p99_ramp. More even spread, worse tail.
+2. **Temporal coincidence-poll frequency** (does drf_no_power produce more polls with 2+
+   replicas simultaneously over their ramp ceiling?) — **falsified**. `drf_no_power` has the
+   *lowest* coincidence-poll rate of the four (0.383% vs. round_robin's 0.528%), yet the worst
+   p99_ramp.
+3. **Dominant-resource switching frequency** (does the effective dominant resource — compute
+   vs. load — for the chosen candidate flip between consecutive decisions more than random
+   chance predicts?) — **not confirmed**. Added direct instrumentation
+   (`Router.last_share_compute`/`last_share_load`, two new assignment-log columns) and
+   re-ran `drf_no_power` to measure this directly: observed switch rate (26.5%) matches the
+   i.i.d.-random-chance null (27.4%, given the observed base rate) almost exactly — ratio
+   0.969, no evidence of elevated flip-flopping.
+
+That third check surfaced a clean, unrelated fact instead: only 16.4% of `drf_no_power`'s
+decisions are compute-dominant, near-exactly matching the workload's whale-frac (15%) — for a
+non-whale request `Share_compute` (tiny, new_tokens/16384) is almost always smaller than
+`Share_load`; for a whale (~13.6-15.5k tokens against the same budget) it almost always
+exceeds it. So `drf_no_power` isn't reactively oscillating — it's cleanly, deterministically
+switching between "act like `load_only`" (83.6% of the time) and "act like `compute_only`"
+(16.4%, exactly on whale arrival), driven by the external whale process, not by any internal
+instability.
+
+What *is* different: `drf_no_power` has the **lowest absolute max ramp** of all four arms
+(6987.3) yet the **worst p99** (1198.5) — a "fatter belly, tamer peak" tail shape, the opposite
+of what more/bigger spikes would produce. The real mechanism remains open after three checked
+and ruled-out/unconfirmed hypotheses — a genuine unresolved finding, not a gap in effort.
+
+### Part 8: coincidence-ceiling generalized to all three rule families, across all 6 conditions
+
+Extended `weighted_sum_coincidence_ceiling` and `lmetric_power_coincidence_ceiling` (validated
+previously on only Heavy/Closed-Loop long) to the same 6 conditions as the DRF-family
+`coincidence_ceiling`: BurstGPT, Heavy/Matched, Light/Cachehit, Heavy/Closed-Loop (short),
+Ramp & Route, WildChat (3 trials each, 36 runs). Full numeric comparison (all three
+coincidence-ceiling variants + their plain counterparts + `round_robin`) is now available for
+every condition — see `scripts/eenergy/check_all_coincidence_ceiling_variants_6conditions.py`.
+
+**Dominance tally (count of times each arm appears as the dominator, across all 6
+conditions):**
+
+| arm | dominance wins |
+|---|---|
+| **lmetric_power_coincidence_ceiling** | **9** |
+| lmetric_power | 3 |
+| drf_power_tiebreak_full | 2 |
+| coincidence_ceiling (DRF-family) | 2 |
+| weighted_sum | 2 |
+| weighted_sum_coincidence_ceiling | 1 |
+| drf_fixed | 1 |
+
+`lmetric_power_coincidence_ceiling` is the single strongest empirical performer of everything
+tested this entire investigation — more than triple the next-highest count, and not just
+against weak arms: on WildChat it directly dominates the DRF-family's own
+`coincidence_ceiling`, and on BurstGPT/Cachehit/WildChat it dominates
+`weighted_sum_coincidence_ceiling` outright.
+
+**This is the fourth distinct empirical champion this investigation has produced, each
+displacing the last as testing expanded**: (1) the original short-duration
+`drf_power_tiebreak_full`+`weighted_sum` headline, until duration-extension complicated it;
+(2) `compute_only`/`load_only`, strong on Heavy/Closed-Loop-long, until the mechanism
+investigation (Part 7) turned up no clean explanation and the Heavy/Matched replication check
+(Part 6) showed instability; (3) `coincidence_ceiling` (DRF-family); (4) now
+`lmetric_power_coincidence_ceiling`.
+
+**Decision: do not make `lmetric_power_coincidence_ceiling` the paper's headline, despite the
+strong record.** Two independent reasons, not just caution:
+1. **It is not Pareto-safe.** The coincidence-ceiling adjustment only rescales the
+   `Share_power` term; it does nothing to fix Claim 2's cache-hit-collapse mechanism, which is
+   unchanged in the multiplicative structure. It is the exact same counterexample construction
+   as plain `lmetric_power` — the least theoretically protected of any coincidence-ceiling
+   variant, despite the best raw numbers.
+2. **The repeated-displacement pattern is itself the evidence for the paper's actual
+   argument.** Committing to whichever rule currently holds the empirical lead, immediately
+   after the third such rule was displaced, would repeat the exact mistake this whole
+   investigation has been diagnosing. `lmetric_power_coincidence_ceiling`'s strong-but-
+   unguaranteed record is kept as supporting evidence for why the guarantee (Theorem 4) is
+   worth having, not adopted as a competing proposal.
+
+`drf_power_tiebreak_full_coincidence_ceiling` remains the recommended rule: it is the only
+coincidence-ceiling variant with a full, proven worst-case guarantee (Theorem 4, inherited
+unchanged via the §4.3 shared-ceiling corollary — no new proof needed), it directly closes a
+limitation the paper already states as unvalidated future work, and its own empirical record
+(double dominance on Heavy/Closed-Loop short, best p99_ramp on Heavy/Closed-Loop long among
+guaranteed rules) is genuinely strong on the condition central to the paper's motivation, even
+though it does not top the raw cross-condition tally.
+
+### Part 9: max_ramp added to standard comparisons
+
+`compare_closedloopheavy_duration.py`'s `aggregate()` now also returns `max_ramp` (the single
+largest per-trial fleet-aggregate ramp value, averaged across trials — distinct from a
+pooled-across-all-trials max, which is a different, also-computed statistic in some diagnostic
+scripts). Not folded into `dominates()`'s criteria — that would retroactively change every
+dominance conclusion in this log without an explicit decision to do so; it is display-only
+unless/until that decision is made.
+
+### Data and repro
+
+Instrumentation: `Router.last_share_compute`/`last_share_load` (generic, any policy), two new
+trailing columns (`share_compute`, `share_load`) in the assignment log, backward-compatible
+(existing scripts read columns by name). Orchestration:
+`run_pergpu_closedloopheavylong_compute_load_only_trials456.sh`,
+`run_pergpu_heavymatched_compute_load_only.sh`, `run_pergpu_cachehit_compute_load_only.sh`,
+`run_pergpu_closedloopheavylong_drf_no_power_diagnostic.sh`,
+`run_pergpu_ws_lp_coincidence_ceiling_6conditions.sh`. Analysis:
+`check_compute_load_only_6trials_and_heavymatched.py`, `check_cachehit_compute_load_only.py`,
+`check_whale_placement_evenness.py`, `check_temporal_coincidence_events.py`,
+`check_top_ramp_values.py`, `check_dominant_resource_switching.py`,
+`check_full_comparison_all_conditions.py`,
+`check_all_coincidence_ceiling_variants_6conditions.py`.
