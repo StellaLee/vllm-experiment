@@ -17,7 +17,7 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       pick_drf_coincidence_tiebreak,
                       share_power_level, dominant_share_peak,
                       dominant_share_vector_peak_priority, pick_drf_peak_power_tiebreak,
-                      pick_drf_power_tiebreak_p2c, pick_compute_only,
+                      pick_drf_power_tiebreak_p2c, pick_compute_only, pick_load_only,
                       dominant_share_vector_power_priority_full, pick_drf_power_tiebreak_full,
                       weighted_sum_score, pick_weighted_sum,
                       lmetric_power_pareto_score, pick_lmetric_power_pareto,
@@ -96,6 +96,28 @@ def test_compute_only_ties_rotate_via_tie_start():
     assert pick_compute_only(cands, tie_start=0) == "r0"
     assert pick_compute_only(cands, tie_start=1) == "r1"
     assert pick_compute_only(cands, tie_start=2) == "r2"
+
+
+def test_load_only_ignores_compute_where_compute_only_would_pick_the_opposite():
+    """Mirror of test_compute_only_ignores_load_...: r0 has fewer new tokens but is heavily
+    loaded; r1 has more new tokens but is idle. compute_only picks r0 (fewest tokens);
+    load_only must pick the opposite, r1 (fewest in-flight), ignoring compute entirely."""
+    r0 = _cand("r0", new_tokens=10, in_flight_after=50)
+    r1 = _cand("r1", new_tokens=100, in_flight_after=1)
+    assert pick_compute_only([r0, r1]) == "r0"
+    assert pick_load_only([r0, r1]) == "r1"
+
+
+def test_load_only_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_load_only([])
+
+
+def test_load_only_ties_rotate_via_tie_start():
+    cands = [_cand("r0", in_flight_after=5), _cand("r1", in_flight_after=5), _cand("r2", in_flight_after=5)]
+    assert pick_load_only(cands, tie_start=0) == "r0"
+    assert pick_load_only(cands, tie_start=1) == "r1"
+    assert pick_load_only(cands, tie_start=2) == "r2"
 
 
 def test_dominant_share_is_max_of_three_normalized_shares():

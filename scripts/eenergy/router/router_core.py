@@ -13,7 +13,7 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, pick_drf, pick_p
                       pick_drf_power_tiebreak, pick_lmetric_power, pick_lmetric_power_convex,
                       pick_whale_argmin_power_switch, pick_drf_coincidence_tiebreak,
                       pick_drf_peak_power_tiebreak, pick_drf_power_tiebreak_p2c,
-                      pick_compute_only, pick_drf_power_tiebreak_full, pick_weighted_sum,
+                      pick_compute_only, pick_load_only, pick_drf_power_tiebreak_full, pick_weighted_sum,
                       pick_lmetric_power_pareto, pick_drf_power_tiebreak_full_coincidence_ceiling,
                       pick_drf_no_power, pick_weighted_sum_no_power,
                       pick_weighted_sum_coincidence_ceiling, pick_lmetric_power_coincidence_ceiling)
@@ -25,7 +25,7 @@ _POLICIES = ("round_robin", "lmetric", "drf", "p2c_whale", "whale_argmin", "cons
              "drf_power_tiebreak_adaptive_isolated", "compute_only", "drf_power_tiebreak_full",
              "weighted_sum", "lmetric_power_pareto", "drf_power_tiebreak_full_coincidence_ceiling",
              "drf_no_power", "weighted_sum_no_power", "weighted_sum_coincidence_ceiling",
-             "lmetric_power_coincidence_ceiling")
+             "lmetric_power_coincidence_ceiling", "load_only")
 
 # Admission-time whale classification cutoff (prompt tokens), reused from this project's
 # existing whale-aware-controller convention (scripts/mlsys/hotpatch_whale_aware_budget.py)
@@ -144,6 +144,9 @@ class Router:
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
         elif self.policy == "compute_only":
             replica_id = pick_compute_only(candidates, self._tie_cursor)
+            self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
+        elif self.policy == "load_only":
+            replica_id = pick_load_only(candidates, self._tie_cursor)
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
         elif self.policy == "drf_power_tiebreak_full":
             replica_id = pick_drf_power_tiebreak_full(candidates, self._tie_cursor)

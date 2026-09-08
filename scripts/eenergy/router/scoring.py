@@ -70,6 +70,23 @@ def pick_compute_only(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def pick_load_only(candidates: list, tie_start: int = 0) -> str:
+    """Ablation complementing pick_compute_only, for a question this project hadn't isolated
+    until drf_no_power (a power-blind, compute+load rule) turned out to empirically help
+    power/ramp outcomes on several conditions: when a power-blind rule helps, is it
+    compute-avoidance, load-avoidance, or their combination doing the implicit work? Route to
+    the candidate with the fewest in-flight requests after dispatch, full stop -- compute and
+    power play no role whatsoever, the load-only mirror of pick_compute_only's compute-only
+    design. Run compute_only, load_only, and drf_no_power (their max()-combination) side by
+    side on the same condition: whichever single-resource rule alone reproduces most of
+    drf_no_power's ramp/power profile is the one doing the implicit optimization; if neither
+    alone gets there, it's the combination that matters, not either resource individually."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=lambda c: c.in_flight_after)
+    return best.replica_id
+
+
 def lmetric_power_score(c) -> float:
     """LMETRIC's own multiplicative form (Zhang et al., OSDI'26, arXiv:2603.15202),
     extended with a continuous power penalty: new_tokens x in_flight_after x
