@@ -37,7 +37,7 @@ def load_power(path):
 
 def ramp_stats(fleet_series):
     if not fleet_series:
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
     peak = max(p for _, p in fleet_series)
     ramps = []
     for (t0, p0), (t1, p1) in zip(fleet_series, fleet_series[1:]):
@@ -47,20 +47,22 @@ def ramp_stats(fleet_series):
     ramps.sort()
     mean_ramp = sum(ramps) / len(ramps) if ramps else 0.0
     p99_ramp = ramps[int(len(ramps) * 0.99)] if ramps else 0.0
-    return peak, mean_ramp, p99_ramp
+    max_ramp = ramps[-1] if ramps else 0.0
+    return peak, mean_ramp, p99_ramp, max_ramp
 
 
 def aggregate(prefix, arm, trials=(1, 2, 3)):
-    peaks, mean_ramps, p99_ramps, ttft_means, tbt_means = [], [], [], [], []
+    peaks, mean_ramps, p99_ramps, max_ramps, ttft_means, tbt_means = [], [], [], [], [], []
     for trial in trials:
         rec_path = f"{LOGDIR}/{prefix}_records_{arm}_t{trial}.jsonl"
         pow_path = f"{LOGDIR}/{prefix}_power_trace_{arm}_t{trial}.csv"
         ttfts, tbts = load_records(rec_path)
         power_rows = load_power(pow_path)
-        peak, mean_ramp, p99_ramp = ramp_stats(power_rows)
+        peak, mean_ramp, p99_ramp, max_ramp = ramp_stats(power_rows)
         peaks.append(peak)
         mean_ramps.append(mean_ramp)
         p99_ramps.append(p99_ramp)
+        max_ramps.append(max_ramp)
         ttft_means.append(sum(ttfts) / len(ttfts))
         tbt_means.append(sum(tbts) / len(tbts))
     def m(vals):
@@ -72,7 +74,8 @@ def aggregate(prefix, arm, trials=(1, 2, 3)):
         return (sum((v - mu) ** 2 for v in vals) / (len(vals) - 1)) ** 0.5
     return {
         "peak": (m(peaks), sd(peaks)), "mean_ramp": (m(mean_ramps), sd(mean_ramps)),
-        "p99_ramp": (m(p99_ramps), sd(p99_ramps)), "ttft": (m(ttft_means), sd(ttft_means)),
+        "p99_ramp": (m(p99_ramps), sd(p99_ramps)), "max_ramp": (m(max_ramps), sd(max_ramps)),
+        "ttft": (m(ttft_means), sd(ttft_means)),
         "tbt": (m(tbt_means), sd(tbt_means)),
     }
 
