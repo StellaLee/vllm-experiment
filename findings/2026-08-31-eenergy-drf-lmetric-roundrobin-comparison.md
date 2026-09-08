@@ -2857,3 +2857,210 @@ Comparison: `scripts/eenergy/compare_closedloopheavy_duration.py`,
 `scripts/eenergy/check_ramp_clamp_reignition.py`. Theorem 5 verification:
 `scripts/eenergy/verify_leximin_vs_weighted_sum.py`. Raw data on the remote box:
 `logs/closedloopheavylongpergpu_{records,power_trace,assignment}_<arm>_t<1-6>.jsonl|csv`.
+
+## Update 2026-09-08: does power-awareness help at all, and can a rule target the actual fleet-aggregate metric instead of a per-replica proxy?
+
+**Motivation.** Extending the duration-sensitivity work to BurstGPT (real trace, 6 trials)
+and Light/Cachehit found the headline dominance story getting worse, not better, under
+scrutiny: on BurstGPT, `drf_power_tiebreak_full` doesn't even beat the plain `drf_fixed`
+baseline (loses on mean_ramp +8.2%, TBT +9.6%), and `lmetric_power` — the "unsafe" arm —
+wins on 4/5 metrics outright, best performer overall. (BurstGPT's cache-hit rate was checked
+and is structurally 0% for every arm — `src/replay_sharegpt.py`'s `--trace-csv` mode
+synthesizes unique filler text per request since the real BurstGPT dataset has no prompt
+text, only token counts — so Claim 2's cache-hit-collapse mechanism cannot be what's driving
+this, and remains undiagnosed.) That pattern — every genuinely long-duration or real
+condition either mixed or unfavorable, only the short synthetic condition clean — raised two
+new questions pursued in this update: (1) does adding `Share_power` to the routing decision
+help at all, or does a power-blind rule do just as well; (2) every rule tested so far reads
+only a candidate's own local ramp state, while every reported metric is a fleet-**aggregate**
+quantity — does a rule that targets the actual aggregate signal do better?
+
+### Part 1: does power-awareness help? `drf_no_power`, `weighted_sum_no_power`, `lmetric`
+
+Power-blind counterparts to `drf` and `weighted_sum` (`Share_power` never enters the
+computation, not weighted to zero — genuinely absent); plain `lmetric`
+(`new_tokens x in_flight_after`) is already power-blind by construction, reused unchanged as
+the third arm. (`scripts/eenergy/router/scoring.py`: `dominant_share_no_power`,
+`weighted_sum_score_no_power`.)
+
+**Heavy/Closed-Loop long, first check:**
+
+| arm | peak | mean_ramp | p99_ramp | TTFT | TBT |
+|---|---|---|---|---|---|
+| drf_fixed | 2506.5 | 152.9 | 1328.9 | 0.435 | 722.6 |
+| **drf_no_power** | 2466.8 | 149.5 | 1198.5 | 0.433 | 706.0 |
+| weighted_sum | 2434.3 | 151.5 | 1242.5 | 0.436 | 719.9 |
+| weighted_sum_no_power | 2422.4 | 152.5 | 1081.1 | 0.434 | 697.2 |
+| lmetric_power | 2466.5 | 148.3 | 1235.1 | 0.427 | 717.1 |
+| lmetric | 2430.1 | 155.4 | 1219.8 | 0.431 | 687.9 |
+
+**`drf_no_power` cleanly DOMINATES `drf_fixed` — every metric, including the power/ramp
+metrics power-awareness is meant to protect.** `weighted_sum_no_power` beats `weighted_sum`
+on 4/5 (only mean_ramp marginally worse, within noise); `lmetric` vs `lmetric_power` is
+genuinely mixed (~3-2). Naive per-replica power-awareness isn't just failing to help here —
+for the plain DRF baseline, it's actively counterproductive.
+
+**Expanded to the remaining 6 conditions** (BurstGPT, Heavy/Matched, Light/Cachehit,
+Heavy/Closed-Loop short, Ramp & Route, WildChat), 3 trials each
+(`orchestrate/eenergy/run_pergpu_no_power_6conditions.sh`):
+
+| condition | dominance found | drf_no_power vs coincidence_ceiling (see Part 2) |
+|---|---|---|
+| BurstGPT | `drf_no_power` dominates `drf_fixed` | drf_no_power clearly ahead (4/5 metrics) |
+| Heavy/Matched | none | roughly split |
+| Light/Cachehit | **`drf_no_power` dominates `drf_fixed`, `weighted_sum`, AND `coincidence_ceiling`** | drf_no_power wins outright |
+| Heavy/Closed-Loop (short) | `coincidence_ceiling` dominates weighted_sum + lmetric_power; `drf_no_power` dominates lmetric_power | coincidence_ceiling clearly ahead (4/5 metrics) |
+| Ramp & Route | `drf_power_tiebreak_full` dominates `drf_fixed` (pre-existing) | **drf_no_power data came back empty (0 valid TTFT records) — unresolved, needs re-run** |
+| WildChat | `drf_fixed`/`weighted_sum` dominate `drf_power_tiebreak_full` (pre-existing reversal) | drf_no_power slightly ahead (3/5, close) |
+
+`lmetric` vs `lmetric_power` across the same 6 conditions: `lmetric` DOMINATES `lmetric_power`
+on Heavy/Closed-Loop (short); `lmetric_power` DOMINATES `lmetric` on WildChat; the other 4
+conditions incomparable. No consistent direction, unlike `drf_no_power`'s mostly-favorable
+pattern.
+
+**Reading**: neither "no power signal" nor "naive per-replica power signal" wins uniformly.
+`drf_no_power` is strongest specifically on BurstGPT and Light/Cachehit (real/cache-hit-heavy
+traffic, no engineered pressure); the coincidence-aware rule (Part 2) is strongest
+specifically on Heavy/Closed-Loop (engineered sustained pressure). That's a coherent story:
+the smarter power signal earns its cost only where power pressure is real and correlated.
+
+### Part 2: targeting the actual fleet-aggregate metric — `drf_power_tiebreak_full_coincidence_ceiling`
+
+**Design.** Every rule tested this whole project computes `Share_power(c)` from candidate
+`c`'s own local ramp state only — never asking whether *other* replicas are ramping
+simultaneously. Every reported metric (peak, mean/p99 ramp) is measured on the
+fleet-**aggregate** trace. A rule can look individually safe on every replica while still
+producing a bad aggregate ramp if it never accounts for replicas ramping together.
+`coincidence_ceiling_factor(candidates)` computes one shared multiplier per decision: 0 or 1
+currently-elevated replicas (`share_power > 0.5`) → factor 1.0 (no adjustment); 2+
+simultaneously elevated → factor shrinks (`1/(1+(n_elevated-1))`). Every candidate's ceiling
+is scaled by this **same** factor at that decision — one scalar shared identically across
+candidates, exactly the object §4.3's existing corollary already covers ("Lemma 1 holds
+unchanged for any κ(t) shared identically by every candidate, however computed"), so
+Pareto/threshold-safety carry over without a new proof. Mechanistically: scaling every
+candidate's ceiling by the same factor doesn't change their relative order by `Share_power`
+alone — it changes `Share_power`'s magnitude relative to `Share_compute`/`Share_load` in
+`D(c)=max(...)`, making power more likely to be the binding dimension for everyone during a
+genuine coincidence event. Verified with a hand-constructed case that the mechanism actually
+flips a routing decision (not a no-op): without adjustment, a replica with moderate local
+power pressure wins over one with zero power but higher compute; with two *other* replicas
+coincidentally elevated, the pick flips to the higher-compute replica, avoiding piling onto
+an already-pressured fleet.
+
+**Heavy/Closed-Loop long** (3 trials): **best p99_ramp of all 6 arms tested there** — 1050.0
+vs. `drf_power_tiebreak_full`'s 1136.0 (~7.6% better), also ahead of `weighted_sum`
+(1242.5) and `lmetric_power` (1235.1). Does not achieve full dominance (small mean_ramp/TBT
+costs relative to `drf_power_tiebreak_full`/`lmetric_power`).
+
+**Heavy/Closed-Loop short** (3 trials): **`coincidence_ceiling` DOMINATES both `weighted_sum`
+and `lmetric_power`** — best peak of all 6 arms (2299.3W) and TBT far better than any other
+scored arm (523.2 vs. 577-594ms elsewhere).
+
+**Expanded to the same 6 conditions as Part 1** — full numeric table:
+
+| condition | peak | mean_ramp | p99_ramp | TTFT | TBT | dominance |
+|---|---|---|---|---|---|---|
+| BurstGPT | 2207.6 | 204.5 | 1533.1 | 0.164 | 97.3 | none |
+| Heavy/Matched | 2626.9 | 197.5 | 1310.0 | 3.804 | 1294.6 | none |
+| Light/Cachehit | 1908.3 | 97.6 | 1536.1 | 0.066 | 34.3 | none (dominated BY drf_no_power) |
+| Heavy/Closed-Loop (short) | 2299.3 | 146.8 | 1653.2 | 0.521 | 523.2 | dominates weighted_sum + lmetric_power |
+| Ramp & Route | 2556.1 | 240.5 | 2128.8 | 0.529 | 481.5 | none |
+| WildChat | 2277.2 | 126.3 | 1201.6 | 0.149 | 252.3 | none |
+
+Strongest and cleanest specifically on Heavy/Closed-Loop (both durations — the condition
+engineered for sustained, correlated power pressure); doesn't clearly help on BurstGPT,
+WildChat, or Ramp & Route, and is dominated outright by `drf_no_power` on Light/Cachehit.
+Consistent with Part 1's reading: coincidence-awareness earns its cost only where genuine
+correlated pressure exists.
+
+### Part 3: does the coincidence-ceiling mechanism generalize beyond the DRF-family structure?
+
+Substituted the same shared coincidence factor into `weighted_sum`'s and `lmetric_power`'s
+own `Share_power` term (`weighted_sum_coincidence_ceiling`,
+`lmetric_power_coincidence_ceiling`) — neither gains a threshold-safety guarantee from this
+(Theorem 5 still applies to `weighted_sum` regardless of ceiling design; `lmetric_power`'s
+Pareto-safety issue is orthogonal to which ceiling feeds its power term), so this is an
+empirical-only comparison. Heavy/Closed-Loop long, 3 trials each:
+
+| arm | peak | mean_ramp | p99_ramp | TTFT | TBT |
+|---|---|---|---|---|---|
+| weighted_sum | 2434.3 | 151.5 | 1242.5 | 0.436 | 719.9 |
+| weighted_sum_coincidence_ceiling | 2474.5 | 152.0 | 1199.3 | 0.431 | 717.9 |
+| lmetric_power | 2466.5 | 148.3 | 1235.1 | 0.427 | 717.1 |
+| **lmetric_power_coincidence_ceiling** | 2451.0 | 161.3 | **1020.8** | 0.429 | **708.5** |
+| coincidence_ceiling (DRF-family) | 2433.8 | 152.5 | 1050.0 | 0.427 | 720.7 |
+| drf_power_tiebreak_full | 2454.4 | 147.1 | 1136.0 | 0.427 | 715.4 |
+
+**`lmetric_power_coincidence_ceiling` gets the best p99_ramp *and* best TBT of all 6 arms** —
+even better than the DRF-family's own `coincidence_ceiling` (1020.8 vs. 1050.0 p99_ramp) —
+confirming the mechanism helps beyond the sorted-rule structure it was built for, at the cost
+of the worst mean_ramp of the six. `weighted_sum_coincidence_ceiling`'s improvement is more
+modest. `drf_power_tiebreak_full` still DOMINATES `weighted_sum_coincidence_ceiling`
+outright, even after the coincidence boost — the safe, structurally-repaired rule remains
+competitive even against rivals given the same upgrade.
+
+### Part 4: `lmetric_power_pareto` — a second, independent Pareto-safety repair
+
+`(1 + Share_compute) x (1 + Share_load) x (1 + Share_power)`, replacing `lmetric_power`'s
+`Share_compute x Share_load x (1 + Share_power)`. Removes the zero-collapse failure mode
+(Claim 2) by construction — every factor is always ≥1, never zero. Proven and verified
+Pareto-safe (200,000 trials, 0 violations at 40% cache-hit rate, vs. `lmetric_power`'s 12.8%)
+via the same mechanism that makes `weighted_sum` safe (`ln(score)` is a sum of monotonic
+per-share terms — Geoffrion 1968, reached via a product instead of a literal sum). **NOT
+threshold-safe**: same vulnerability as `weighted_sum` (Theorem 5), verified at 11.60% vs.
+`weighted_sum`'s 11.71% on the same construction (`scripts/eenergy/
+verify_lmetric_power_plusone_threshold` logic, ad hoc verification, not yet committed as a
+standalone script).
+
+Hardware validation on Light/Cachehit (highest cache-hit rate, most direct test of the fixed
+mechanism), 3 trials:
+
+| arm | peak | mean_ramp | p99_ramp | TTFT | TBT |
+|---|---|---|---|---|---|
+| lmetric_power | 1901.8 | 81.4 | 1723.3 | 0.066 | 31.3 |
+| **lmetric_power_pareto** | 1910.0 | 90.0 | **1420.9** | 0.067 | 35.3 |
+
+Best p99_ramp of all 6 arms tested there (17.5% better than plain `lmetric_power`), but
+costs mean_ramp (+10.6%) and TBT (+12.8%) — incomparable to every other arm, a real trade
+rather than a free improvement. Same qualitative shape as `coincidence_ceiling`: fixing a
+safety property changes real empirical behavior, buying tail-ramp protection at an
+average-case cost, not a no-op.
+
+### Part 5: does compute-avoidance or load-avoidance drive `drf_no_power`'s implicit benefit?
+
+`pick_load_only` added as the symmetric counterpart to the existing `pick_compute_only`
+(itself originally built to ask the same question about `lmetric`). Compares `compute_only`,
+`load_only`, and `drf_no_power` (their `max()`-combination) on Heavy/Closed-Loop long —
+**running as of this write-up, results not yet available.**
+
+### Open questions / next steps
+
+- Ramp & Route's `drf_no_power` data is corrupted (empty records file) — needs re-running
+  before any Ramp & Route conclusion involving that arm.
+- `compute_only`/`load_only` ablation (Part 5) still in progress.
+- `cachehit1024pergpu_*` data (the max_tokens=128 vs 1024 isolation batch) was collected but
+  not yet analyzed for dominance patterns — open.
+- Whether any of this reshapes the paper's headline is undecided; not yet touched.
+
+### Data and repro
+
+Scoring additions (`scripts/eenergy/router/scoring.py`): `dominant_share_no_power`,
+`weighted_sum_score_no_power`, `pick_drf_no_power`, `pick_weighted_sum_no_power`,
+`coincidence_ceiling_factor`, `dominant_share_vector_power_priority_full_coincidence_ceiling`,
+`pick_drf_power_tiebreak_full_coincidence_ceiling`, `weighted_sum_score_coincidence_ceiling`,
+`pick_weighted_sum_coincidence_ceiling`, `lmetric_power_score_coincidence_ceiling`,
+`pick_lmetric_power_coincidence_ceiling`, `lmetric_power_pareto_score`,
+`pick_lmetric_power_pareto`, `pick_load_only`. All wired into `router_core.py`'s `_POLICIES`
+and `route()`. 145/145 scoring+router_core tests pass as of this update.
+
+Orchestration: `orchestrate/eenergy/run_pergpu_closedloopheavylong_no_power.sh`,
+`run_pergpu_no_power_6conditions.sh`, `run_pergpu_closedloopheavylong_coincidence_ceiling.sh`,
+`run_pergpu_coincidence_ceiling_6conditions.sh`,
+`run_pergpu_closedloopheavylong_ws_lp_coincidence_ceiling.sh`,
+`run_pergpu_cachehit_lmetric_power_pareto.sh`,
+`run_pergpu_closedloopheavylong_compute_load_only.sh`.
+
+Analysis: `scripts/eenergy/check_no_power_comparison.py`,
+`check_coincidence_ceiling_6conditions.py`, `check_lmetric_vs_coincidence.py`,
+`check_drf_no_power_all_conditions.py`, `check_lmetric_all_conditions.py`,
+`check_ws_lp_coincidence_ceiling.py`, `check_cachehit_lmetric_power_pareto.py`.
