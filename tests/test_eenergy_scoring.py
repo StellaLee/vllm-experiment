@@ -26,7 +26,9 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       pick_drf_power_tiebreak_full_coincidence_ceiling,
                       dominant_share_no_power, dominant_share_vector_no_power,
                       pick_drf_no_power, weighted_sum_score_no_power,
-                      pick_weighted_sum_no_power)
+                      pick_weighted_sum_no_power,
+                      weighted_sum_score_coincidence_ceiling, pick_weighted_sum_coincidence_ceiling,
+                      lmetric_power_score_coincidence_ceiling, pick_lmetric_power_coincidence_ceiling)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -514,6 +516,48 @@ def test_weighted_sum_no_power_is_half_compute_plus_half_load():
 def test_weighted_sum_no_power_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_weighted_sum_no_power([])
+
+
+def test_weighted_sum_coincidence_ceiling_matches_plain_weighted_sum_when_no_coincidence():
+    cands = [
+        _cand("r0", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r2", new_tokens=50, in_flight_after=50, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+    ]
+    assert pick_weighted_sum_coincidence_ceiling(cands) == pick_weighted_sum(cands) == "r1"
+
+
+def test_weighted_sum_coincidence_ceiling_score_scales_power_term_by_the_shared_factor():
+    c = _cand("r0", new_tokens=10, in_flight_after=5, token_budget=100, max_num_seqs=10,
+              ramp_rate_w_per_s=5.0, ramp_ceiling_w_per_s=10.0)
+    # share_compute=0.1, share_load=0.5; factor=0.5 -> effective_ceiling=5 -> power=5/5=1.0
+    # score = 0.33*0.1 + 0.33*0.5 + 0.33*1.0 = 0.528
+    assert weighted_sum_score_coincidence_ceiling(c, factor=0.5) == pytest.approx(0.528)
+
+
+def test_weighted_sum_coincidence_ceiling_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_weighted_sum_coincidence_ceiling([])
+
+
+def test_lmetric_power_coincidence_ceiling_matches_plain_lmetric_power_when_no_coincidence():
+    cands = [
+        _cand("r0", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r2", new_tokens=50, in_flight_after=50, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+    ]
+    assert pick_lmetric_power_coincidence_ceiling(cands) == pick_lmetric_power(cands) == "r1"
+
+
+def test_lmetric_power_coincidence_ceiling_score_scales_power_term_by_the_shared_factor():
+    c = _cand("r0", new_tokens=10, in_flight_after=5, ramp_rate_w_per_s=5.0, ramp_ceiling_w_per_s=10.0)
+    # factor=0.5 -> effective_ceiling=5 -> power=5/5=1.0 -> score = 10*5*(1+1.0) = 100.0
+    assert lmetric_power_score_coincidence_ceiling(c, factor=0.5) == pytest.approx(100.0)
+
+
+def test_lmetric_power_coincidence_ceiling_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_lmetric_power_coincidence_ceiling([])
 
 
 def test_lmetric_power_convex_raises_on_empty_candidates():

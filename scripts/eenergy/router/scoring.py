@@ -529,6 +529,54 @@ def pick_drf_power_tiebreak_full_coincidence_ceiling(candidates: list, tie_start
     return best.replica_id
 
 
+def weighted_sum_score_coincidence_ceiling(c, factor: float, w_compute: float = 0.33,
+                                            w_load: float = 0.33, w_power: float = 0.33) -> float:
+    """weighted_sum_score, but Share_power is computed against a ceiling scaled by the shared
+    coincidence factor (see coincidence_ceiling_factor) instead of c's raw static ceiling --
+    tests whether the coincidence-aware ceiling idea helps beyond the DRF-family sorted rule
+    it was first built for (drf_power_tiebreak_full_coincidence_ceiling), or is specific to
+    that rule's max()-first structure. Unlike the sorted rule, weighted_sum has no threshold-
+    safety guarantee to begin with (Theorem 5) regardless of which ceiling feeds Share_power,
+    so this variant is an empirical-only comparison, not a safety-preserving one."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    effective_ceiling = c.ramp_ceiling_w_per_s * factor
+    sp = max(c.ramp_rate_w_per_s, 0.0) / effective_ceiling
+    return w_compute * share_compute + w_load * share_load + w_power * sp
+
+
+def pick_weighted_sum_coincidence_ceiling(candidates: list, tie_start: int = 0) -> str:
+    """Route to the candidate with the minimum weighted_sum_score_coincidence_ceiling."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    factor = coincidence_ceiling_factor(candidates)
+    best = min(_rotate(candidates, tie_start),
+               key=lambda c: weighted_sum_score_coincidence_ceiling(c, factor))
+    return best.replica_id
+
+
+def lmetric_power_score_coincidence_ceiling(c, factor: float) -> float:
+    """lmetric_power_score, but Share_power is computed against a ceiling scaled by the
+    shared coincidence factor instead of c's raw static ceiling -- same empirical-only
+    comparison as weighted_sum_score_coincidence_ceiling, for the multiplicative family
+    instead of the linear one. lmetric_power's own Pareto-safety issue (Claim 2, cache-hit
+    score collapse) is untouched by this change -- it's orthogonal to which ceiling feeds
+    the power term."""
+    effective_ceiling = c.ramp_ceiling_w_per_s * factor
+    sp = max(c.ramp_rate_w_per_s, 0.0) / effective_ceiling
+    return c.new_tokens * c.in_flight_after * (1.0 + sp)
+
+
+def pick_lmetric_power_coincidence_ceiling(candidates: list, tie_start: int = 0) -> str:
+    """Route to the candidate with the minimum lmetric_power_score_coincidence_ceiling."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    factor = coincidence_ceiling_factor(candidates)
+    best = min(_rotate(candidates, tie_start),
+               key=lambda c: lmetric_power_score_coincidence_ceiling(c, factor))
+    return best.replica_id
+
+
 def pick_drf(candidates: list, tie_start: int = 0) -> str:
     """Condition 3 (ours). Route to the replica with the lexicographically lowest sorted
     share vector across the three independently-normalized resources -- Dominant Resource
