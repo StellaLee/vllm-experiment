@@ -30,7 +30,11 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       weighted_sum_score_coincidence_ceiling, pick_weighted_sum_coincidence_ceiling,
                       lmetric_power_score_coincidence_ceiling, pick_lmetric_power_coincidence_ceiling,
                       lmetric_power_pareto_score_coincidence_ceiling,
-                      pick_lmetric_power_pareto_coincidence_ceiling)
+                      pick_lmetric_power_pareto_coincidence_ceiling,
+                      lmetric_power_pareto_epsilon_score_coincidence_ceiling,
+                      pick_lmetric_power_pareto_epsilon_coincidence_ceiling,
+                      lmetric_power_pareto_epsilon_all_score_coincidence_ceiling,
+                      pick_lmetric_power_pareto_epsilon_all_coincidence_ceiling)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -481,6 +485,48 @@ def test_lmetric_power_pareto_coincidence_ceiling_still_distinguishes_two_cache_
 def test_lmetric_power_pareto_coincidence_ceiling_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_lmetric_power_pareto_coincidence_ceiling([])
+
+
+def test_lmetric_power_pareto_epsilon_score_uses_small_shift_not_one():
+    c = _cand("r0", new_tokens=10, in_flight_after=5, token_budget=100, max_num_seqs=10,
+              ramp_rate_w_per_s=5.0, ramp_ceiling_w_per_s=10.0)
+    # share_compute=0.1, share_load=0.5; factor=0.5 -> effective_ceiling=5 -> power=1.0
+    # score = (0.01+0.1) * (0.01+0.5) * (1+1.0) = 0.11 * 0.51 * 2.0 = 0.1122
+    assert lmetric_power_pareto_epsilon_score_coincidence_ceiling(c, factor=0.5) == pytest.approx(0.1122)
+
+
+def test_lmetric_power_pareto_epsilon_coincidence_ceiling_still_distinguishes_two_cache_hits():
+    r0 = _cand("r0", new_tokens=0, in_flight_after=9, max_num_seqs=10,
+               ramp_rate_w_per_s=9.0, ramp_ceiling_w_per_s=10.0)
+    r1 = _cand("r1", new_tokens=0, in_flight_after=1, max_num_seqs=10,
+               ramp_rate_w_per_s=1.0, ramp_ceiling_w_per_s=10.0)
+    assert pick_lmetric_power_pareto_epsilon_coincidence_ceiling([r0, r1]) == "r1"
+
+
+def test_lmetric_power_pareto_epsilon_coincidence_ceiling_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_lmetric_power_pareto_epsilon_coincidence_ceiling([])
+
+
+def test_lmetric_power_pareto_epsilon_all_score_shifts_power_term_too():
+    c = _cand("r0", new_tokens=10, in_flight_after=5, token_budget=100, max_num_seqs=10,
+              ramp_rate_w_per_s=5.0, ramp_ceiling_w_per_s=10.0)
+    # share_compute=0.1, share_load=0.5; factor=0.5 -> effective_ceiling=5 -> power=1.0
+    # score = (0.01+0.1) * (0.01+0.5) * (0.01+1.0) = 0.11 * 0.51 * 1.01 = 0.056661
+    assert lmetric_power_pareto_epsilon_all_score_coincidence_ceiling(c, factor=0.5) == pytest.approx(0.056661)
+
+
+def test_lmetric_power_pareto_epsilon_all_coincidence_ceiling_still_distinguishes_two_cache_hits():
+    r0 = _cand("r0", new_tokens=0, in_flight_after=9, max_num_seqs=10,
+               ramp_rate_w_per_s=9.0, ramp_ceiling_w_per_s=10.0)
+    r1 = _cand("r1", new_tokens=0, in_flight_after=1, max_num_seqs=10,
+               ramp_rate_w_per_s=1.0, ramp_ceiling_w_per_s=10.0)
+    assert pick_lmetric_power_pareto_epsilon_all_coincidence_ceiling([r0, r1]) == "r1"
+
+
+def test_lmetric_power_pareto_epsilon_all_coincidence_ceiling_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_lmetric_power_pareto_epsilon_all_coincidence_ceiling([])
 
 
 def test_coincidence_ceiling_factor_is_one_when_zero_or_one_replica_elevated():

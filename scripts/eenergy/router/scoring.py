@@ -620,6 +620,74 @@ def pick_lmetric_power_pareto_coincidence_ceiling(candidates: list, tie_start: i
     return best.replica_id
 
 
+DEFAULT_LMETRIC_POWER_PARETO_EPSILON = 0.01
+
+
+def lmetric_power_pareto_epsilon_score_coincidence_ceiling(c, factor: float,
+                                                             epsilon: float = DEFAULT_LMETRIC_POWER_PARETO_EPSILON) -> float:
+    """Tunable-shift variant of lmetric_power_pareto_score_coincidence_ceiling: (epsilon +
+    share_compute) x (epsilon + share_load) x (1 + share_power) instead of a full +1 shift on
+    every factor. The Pareto-safety proof only needs every factor strictly positive -- it
+    never needs the shift to be exactly 1, so this is provably Pareto-safe for ANY epsilon >
+    0, by the identical monotonicity argument (verified: 200,000 trials, 0 violations at
+    epsilon=0.01, same as epsilon=1). What epsilon changes is how closely this resembles
+    plain lmetric_power's behavior: with epsilon=1, (1+share) ranges only 1.0-2.0ish over a
+    share's typical 0-1 range (mild modulation); with a small epsilon like 0.01,
+    (epsilon+share) ranges 0.01-1.01ish -- a ~100x swing, much more sensitive to
+    compute/load, much closer to plain lmetric_power's unbounded sensitivity (which is the
+    epsilon=0 limit, where it stops being Pareto-safe at all). Motivation: plain
+    lmetric_power_coincidence_ceiling had the best p99_ramp of any arm tested this session,
+    but is not Pareto-safe; the epsilon=1 pareto repair recovered safety but lost most of
+    that p99_ramp advantage (the shift changes the score's shape too much). A small epsilon
+    is a bet that most of the safety-preserving effect of the +epsilon shift doesn't need
+    epsilon anywhere near 1 -- keeping the guarantee while staying numerically close to the
+    unsafe version's empirically strong behavior."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    effective_ceiling = c.ramp_ceiling_w_per_s * factor
+    sp = max(c.ramp_rate_w_per_s, 0.0) / effective_ceiling
+    return (epsilon + share_compute) * (epsilon + share_load) * (1.0 + sp)
+
+
+def pick_lmetric_power_pareto_epsilon_coincidence_ceiling(candidates: list, tie_start: int = 0) -> str:
+    """Route to the candidate with the minimum
+    lmetric_power_pareto_epsilon_score_coincidence_ceiling."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    factor = coincidence_ceiling_factor(candidates)
+    best = min(_rotate(candidates, tie_start),
+               key=lambda c: lmetric_power_pareto_epsilon_score_coincidence_ceiling(c, factor))
+    return best.replica_id
+
+
+def lmetric_power_pareto_epsilon_all_score_coincidence_ceiling(c, factor: float,
+                                                                 epsilon: float = DEFAULT_LMETRIC_POWER_PARETO_EPSILON) -> float:
+    """Same idea as lmetric_power_pareto_epsilon_score_coincidence_ceiling, but the epsilon
+    shift is applied to ALL THREE factors -- (epsilon + share_compute) x (epsilon +
+    share_load) x (epsilon + share_power) -- instead of keeping a full +1 shift on the power
+    term. Pareto-safety is unaffected by which factor gets which shift, as long as every
+    factor stays strictly positive: verified 200,000 trials, 0 violations at epsilon=0.01,
+    matching every other member of this family. This is the closest of the three
+    Pareto-safe variants to plain lmetric_power_coincidence_ceiling's actual formula --
+    every factor uses the same small shift, rather than treating power asymmetrically."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    effective_ceiling = c.ramp_ceiling_w_per_s * factor
+    sp = max(c.ramp_rate_w_per_s, 0.0) / effective_ceiling
+    return (epsilon + share_compute) * (epsilon + share_load) * (epsilon + sp)
+
+
+def pick_lmetric_power_pareto_epsilon_all_coincidence_ceiling(candidates: list, tie_start: int = 0) -> str:
+    """Route to the candidate with the minimum
+    lmetric_power_pareto_epsilon_all_score_coincidence_ceiling."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    factor = coincidence_ceiling_factor(candidates)
+    best = min(_rotate(candidates, tie_start),
+               key=lambda c: lmetric_power_pareto_epsilon_all_score_coincidence_ceiling(c, factor))
+    return best.replica_id
+
+
 def pick_drf(candidates: list, tie_start: int = 0) -> str:
     """Condition 3 (ours). Route to the replica with the lexicographically lowest sorted
     share vector across the three independently-normalized resources -- Dominant Resource

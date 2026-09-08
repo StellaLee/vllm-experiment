@@ -17,7 +17,9 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, pick_drf, pick_p
                       pick_lmetric_power_pareto, pick_drf_power_tiebreak_full_coincidence_ceiling,
                       pick_drf_no_power, pick_weighted_sum_no_power,
                       pick_weighted_sum_coincidence_ceiling, pick_lmetric_power_coincidence_ceiling,
-                      pick_lmetric_power_pareto_coincidence_ceiling)
+                      pick_lmetric_power_pareto_coincidence_ceiling,
+                      pick_lmetric_power_pareto_epsilon_coincidence_ceiling,
+                      pick_lmetric_power_pareto_epsilon_all_coincidence_ceiling)
 
 _POLICIES = ("round_robin", "lmetric", "drf", "p2c_whale", "whale_argmin", "constrained_lmetric",
              "pressure_switch", "drf_power_tiebreak", "lmetric_power", "lmetric_power_convex",
@@ -27,7 +29,9 @@ _POLICIES = ("round_robin", "lmetric", "drf", "p2c_whale", "whale_argmin", "cons
              "weighted_sum", "lmetric_power_pareto", "drf_power_tiebreak_full_coincidence_ceiling",
              "drf_no_power", "weighted_sum_no_power", "weighted_sum_coincidence_ceiling",
              "lmetric_power_coincidence_ceiling", "load_only",
-             "lmetric_power_pareto_coincidence_ceiling")
+             "lmetric_power_pareto_coincidence_ceiling",
+             "lmetric_power_pareto_epsilon_coincidence_ceiling",
+             "lmetric_power_pareto_epsilon_all_coincidence_ceiling")
 
 # Admission-time whale classification cutoff (prompt tokens), reused from this project's
 # existing whale-aware-controller convention (scripts/mlsys/hotpatch_whale_aware_budget.py)
@@ -184,6 +188,12 @@ class Router:
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
         elif self.policy == "lmetric_power_pareto_coincidence_ceiling":
             replica_id = pick_lmetric_power_pareto_coincidence_ceiling(candidates, self._tie_cursor)
+            self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
+        elif self.policy == "lmetric_power_pareto_epsilon_coincidence_ceiling":
+            replica_id = pick_lmetric_power_pareto_epsilon_coincidence_ceiling(candidates, self._tie_cursor)
+            self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
+        elif self.policy == "lmetric_power_pareto_epsilon_all_coincidence_ceiling":
+            replica_id = pick_lmetric_power_pareto_epsilon_all_coincidence_ceiling(candidates, self._tie_cursor)
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
         else:
             replica_id = pick_pressure_switch(candidates, self._tie_cursor)
