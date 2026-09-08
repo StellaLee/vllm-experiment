@@ -594,6 +594,32 @@ def pick_lmetric_power_coincidence_ceiling(candidates: list, tie_start: int = 0)
     return best.replica_id
 
 
+def lmetric_power_pareto_score_coincidence_ceiling(c, factor: float) -> float:
+    """lmetric_power_pareto_score, but Share_power is computed against a ceiling scaled by
+    the shared coincidence factor instead of c's raw static ceiling -- combines BOTH repairs
+    explored this session: the +1 shift that removes lmetric_power's Pareto-safety failure
+    (Claim 2's cache-hit zero-collapse; every factor here is always >= 1, never zero, so this
+    property is untouched by the ceiling change) and the fleet-aggregate-targeting ceiling
+    that improved p99_ramp for every rule family it was tried on. Still NOT threshold-safe --
+    scaling the ceiling doesn't change that ln(score) is a sum in log-space (Theorem 5's
+    vulnerability), only Pareto-safety is preserved."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    effective_ceiling = c.ramp_ceiling_w_per_s * factor
+    sp = max(c.ramp_rate_w_per_s, 0.0) / effective_ceiling
+    return (1.0 + share_compute) * (1.0 + share_load) * (1.0 + sp)
+
+
+def pick_lmetric_power_pareto_coincidence_ceiling(candidates: list, tie_start: int = 0) -> str:
+    """Route to the candidate with the minimum lmetric_power_pareto_score_coincidence_ceiling."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    factor = coincidence_ceiling_factor(candidates)
+    best = min(_rotate(candidates, tie_start),
+               key=lambda c: lmetric_power_pareto_score_coincidence_ceiling(c, factor))
+    return best.replica_id
+
+
 def pick_drf(candidates: list, tie_start: int = 0) -> str:
     """Condition 3 (ours). Route to the replica with the lexicographically lowest sorted
     share vector across the three independently-normalized resources -- Dominant Resource

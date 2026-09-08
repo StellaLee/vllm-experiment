@@ -28,7 +28,9 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       pick_drf_no_power, weighted_sum_score_no_power,
                       pick_weighted_sum_no_power,
                       weighted_sum_score_coincidence_ceiling, pick_weighted_sum_coincidence_ceiling,
-                      lmetric_power_score_coincidence_ceiling, pick_lmetric_power_coincidence_ceiling)
+                      lmetric_power_score_coincidence_ceiling, pick_lmetric_power_coincidence_ceiling,
+                      lmetric_power_pareto_score_coincidence_ceiling,
+                      pick_lmetric_power_pareto_coincidence_ceiling)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
@@ -442,6 +444,43 @@ def test_lmetric_power_pareto_matches_lmetric_power_ranking_when_no_cache_hits()
 def test_lmetric_power_pareto_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_lmetric_power_pareto([])
+
+
+def test_lmetric_power_pareto_coincidence_ceiling_matches_plain_when_no_coincidence():
+    cands = [
+        _cand("r0", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r2", new_tokens=50, in_flight_after=50, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+    ]
+    assert (pick_lmetric_power_pareto_coincidence_ceiling(cands)
+            == pick_lmetric_power_pareto(cands) == "r1")
+
+
+def test_lmetric_power_pareto_coincidence_ceiling_score_scales_power_by_shared_factor():
+    c = _cand("r0", new_tokens=10, in_flight_after=5, token_budget=100, max_num_seqs=10,
+              ramp_rate_w_per_s=5.0, ramp_ceiling_w_per_s=10.0)
+    # share_compute=0.1, share_load=0.5; factor=0.5 -> effective_ceiling=5 -> power=5/5=1.0
+    # score = 1.1 * 1.5 * 2.0 = 3.3
+    assert lmetric_power_pareto_score_coincidence_ceiling(c, factor=0.5) == pytest.approx(3.3)
+
+
+def test_lmetric_power_pareto_coincidence_ceiling_still_distinguishes_two_cache_hits():
+    """The Pareto-safety property (from lmetric_power_pareto) must survive the ceiling
+    change: two cache-hit candidates with different load/power must not tie, unlike plain
+    lmetric_power_coincidence_ceiling which still collapses on this exact case."""
+    r0 = _cand("r0", new_tokens=0, in_flight_after=9, max_num_seqs=10,
+               ramp_rate_w_per_s=9.0, ramp_ceiling_w_per_s=10.0)
+    r1 = _cand("r1", new_tokens=0, in_flight_after=1, max_num_seqs=10,
+               ramp_rate_w_per_s=1.0, ramp_ceiling_w_per_s=10.0)
+    factor = 1.0
+    assert (lmetric_power_pareto_score_coincidence_ceiling(r0, factor)
+            > lmetric_power_pareto_score_coincidence_ceiling(r1, factor))
+    assert pick_lmetric_power_pareto_coincidence_ceiling([r0, r1]) == "r1"
+
+
+def test_lmetric_power_pareto_coincidence_ceiling_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_lmetric_power_pareto_coincidence_ceiling([])
 
 
 def test_coincidence_ceiling_factor_is_one_when_zero_or_one_replica_elevated():
