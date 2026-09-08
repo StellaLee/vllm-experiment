@@ -22,14 +22,21 @@ def build_replica_states(replica_specs: list) -> list:
 
 
 def format_assignment_record(ts: float, replica_id: str, gpu_index: int,
-                              new_tokens: int, raw_tokens: int) -> str:
+                              new_tokens: int, raw_tokens: int,
+                              share_compute: float = None, share_load: float = None) -> str:
     """One CSV line for the per-request replica-assignment log: which physical GPU actually
     served each request (so post-hoc analysis can classify a request's power-pressure window
     by ITS OWN replica instead of the coarser fleet-wide any-GPU fallback), plus the P-token
     the router actually used for that decision alongside the raw prompt length -- the only
     place either number is observable, so this is what auditing the KV$-hit discount for
-    honesty against a live cache-hit run has to read."""
-    return f"{ts:.6f},{replica_id},{gpu_index},{new_tokens},{raw_tokens}\n"
+    honesty against a live cache-hit run has to read. share_compute/share_load (appended,
+    optional -- None for backward compatibility with callers that don't pass them) are the
+    CHOSEN candidate's own two shares at decision time, so post-hoc analysis can tell which
+    resource was dominant for the actual pick without needing to reconstruct it from raw
+    token/load state after the fact."""
+    sc = "" if share_compute is None else f"{share_compute:.6f}"
+    sl = "" if share_load is None else f"{share_load:.6f}"
+    return f"{ts:.6f},{replica_id},{gpu_index},{new_tokens},{raw_tokens},{sc},{sl}\n"
 
 
 async def power_poll_loop(states: list, reader: NvmlPowerReader, interval_s: float):
@@ -70,7 +77,7 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
         # not silently accumulate underneath this run's rows -- matches how the harness's
         # --output and power_logger.py's own CSV writer both start clean each invocation.
         assignment_log = open(assignment_log_path, "w")
-        assignment_log.write("wall_time,replica_id,gpu_index,new_tokens,raw_tokens\n")
+        assignment_log.write("wall_time,replica_id,gpu_index,new_tokens,raw_tokens,share_compute,share_load\n")
         assignment_log.flush()
 
     async def handle_completions(request: web.Request) -> web.StreamResponse:
@@ -82,7 +89,8 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
         if assignment_log:
             assignment_log.write(format_assignment_record(
                 time.time(), replica_id, target.gpu_index,
-                router.last_new_tokens, len(token_ids)))
+                router.last_new_tokens, len(token_ids),
+                router.last_share_compute, router.last_share_load))
             assignment_log.flush()
 
         resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})

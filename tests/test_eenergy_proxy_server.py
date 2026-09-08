@@ -22,12 +22,18 @@ def test_build_replica_states_from_specs():
 
 def test_format_assignment_record_is_csv_row():
     line = format_assignment_record(1788140425.123456, "r3", 5, new_tokens=1082, raw_tokens=1082)
-    assert line == "1788140425.123456,r3,5,1082,1082\n"
+    assert line == "1788140425.123456,r3,5,1082,1082,,\n"
 
 
 def test_format_assignment_record_shows_the_kv_hit_discount_when_present():
     line = format_assignment_record(1788140425.123456, "r0", 2, new_tokens=10, raw_tokens=1082)
-    assert line == "1788140425.123456,r0,2,10,1082\n"
+    assert line == "1788140425.123456,r0,2,10,1082,,\n"
+
+
+def test_format_assignment_record_includes_share_compute_and_share_load_when_present():
+    line = format_assignment_record(1788140425.123456, "r0", 2, new_tokens=10, raw_tokens=1082,
+                                     share_compute=0.061035, share_load=0.34375)
+    assert line == "1788140425.123456,r0,2,10,1082,0.061035,0.343750\n"
 
 
 def test_build_replica_states_default_telemetry_bs_is_zero():

@@ -54,6 +54,14 @@ class Router:
         self.last_new_tokens = None  # P-token actually used for the most recent route() call --
                                       # exposed so callers (proxy_server's assignment log) can
                                       # audit the KV$-hit discount against reality post-hoc
+        self.last_share_compute = None  # Share_compute/Share_load for the CHOSEN candidate on
+        self.last_share_load = None     # the most recent route() call -- generic (computed
+                                         # regardless of policy), exposed so callers can log
+                                         # which resource was dominant for the actual pick, e.g.
+                                         # to diagnose whether a max()-combination rule
+                                         # (drf_no_power) switches its effective dominant
+                                         # resource decision-to-decision more than a
+                                         # single-resource rule does
         self.last_is_whale = None  # is_whale decided for the most recent route() call --
                                     # exposed so callers can log/complete() consistently with
                                     # whatever whale_token_threshold this Router was built with,
@@ -177,6 +185,9 @@ class Router:
             self._tie_cursor = (self._tie_cursor + 1) % len(candidates)
 
         self.last_new_tokens = next(c.new_tokens for c in candidates if c.replica_id == replica_id)
+        chosen = next(c for c in candidates if c.replica_id == replica_id)
+        self.last_share_compute = chosen.new_tokens / chosen.token_budget
+        self.last_share_load = chosen.in_flight_after / chosen.max_num_seqs
         self.load_tracker.on_dispatch(replica_id)
         self.whale_tracker.on_dispatch(replica_id, is_whale)
         for state in self.replica_states:

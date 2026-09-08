@@ -498,6 +498,19 @@ def test_route_exposes_the_chosen_candidates_new_tokens_for_logging():
     assert r.last_new_tokens == 0  # full cache hit
 
 
+def test_route_exposes_the_chosen_candidates_share_compute_and_share_load():
+    """Router.route() must expose the chosen candidate's own Share_compute/Share_load --
+    needed to diagnose, post-hoc, which resource was dominant for the actual pick (e.g.
+    whether a max()-combination rule like drf_no_power switches its effective dominant
+    resource decision-to-decision more than a single-resource rule does)."""
+    states = _states()
+    r = Router(states, policy="drf_no_power")
+    prompt = list(range(64))  # 4 full 16-token blocks, all new on a cold replica
+    chosen = r.route(prompt)
+    assert r.last_share_compute == pytest.approx(64 / 1000)  # token_budget=1000
+    assert r.last_share_load == pytest.approx(1 / 10)  # 1 in-flight after dispatch, max_num_seqs=10
+
+
 def test_drf_distributes_tied_requests_instead_of_piling_onto_one_replica():
     """Regression test for the 2026-08-31 load-imbalance bug: an un-cacheable workload (a
     fresh, never-seen token_ids every call) makes every candidate's dominant share tie at
