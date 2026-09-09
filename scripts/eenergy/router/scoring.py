@@ -660,6 +660,26 @@ def pick_lmetric_power_pareto_epsilon_coincidence_ceiling(candidates: list, tie_
     return best.replica_id
 
 
+def pick_lmetric_power_pareto_epsilon_small_coincidence_ceiling(candidates: list, tie_start: int = 0) -> str:
+    """Same as pick_lmetric_power_pareto_epsilon_coincidence_ceiling (epsilon shifts only
+    compute/load, power keeps a full +1 -- the design that won empirically, 13 dominance
+    wins vs. epsilon_all's 0, across the 7-condition sweep), but epsilon=0.001, 10x smaller
+    than the default 0.01. Tests whether the empirical dominance tally keeps climbing toward
+    plain lmetric_power_coincidence_ceiling's as epsilon shrinks further (the proof holds for
+    any epsilon > 0, so it should in principle), while checking there's no sign yet of the
+    practical floor where floating-point precision or measurement noise would swamp an
+    epsilon this small -- 0.001 against shares typically in [0, 2] is nowhere near double-
+    precision's ~1e-15 relative precision limit, so no numerical concern is expected at this
+    value; this is a deliberately conservative first step down from 0.01, not a search for
+    the smallest usable epsilon."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    factor = coincidence_ceiling_factor(candidates)
+    best = min(_rotate(candidates, tie_start),
+               key=lambda c: lmetric_power_pareto_epsilon_score_coincidence_ceiling(c, factor, epsilon=0.001))
+    return best.replica_id
+
+
 def lmetric_power_pareto_epsilon_all_score_coincidence_ceiling(c, factor: float,
                                                                  epsilon: float = DEFAULT_LMETRIC_POWER_PARETO_EPSILON) -> float:
     """Same idea as lmetric_power_pareto_epsilon_score_coincidence_ceiling, but the epsilon
