@@ -5,7 +5,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                  "scripts", "eenergy", "router"))
-from power_budget import PowerBudget, estimate_marginal_energy_j, DecodeByteEstimator  # noqa: E402
+from power_budget import (PowerBudget, estimate_marginal_energy_j, DecodeByteEstimator,  # noqa: E402
+                           dual_budget_would_exceed)
 
 
 def test_would_exceed_false_with_fewer_than_two_samples():
@@ -139,3 +140,57 @@ def test_decode_byte_estimator_with_real_wire_bytes_per_token_gives_sane_token_e
     wrong_bytes_per_token = 3.235
     inflated_tokens = realistic_response_bytes / wrong_bytes_per_token
     assert inflated_tokens > tokens * 50  # confirms the old constant was badly wrong, not just off
+
+
+def test_dual_budget_would_exceed_true_when_only_prefill_pool_would_exceed():
+    budget_prefill = PowerBudget(window_s=10.0)
+    budget_prefill.record(t=0.0, fleet_power_w=900.0)
+    budget_prefill.record(t=1.0, fleet_power_w=900.0)
+    budget_decode = PowerBudget(window_s=10.0)
+    budget_decode.record(t=0.0, fleet_power_w=100.0)
+    budget_decode.record(t=1.0, fleet_power_w=100.0)
+    # prefill: mean=900W + 2000J/10s=200W -> 1100W > cap 1000W (exceeds)
+    # decode:  mean=100W + 100J/10s=10W -> 110W <= cap 1000W (does not exceed)
+    assert dual_budget_would_exceed(
+        budget_prefill, 1000.0, 2000.0, budget_decode, 1000.0, 100.0) is True
+
+
+def test_dual_budget_would_exceed_true_when_only_decode_pool_would_exceed():
+    budget_prefill = PowerBudget(window_s=10.0)
+    budget_prefill.record(t=0.0, fleet_power_w=100.0)
+    budget_prefill.record(t=1.0, fleet_power_w=100.0)
+    budget_decode = PowerBudget(window_s=10.0)
+    budget_decode.record(t=0.0, fleet_power_w=900.0)
+    budget_decode.record(t=1.0, fleet_power_w=900.0)
+    assert dual_budget_would_exceed(
+        budget_prefill, 1000.0, 100.0, budget_decode, 1000.0, 2000.0) is True
+
+
+def test_dual_budget_would_exceed_false_when_neither_pool_would_exceed():
+    budget_prefill = PowerBudget(window_s=10.0)
+    budget_prefill.record(t=0.0, fleet_power_w=100.0)
+    budget_prefill.record(t=1.0, fleet_power_w=100.0)
+    budget_decode = PowerBudget(window_s=10.0)
+    budget_decode.record(t=0.0, fleet_power_w=100.0)
+    budget_decode.record(t=1.0, fleet_power_w=100.0)
+    assert dual_budget_would_exceed(
+        budget_prefill, 1000.0, 100.0, budget_decode, 1000.0, 100.0) is False
+
+
+def test_dual_budget_would_exceed_false_when_a_pool_budget_is_none_disabled():
+    # A None budget means that pool's cap is disabled (matches proxy_server.py's existing
+    # single-budget convention: budget=None -> gate never blocks) -- it must never contribute
+    # to the OR, even if the caller passes a marginal_j that would clearly exceed any real cap.
+    budget_decode = PowerBudget(window_s=10.0)
+    budget_decode.record(t=0.0, fleet_power_w=100.0)
+    budget_decode.record(t=1.0, fleet_power_w=100.0)
+    assert dual_budget_would_exceed(
+        None, 1000.0, 999999.0, budget_decode, 1000.0, 100.0) is False
+
+
+def test_dual_budget_would_exceed_true_when_only_enabled_pool_would_exceed():
+    budget_prefill = PowerBudget(window_s=10.0)
+    budget_prefill.record(t=0.0, fleet_power_w=900.0)
+    budget_prefill.record(t=1.0, fleet_power_w=900.0)
+    assert dual_budget_would_exceed(
+        budget_prefill, 1000.0, 2000.0, None, 1000.0, 999999.0) is True

@@ -100,3 +100,20 @@ class DecodeByteEstimator:
         if self._estimate_bytes is None:
             return fallback_tokens
         return self._estimate_bytes / bytes_per_token
+
+
+def dual_budget_would_exceed(budget_prefill, cap_prefill_w: float, prefill_marginal_j: float,
+                              budget_decode, cap_decode_w: float,
+                              decode_marginal_j: float) -> bool:
+    """True if EITHER pool's budget would be exceeded by admitting this request -- used by
+    the disaggregated gate (disagg_gate.py), which tracks the prefill pool and decode pool as
+    two independent PowerBudget instances instead of one combined fleet budget (spec
+    docs/superpowers/specs/2026-09-11-disagg-peak-shaving-gate-design.md Sec 4.1). A None
+    budget means that pool's cap is disabled -- matches proxy_server.py's existing
+    single-budget convention (budget=None -> gate never blocks) -- and never contributes to
+    the OR, regardless of the marginal_j passed for it."""
+    prefill_exceeds = (budget_prefill is not None
+                        and budget_prefill.would_exceed(cap_prefill_w, prefill_marginal_j))
+    decode_exceeds = (budget_decode is not None
+                       and budget_decode.would_exceed(cap_decode_w, decode_marginal_j))
+    return prefill_exceeds or decode_exceeds
