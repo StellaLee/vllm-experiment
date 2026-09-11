@@ -48,11 +48,21 @@ def format_assignment_record(ts: float, replica_id: str, gpu_index: int,
     return f"{ts:.6f},{replica_id},{gpu_index},{new_tokens},{raw_tokens},{sc},{sl},{dc},{dm},{av}\n"
 
 
-async def power_poll_loop(states: list, reader: NvmlPowerReader, interval_s: float):
+def fleet_power_w(states: list) -> float:
+    """Sum of each replica's most recently observed power draw -- the fleet-aggregate
+    instantaneous power the peak-shaving admission gate's PowerBudget tracks. Pure/testable
+    separately from power_poll_loop's async NVML polling."""
+    return sum(state.last_power_w for state in states)
+
+
+async def power_poll_loop(states: list, reader: NvmlPowerReader, interval_s: float,
+                           budget=None) -> None:
     while True:
         for state in states:
             power_w, ts = reader.read(state.config.gpu_index)
             update_ramp_state(state, power_w, ts)
+        if budget is not None:
+            budget.record(time.time(), fleet_power_w(states))
         await asyncio.sleep(interval_s)
 
 

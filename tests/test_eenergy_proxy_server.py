@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                  "scripts", "eenergy", "router"))
-from proxy_server import build_replica_states, format_assignment_record  # noqa: E402
+from proxy_server import build_replica_states, format_assignment_record, fleet_power_w  # noqa: E402
 
 
 def test_build_replica_states_from_specs():
@@ -49,3 +49,21 @@ def test_build_replica_states_default_telemetry_bs_is_zero():
                   token_budget=16384, max_num_seqs=64, ramp_ceiling_w_per_s=100.0)]
     states = build_replica_states(specs)
     assert states[0].telemetry_bs == 0
+
+
+def test_fleet_power_w_sums_across_replicas():
+    specs = [dict(replica_id="r0", host="h", port=1, gpu_index=0, token_budget=100,
+                   max_num_seqs=10, ramp_ceiling_w_per_s=50.0),
+             dict(replica_id="r1", host="h", port=2, gpu_index=1, token_budget=100,
+                   max_num_seqs=10, ramp_ceiling_w_per_s=50.0)]
+    states = build_replica_states(specs)
+    states[0].last_power_w = 300.0
+    states[1].last_power_w = 250.0
+    assert fleet_power_w(states) == 550.0
+
+
+def test_fleet_power_w_zero_for_freshly_built_states():
+    specs = [dict(replica_id="r0", host="h", port=1, gpu_index=0, token_budget=100,
+                  max_num_seqs=10, ramp_ceiling_w_per_s=50.0)]
+    states = build_replica_states(specs)
+    assert fleet_power_w(states) == 0.0
