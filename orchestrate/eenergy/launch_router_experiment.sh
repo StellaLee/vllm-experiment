@@ -42,7 +42,12 @@ PEAK_WINDOW_S=${PEAK_WINDOW_S:-30.0}
 PEAK_RECHECK_INTERVAL_S=${PEAK_RECHECK_INTERVAL_S:-1.0}
 J_PER_PREFILL_TOKEN=${J_PER_PREFILL_TOKEN:-0.068}
 J_PER_DECODE_TOKEN=${J_PER_DECODE_TOKEN:-2.40}
-BYTES_PER_TOKEN=${BYTES_PER_TOKEN:-3.235}
+# 272.0 = real wire bytes/token (measured live against this project's vLLM streaming
+# endpoint), NOT src/replay_sharegpt.py's 3.235 plain-text chars-per-token constant -- see
+# proxy_server.py's make_app docstring comment for why that distinction matters (the
+# original 3.235 default caused a self-reinforcing admission-gate lockup on first
+# validation).
+BYTES_PER_TOKEN=${BYTES_PER_TOKEN:-272.0}
 
 declare -A GPU_CEILING
 if [ -n "$RAMP_CEILING_PER_GPU" ]; then

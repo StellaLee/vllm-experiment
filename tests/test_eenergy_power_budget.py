@@ -78,3 +78,28 @@ def test_decode_byte_estimator_blends_subsequent_completions():
     # EMA: 0.5*2000 + 0.5*1000 = 1500
     tokens = est.current_estimate_tokens(fallback_tokens=99999, bytes_per_token=1.0)
     assert tokens == pytest.approx(1500.0)
+
+
+def test_decode_byte_estimator_with_real_wire_bytes_per_token_gives_sane_token_estimate():
+    """Regression test for the bug found on first live validation: response_bytes counts raw
+    HTTP/SSE wire bytes (JSON event scaffolding included), NOT plain generated text -- real
+    measurement against this project's vLLM streaming endpoint gave 272.2 and 272.1
+    bytes/token across two independent samples (n_sse_events as the token-count proxy), not
+    src/replay_sharegpt.py's 3.235 plain-text chars-per-token constant. Using the wrong
+    (much smaller) constant here inflates the apparent token count by ~84x, which in
+    production caused a self-reinforcing admission-gate lockup: the first real completion
+    seeds the EMA with a wildly wrong estimate, which then blocks every subsequent request
+    regardless of real power, so nothing completes to correct it. This test locks in that a
+    realistic wire-byte response (272 bytes/token, ~300 real tokens) converts back to a
+    plausible token count with the real constant -- not an order-of-magnitude-inflated one."""
+    est = DecodeByteEstimator()
+    real_bytes_per_token = 272.0
+    realistic_response_bytes = 300 * real_bytes_per_token  # a ~300-token response, in wire bytes
+    est.record_completion(response_bytes=realistic_response_bytes)
+    tokens = est.current_estimate_tokens(fallback_tokens=1024, bytes_per_token=real_bytes_per_token)
+    assert tokens == pytest.approx(300.0)
+    # Sanity-check the bug this guards against: using the OLD plain-text constant against the
+    # SAME real wire-byte value would have inflated the estimate by ~84x.
+    wrong_bytes_per_token = 3.235
+    inflated_tokens = realistic_response_bytes / wrong_bytes_per_token
+    assert inflated_tokens > tokens * 50  # confirms the old constant was badly wrong, not just off

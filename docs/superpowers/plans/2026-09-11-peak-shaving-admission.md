@@ -843,6 +843,30 @@ near-zero deferral at this cap/window combination, so TTFT should be largely una
 
 ---
 
+## Post-implementation addendum: Task 7's first live validation found a real bug
+
+Task 2/4 as executed used `bytes_per_token=3.235` (this project's `--chars-per-token`
+plain-text constant, reused by mistake). First live validation (Task 7) stalled: 58 requests
+admitted then nothing for the remaining ~800s of a 900s trial, while the power trace showed
+real fleet power at idle (~120W) the whole time — the gate was blocking despite the cap not
+being remotely threatened. Root cause: `response_bytes` (fed to `DecodeByteEstimator`) counts
+raw HTTP/SSE wire bytes including JSON event scaffolding, not plain text — live-measured at
+272.2/272.1 bytes/token (two independent samples), ~84x the plain-text constant. The first
+real completion seeded the EMA with an ~84x-inflated apparent token count, which then blocked
+every subsequent request regardless of real power — a self-reinforcing lockup, since only a
+completion could have corrected the estimate, and nothing was completing.
+
+**Fix applied** (code, not this plan's historical text above): `bytes_per_token` default
+changed to `272.0` everywhere it appears (`proxy_server.py`'s `make_app`/`run` signatures,
+`run_router.py`'s `ROUTER_BYTES_PER_TOKEN` default and docstring, `launch_router_experiment.sh`'s
+`BYTES_PER_TOKEN` default), plus a regression test
+(`test_decode_byte_estimator_with_real_wire_bytes_per_token_gives_sane_token_estimate`) locking
+in the real constant and the magnitude of the old bug. The task bodies above still show
+`3.235` as originally written/executed — left as-is for historical accuracy; the spec
+(`docs/superpowers/specs/2026-09-11-peak-shaving-admission-design.md` §4.2/§4.3) has the
+corrected, current values. Task 7 needs to be re-run against the fixed code before this
+plan can be considered validated.
+
 ## Self-review notes (updated 2026-09-11 for the two-term estimator revision)
 
 - **Spec coverage:** §3 (architecture/data flow, now 7 steps) → Tasks 3-4. §4.1 (PowerBudget) →

@@ -181,9 +181,23 @@ class DecodeByteEstimator:
 
 Fed by counting `len(chunk)` in `handle_completions`'s existing streaming loop (`async for
 chunk in upstream.content.iter_any()`) — no new dependency, the proxy already sees every byte
-of the response. `bytes_per_token` reuses this project's existing calibrated
-`--chars-per-token` constant from `src/replay_sharegpt.py` (3.235), not a newly-invented
-approximation.
+of the response.
+
+**`bytes_per_token` = 272.0, measured directly against this project's vLLM streaming
+endpoint (2026-09-11 post-Task-7 fix) — not this project's `--chars-per-token` constant
+(3.235) from `src/replay_sharegpt.py`, which was wrongly reused here in the first cut of this
+design.** `response_bytes` counts raw HTTP/SSE wire bytes, including the full JSON event
+scaffolding per token (`{"id":...,"choices":[{"text":...}],...}`), not plain generated text —
+live measurement gave 272.2 and 272.1 bytes/token across two independent samples (n_sse_events
+as the token-count proxy), ~84x larger than the plain-text constant. Using the wrong constant
+caused a self-reinforcing admission-gate lockup on first live validation (Task 7): the first
+real completion seeded the EMA with an ~84x-inflated apparent token count, which then pushed
+every subsequent marginal-energy estimate past the cap regardless of real measured power,
+permanently starving the only thing (new completions) that could have corrected the estimate.
+Diagnosed from the mismatch between the live power trace (real fleet power at idle, ~120W, for
+810 of 900 trial-seconds) and the assignment log (admissions stopped entirely at t+97s) —
+routing stalled while real power was nowhere near the cap, which is only consistent with the
+gate's own estimate being wrong, not the cap being genuinely hit.
 
 Two explicit approximations remain, both still erring in the *safe* direction:
 
@@ -215,8 +229,8 @@ env vars, following this project's existing convention (unset = feature disabled
   matching the spike's implicit resolution).
 - `J_PER_PREFILL_TOKEN` — default 0.068 (conservative upper bound, §4.2).
 - `J_PER_DECODE_TOKEN` — default 2.40 (calibrated mean, §4.2).
-- `BYTES_PER_TOKEN` — default 3.235 (reused from `src/replay_sharegpt.py`'s existing
-  `--chars-per-token` calibration).
+- `BYTES_PER_TOKEN` — default 272.0 (real wire bytes/token, measured directly — §4.2; not
+  `src/replay_sharegpt.py`'s 3.235 plain-text chars-per-token constant).
 
 ## 5. Error handling / edge cases
 

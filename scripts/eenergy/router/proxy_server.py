@@ -96,7 +96,21 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
              bs_source: str = "local", whale_token_threshold: int = WHALE_TOKEN_THRESHOLD,
              peak_cap_w: float = None, peak_window_s: float = 30.0,
              peak_recheck_interval_s: float = 1.0, j_per_prefill_token: float = 0.068,
-             j_per_decode_token: float = 2.40, bytes_per_token: float = 3.235):
+             j_per_decode_token: float = 2.40, bytes_per_token: float = 272.0):
+    # bytes_per_token=272.0 is REAL WIRE BYTES per token (measured directly against this
+    # project's actual vLLM streaming endpoint: 272.2 and 272.1 bytes/event across two
+    # independent live samples, n_sse_events used as the token-count proxy) -- NOT
+    # src/replay_sharegpt.py's 3.235 plain-text chars-per-token constant, which was wrongly
+    # reused here in the first cut of this design. response_bytes (fed to DecodeByteEstimator
+    # below) counts raw HTTP/SSE bytes including the JSON event scaffolding
+    # ({"id":...,"choices":[{"text":...}],...} per token), which is ~84x larger than the
+    # token's plain text alone. Using the plain-text constant caused a self-reinforcing
+    # admission-gate lockup on first live validation: the first real completion seeded the
+    # EMA with an ~84x-inflated apparent token count, which then made every subsequent
+    # marginal-energy estimate blow past any reasonable cap regardless of real measured
+    # power, permanently starving new completions (which are the only thing that could have
+    # corrected the estimate). See docs/superpowers/specs/2026-09-11-peak-shaving-admission-
+    # design.md Sec 4.2.
     router = Router(states, policy, bs_source=bs_source,
                      whale_token_threshold=whale_token_threshold)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -169,7 +183,7 @@ def run(replica_specs: list, policy: str, model_name: str, host: str, port: int,
         whale_token_threshold: int = WHALE_TOKEN_THRESHOLD,
         peak_cap_w: float = None, peak_window_s: float = 30.0,
         peak_recheck_interval_s: float = 1.0, j_per_prefill_token: float = 0.068,
-        j_per_decode_token: float = 2.40, bytes_per_token: float = 3.235) -> None:
+        j_per_decode_token: float = 2.40, bytes_per_token: float = 272.0) -> None:
     states = build_replica_states(replica_specs)
     gpu_indices = [s.config.gpu_index for s in states]
     reader = NvmlPowerReader(gpu_indices)

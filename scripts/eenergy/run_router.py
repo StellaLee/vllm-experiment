@@ -41,9 +41,12 @@ Env:
                             calibrated mean.
   ROUTER_J_PER_DECODE_TOKEN  default 2.40. Calibrated (robust, CV~3-8%) decode energy constant
                             (J/token).
-  ROUTER_BYTES_PER_TOKEN     default 3.235. Reused from src/replay_sharegpt.py's existing
-                            --chars-per-token calibration, for converting the live decode-
-                            length byte EMA to a token count.
+  ROUTER_BYTES_PER_TOKEN     default 272.0. REAL WIRE BYTES per token (measured directly
+                            against this project's vLLM streaming endpoint -- see
+                            proxy_server.py's make_app docstring comment), NOT
+                            src/replay_sharegpt.py's 3.235 plain-text chars-per-token
+                            constant. Converts the live decode-length byte EMA to a token
+                            count for the admission gate's marginal-energy estimate.
 """
 import os
 import sys
@@ -83,7 +86,7 @@ def main() -> int:
     peak_recheck_interval_s = float(os.environ.get("ROUTER_PEAK_RECHECK_INTERVAL_S", "1.0"))
     j_per_prefill_token = float(os.environ.get("ROUTER_J_PER_PREFILL_TOKEN", "0.068"))
     j_per_decode_token = float(os.environ.get("ROUTER_J_PER_DECODE_TOKEN", "2.40"))
-    bytes_per_token = float(os.environ.get("ROUTER_BYTES_PER_TOKEN", "3.235"))
+    bytes_per_token = float(os.environ.get("ROUTER_BYTES_PER_TOKEN", "272.0"))
     run(replica_specs, policy, model_name, host, port, power_interval_s, assignment_log_path,
         bs_source, bs_poll_interval_s, whale_token_threshold, peak_cap_w, peak_window_s,
         peak_recheck_interval_s, j_per_prefill_token, j_per_decode_token, bytes_per_token)
