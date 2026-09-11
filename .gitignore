@@ -16,6 +16,8 @@ data/
 # Paper
 paper-mlsys/
 paper-pes-im/
+paper-eenergy-old/
+paper-eenergy-power-ramp/
 
 # LaTeX build artifacts (paper-eenergy/ is tracked; keep .tex/.bib/.pdf, drop the rest)
 paper-eenergy/*.aux
