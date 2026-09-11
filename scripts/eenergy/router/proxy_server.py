@@ -194,8 +194,22 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
         await resp.write_eof()
         return resp
 
+    async def handle_health(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
     app = web.Application()
     app.router.add_post("/v1/completions", handle_completions)
+    # Real health check, bypassing handle_completions entirely -- readiness polling (e.g.
+    # orchestrate/eenergy/*.sh's wait_for_router) must NOT exercise the admission gate or
+    # decode_estimator. First live validation had a real bug here: wait_for_router polled via
+    # a POST to /v1/completions (prompt="hi", max_tokens=1), which went through the SAME
+    # decode_estimator as real traffic -- its tiny response seeded the EMA with a
+    # near-zero decode-length estimate before the real workload even started, systematically
+    # UNDER-estimating marginal energy for the whole trial that followed (the opposite failure
+    # mode from the bytes_per_token bug, same root cause: an unrepresentative sample poisoning
+    # the estimator). See docs/superpowers/specs/2026-09-11-peak-shaving-admission-design.md
+    # Sec 4.2.
+    app.router.add_get("/health", handle_health)
     app["states"] = states
     app["router"] = router
     app["budget"] = budget

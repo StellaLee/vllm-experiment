@@ -27,10 +27,12 @@ run_common_setup () {
 }
 
 wait_for_router () {
+  # GET /health, NOT a real completion -- a POST through /v1/completions here would exercise
+  # the SAME decode_estimator real traffic uses, poisoning its cold-start EMA with an
+  # unrepresentative tiny response before the trial even starts (a real bug found on this
+  # exact battery -- see proxy_server.py's make_app docstring comment on handle_health).
   for i in $(seq 1 120); do
-    if curl -sf -X POST http://127.0.0.1:9100/v1/completions -H "Content-Type: application/json" \
-       -d '{"model":"/data/pli/models/Qwen2.5-Coder-7B-Instruct","prompt":"hi","max_tokens":1}' \
-       >/dev/null 2>&1; then
+    if curl -sf http://127.0.0.1:9100/health >/dev/null 2>&1; then
       echo "router ready after ${i} checks"
       return 0
     fi
