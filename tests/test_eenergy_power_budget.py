@@ -49,6 +49,42 @@ def test_record_keeps_samples_within_window():
     assert budget.would_exceed(cap_w=1000.0, marginal_j=0.0) is True
 
 
+def test_reserve_immediately_affects_would_exceed_without_a_new_sample():
+    """The TOCTOU gap this ledger closes: two admission checks against the SAME stale power
+    samples (no new record() call between them, simulating two requests arriving within one
+    power_poll_loop interval) -- the second check must see the first request's reservation,
+    not just the stale real-power reading."""
+    budget = PowerBudget(window_s=10.0)
+    budget.record(t=0.0, fleet_power_w=2000.0)
+    budget.record(t=1.0, fleet_power_w=2000.0)
+    # mean=2000W, cap=2400W -> 400W of headroom -> 4000J fits (400*10), 5000J doesn't
+    assert budget.would_exceed(cap_w=2400.0, marginal_j=4000.0) is False
+    budget.reserve(4000.0)
+    # same stale samples, but now 4000J is already reserved -- a second, identical request
+    # must now be rejected even though the real power reading hasn't changed at all
+    assert budget.would_exceed(cap_w=2400.0, marginal_j=4000.0) is True
+
+
+def test_release_removes_a_reservation():
+    budget = PowerBudget(window_s=10.0)
+    budget.record(t=0.0, fleet_power_w=2000.0)
+    budget.record(t=1.0, fleet_power_w=2000.0)
+    budget.reserve(4000.0)
+    assert budget.would_exceed(cap_w=2400.0, marginal_j=4000.0) is True
+    budget.release(4000.0)
+    assert budget.would_exceed(cap_w=2400.0, marginal_j=4000.0) is False
+
+
+def test_release_does_not_go_negative():
+    budget = PowerBudget(window_s=10.0)
+    budget.record(t=0.0, fleet_power_w=100.0)
+    budget.record(t=1.0, fleet_power_w=100.0)
+    budget.release(500.0)  # releasing more than was ever reserved
+    # should not leave _reserved_j negative in a way that lets an oversized request through
+    # unrealistically -- would_exceed's own math still holds for a fresh, large marginal_j
+    assert budget.would_exceed(cap_w=100.0, marginal_j=100000.0) is True
+
+
 def test_estimate_marginal_energy_j_combines_prefill_and_decode_terms():
     j = estimate_marginal_energy_j(prompt_tokens=100, expected_decode_tokens=50,
                                     j_per_prefill_token=0.068, j_per_decode_token=2.40)

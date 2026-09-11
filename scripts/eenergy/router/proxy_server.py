@@ -139,6 +139,11 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
                 len(token_ids), expected_decode_tokens, j_per_prefill_token, j_per_decode_token)
             while budget.would_exceed(peak_cap_w, marginal_j):
                 await asyncio.sleep(peak_recheck_interval_s)
+            # Reserve immediately on admission, before any real power measurement could
+            # reflect this request's draw -- closes a real time-of-check-to-time-of-use gap
+            # where several requests arriving close together could each pass against the same
+            # stale reading. See power_budget.PowerBudget.reserve's docstring.
+            budget.reserve(marginal_j)
         replica_id = router.route(token_ids)
         is_whale = router.last_is_whale
         target = by_id[replica_id].config
@@ -165,6 +170,8 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
             router.complete(replica_id, is_whale)
             if decode_estimator is not None:
                 decode_estimator.record_completion(response_bytes)
+            if budget is not None:
+                budget.release(marginal_j)
         await resp.write_eof()
         return resp
 

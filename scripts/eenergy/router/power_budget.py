@@ -15,6 +15,7 @@ class PowerBudget:
     def __init__(self, window_s: float):
         self.window_s = window_s
         self._samples = deque()  # (t, fleet_power_w), oldest first
+        self._reserved_j = 0.0  # sum of marginal_j for admitted-but-not-yet-completed requests
 
     def record(self, t: float, fleet_power_w: float) -> None:
         self._samples.append((t, fleet_power_w))
@@ -22,11 +23,30 @@ class PowerBudget:
         while self._samples and self._samples[0][0] < cutoff:
             self._samples.popleft()
 
+    def reserve(self, marginal_j: float) -> None:
+        """Call the instant a request is admitted (right after would_exceed returns False),
+        BEFORE any real power measurement could possibly reflect its draw. Closes a real
+        time-of-check-to-time-of-use gap: without this, several requests arriving within the
+        same power_poll_loop interval each check against the same stale real-power reading and
+        can all pass, collectively overshooting the cap before the real trace catches up."""
+        self._reserved_j += marginal_j
+
+    def release(self, marginal_j: float) -> None:
+        """Call when a previously-reserved request completes (handle_completions's existing
+        finally block) -- by then its real draw has already accumulated into the ongoing power
+        samples over its actual lifetime, so the reservation has done its job. Floored at 0 so
+        a mismatched/late release can't push the ledger negative and let an oversized request
+        through unrealistically."""
+        self._reserved_j = max(0.0, self._reserved_j - marginal_j)
+
     def would_exceed(self, cap_w: float, marginal_j: float) -> bool:
         if len(self._samples) < 2:
             return False
         mean_power_w = sum(p for _, p in self._samples) / len(self._samples)
-        projected_avg_w = mean_power_w + marginal_j / self.window_s
+        # Account for this candidate's own marginal energy AND every currently-outstanding
+        # reservation from other admitted-but-not-yet-reflected requests -- not just the
+        # stale real-power reading alone.
+        projected_avg_w = mean_power_w + (self._reserved_j + marginal_j) / self.window_s
         return projected_avg_w > cap_w
 
 
