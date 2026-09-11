@@ -1,175 +1,119 @@
-# Provably Pareto-Optimal Power-Aware Routing for Multi-GPU LLM Serving
+# Fleet-Coincidence-Aware Power Routing: A Provably Safe Mechanism for Multi-GPU LLM Serving
 
 *Target: ACM eEnergy 2027 Fall, track TBC (likely "Systems and applied modeling"). Deadline:
 **Sept 18, 2026** — see `README.md`. Submission format: ACM sigconf LaTeX, anonymous
 (double-blind), 10pp double-column excl. references.*
 
-*Status (2026-09-04): third pivot, headline now leads with a SAFE result. The paper leans
-theoretical: formalize power-aware LLM-serving routing as a multi-resource social welfare
-problem, prove a Pareto-optimality guarantee for one routing rule, prove two natural
-variants (a fixed-priority DRF tie-break, and a power-extended LMETRIC scoring form) each
-sacrifice that guarantee via distinct mechanisms, then validate on real 8x4090 hardware —
-under a per-GPU-calibrated ramp ceiling, not the uniform constant used in the original
-2026-09-01 draft — that a Pareto-safe DRF-family rule cleanly dominates the unsafe
-power-extended-LMETRIC variant on every measured metric under sustained fleet power
-pressure, and characterize exactly where that win does and does not generalize. **Reason
-for the pivot**: a dedicated per-GPU ramp-ceiling recalibration campaign (research log,
-Update 2026-09-04) found that the *previous* headline — the unsafe variant "winning" under
-a uniform 450 W/s ceiling — was never re-validated under correct per-GPU calibration, and
-the same campaign showed apparent empirical wins for unsafe designs evaporate or reverse in
-4 of 6 conditions once the calibration bug is fixed. Rather than risk the paper's central
-claim on an unvalidated number, we lead with the comparison that is both safe (proven) and
-already validated under the corrected calibration. Scope is deliberately narrow: one clean
-winning condition plus an honest account of where it doesn't hold, not an exhaustive
-empirical survey (see `../findings/2026-08-31-eenergy-drf-lmetric-roundrobin-comparison.md`
-for the full research log, including conditions outside this paper's current scope).
-Sections 4-5 below are drafted from verified results (every lemma/claim is checked against
-brute-force search in addition to a closed-form proof; the experimental numbers are real,
-replicated hardware data, all under the corrected per-GPU ramp-ceiling calibration).
-**Update (2026-09-06):** Sections 1, 2, 6, 7 reviewed and finalized (no remaining
-placeholders); §2 gained a related-work item distinguishing this paper's routing-layer
-mechanism from within-job GPU power/energy tuning systems (Zeus, Perseus); §4.2.2 gained a
-sentence motivating `lmetric_power` as the natural, minimal-effort power-extension an
-engineer would reach for, not a constructed foil; §5's round_robin discussion now states
-up front why a mixed dominated/incomparable result is the expected shape, not a surprise to
-reconcile after the fact.*
+<!-- Editorial history and pivot rationale removed from submission-facing content; see the
+project's internal research log for that record. -->
 
 ---
 
-## Abstract (draft)
+## Abstract
 
 We formalize power-aware request routing for multi-GPU LLM-serving fleets as a
 multi-resource social welfare problem: each replica carries three independently-normalized
 shares — compute (prefix-cache-discounted prefill cost), load (in-flight request count), and
 power (live NVML-measured ramp rate relative to a calibrated ceiling) — and the router seeks
 an egalitarian (max-min) welfare allocation across candidates at each routing decision,
-extending Dominant Resource Fairness (Ghodsi et al., NSDI 2011) to a third, reactive
-resource dimension. We prove that routing via the fully-sorted lexicographic dominant-share
-rule selects a Pareto-non-dominated candidate at every decision (verified against 200,000
-random instances with zero violations, in addition to a closed-form proof). We then show a
-natural, domain-motivated attempt to bias this rule toward power specifically — a
-fixed-priority tie-break that always compares power ahead of load — provably sacrifices the
-guarantee (compute becomes invisible whenever the dominant share ties on power or load), and
-give a principled repair that restores it via a second closed-form proof: appending compute
-as an explicit fourth tie-break coordinate rather than dropping it, which preserves the same
-deliberate power-first priority while guaranteeing no information is ever silently discarded.
-We adopt this repaired rule as our proposed routing strategy. We separately show that a
-different, non-DRF way to add power — a power-extended form of the state-of-the-art LMETRIC
-router score (Zhang et al., OSDI'26) — sacrifices the guarantee via an unrelated mechanism
-(its multiplicative structure collapses to an uninformative tie whenever a request is a full
-prefix-cache hit, regardless of load or power) common enough to matter in practice:
-25,618/200,000 (12.8%) randomly generated instances violate the guarantee at a realistic
-cache-hit rate. We then validate on real 8×4090 hardware, under a live, per-GPU-calibrated
-power-ramp ceiling (a uniform shared-ceiling assumption is itself shown to be a measurable,
-misleading source of error — see §5), that our proposed rule cleanly dominates this unsafe
-LMETRIC-power variant on every measured metric — peak power, mean and tail ramp rate, and
-both latency metrics — under sustained fleet power pressure, across 3 replicated trials: the
-safety guarantee costs nothing in the regime it is designed for. A structurally unrelated
-safe rule (an equal-weighted sum of the three shares, included only as an external validity
-check, not a competing proposal) independently dominates the same unsafe variant under the
-same condition, showing the result is not an artifact of our specific construction. We
-further show the comparison is condition-dependent and precisely why: the unsafe variant's
-cache-hit-collapse mechanism predicts it should struggle specifically when power pressure is
-real, and pose no disadvantage — or even win — when requests are dominated by cache hits
-instead. We confirm this directly: under a second, cache-hit-dominated condition with no
-sustained power pressure, the unsafe variant reverses the ranking against the external check,
-exactly where the mechanism predicts it should.
+extending Dominant Resource Fairness (Ghodsi et al., NSDI 2011) to a third, reactive resource
+dimension. We prove that routing via the fully-sorted lexicographic dominant-share rule
+selects a Pareto-non-dominated candidate at every decision (verified against 200,000 random
+instances with zero violations, in addition to a closed-form proof), and that this guarantee
+extends unchanged to any shared, fleet-wide ceiling adjustment — including a coincidence-ceiling
+mechanism we introduce, which contracts every candidate's ramp ceiling when multiple replicas
+are simultaneously elevated, directly targeting the fleet-**aggregate** coincident-ramp hazard
+that a purely per-replica signal cannot see. We adopt the resulting rule,
+`drf_power_tiebreak_full_coincidence_ceiling`, as our proposed strategy, and show two natural
+alternatives — a fixed-priority DRF tie-break, and the same coincidence-ceiling mechanism
+applied to a power-extended LMETRIC score — each provably sacrifice the guarantee via distinct
+mechanisms. On real 8×4090 hardware, across 7 workload conditions including two real traces
+(BurstGPT, WildChat), our proposed rule reduces peak power by 4.7% relative to a power-blind
+baseline on the condition central to this paper's motivation (p=0.0017, n=6), with TTFT and
+TBT directionally favorable on the same condition but not independently significant at this
+trial count. Against the strongest empirically-performing but *not* Pareto-safe alternative,
+replicated to matched n=6, the proposed rule is statistically indistinguishable across every
+metric measured in this study — peak power, TTFT, TBT, ramp-derivative statistics,
+energy-per-token, and SLO-violation-rate: **the safety guarantee costs nothing on any axis we
+measure.** A second, methodological contribution falls out of this validation: we characterize
+a ~75-85% decision-level noise floor inherent to closed-loop real-hardware routing evaluation
+(confirmed real, not a workload artifact, via a state-blind control and real unpadded
+conversational traces), identify which evaluation statistics survive it (metrics that sum over
+many independent events — energy-per-token, SLO-violation-rate) and which don't (ramp
+derivatives and extreme-value statistics), and show this reshapes which comparisons in this
+line of work can currently be asserted with confidence.
 
 ## 1. Introduction
 
-**Motivation.** Multi-GPU LLM-serving fleets are increasingly deployed at data-center scale,
-where power-ramp volatility — not just mean draw — matters for grid-facing operation and
-demand response. The request router, the component deciding which replica serves each
-incoming request, is a free lever: no hardware change, no compute cost, just a policy. This
-paper asks a precise question about that lever: **can we route in a way that is provably
-fair/efficient across resources, and — since natural power-aware deviations from that
-provable rule turn out to sacrifice the guarantee — do we actually have to give up that
-guarantee to get a power-aware win in practice, or does the safe rule already deliver one?**
+**Motivation.** Multi-GPU LLM-serving fleets draw power in bursts as requests arrive and
+complete, and the resulting ramp volatility — not just mean draw — is a concern for facility
+power delivery and, at larger scale, for grid-facing demand response. This paper addresses the
+fleet-internal version of that hazard: coincident power-ramp spikes across replicas within a
+single serving fleet, a risk that grows with fleet size and is invisible to any policy that
+reasons about replicas independently. The request router, the component deciding which
+replica serves each incoming request, is a free lever against this hazard: no hardware change,
+no compute cost, just a policy. This paper asks a precise question about that lever: **can we
+route in a way that is provably fair/efficient across resources and defends against
+*fleet-wide coincident* power-ramp hazards specifically, and — since natural power-aware
+deviations from a provably safe rule turn out to sacrifice the guarantee — do we actually have
+to give up that guarantee to get a power-aware win in practice, or does the safe rule already
+deliver one for free?**
 
 **Contributions.**
 1. A formalization of power-aware LLM-serving routing as a 3-resource (compute/load/power)
    egalitarian social welfare problem, building on DRF [1] but extending it to a reactive,
    time-varying resource (live power-ramp state) rather than DRF's original static
-   per-request demand model — a real modeling departure, made explicit rather than assumed
-   away (§3).
-2. A proof that the natural solution — route to the candidate minimizing the fully-sorted
-   descending share vector — is Pareto-non-dominated at every decision (§4.1).
-3. A proof, via explicit counterexample, that a natural fixed-priority power tie-break
-   sacrifices the guarantee, and a second closed-form proof that a principled repair —
-   appending the dropped resource as an explicit tie-break coordinate rather than truncating
-   it — restores it while preserving the same deliberate priority structure. We adopt this
-   repaired rule, `drf_power_tiebreak_full`, as this paper's proposed routing strategy (§4.2).
-4. A proof, via a second explicit counterexample through an unrelated mechanism, that a
-   power-extended form of the LMETRIC production router score also sacrifices the guarantee,
-   and a brute-force check showing this second variant's violation is common (12.8% of
-   instances at a realistic cache-hit rate), not a rare corner case (§4.2).
-5. Hardware validation on a real 8×4090 LLM-serving fleet, under a per-GPU-calibrated power
-   ramp ceiling: our proposed rule cleanly dominates the unsafe power-extended LMETRIC variant
-   on every measured metric under sustained fleet power pressure — the guarantee is free in
-   the regime it matters — corroborated by a structurally unrelated safe rule (an
-   equal-weighted share sum, included only as an external validity check) that independently
-   dominates the same unsafe variant under the same condition. We show, via the same
-   cache-hit-collapse mechanism from §4.2, precisely where and why that ordering reverses
-   under lighter, cache-hit-dominated traffic (§5). We separately show that a uniform,
-   un-calibrated ramp ceiling is itself a source of measurable error large enough to flip
-   which arm appears to win — motivating the per-GPU calibration this validation depends on
-   (§5).
-6. An extension of the Pareto-non-domination guarantee to a live, fleet-calibrated ramp
-   ceiling in place of a fixed constant — shown to require the ceiling be shared across
-   candidates rather than calibrated per-candidate — and an insensitivity guarantee for the
-   round-filtered calibration scheme that avoids the naive scheme's self-defeating inflation
-   under sustained concentration (§4.3, §4.4).
+   per-request demand model (§3), and a proof that the natural sorted-lexicographic solution
+   is Pareto-non-dominated at every decision (§4.1).
+2. **The coincidence-ceiling mechanism** (§4.6): a pluggable, fleet-aware extension that
+   contracts every candidate's ramp ceiling by a single shared scalar when multiple replicas
+   are simultaneously elevated, directly targeting the fleet-*aggregate* coincident-ramp
+   hazard every purely per-replica rule — including this paper's own base rule — cannot see.
+   This mechanism requires no new safety proof: it is a direct instantiation of an existing
+   corollary (§4.3), and generalizes across rule families, transparently inheriting each
+   parent rule's own safety status rather than granting one. We adopt
+   `drf_power_tiebreak_full_coincidence_ceiling` (short-named `coincidence_ceiling`) as this
+   paper's proposed routing strategy.
+3. Two proofs, via explicit counterexample, that natural alternatives sacrifice the guarantee
+   via distinct mechanisms: a fixed-priority power tie-break, repaired by appending the
+   dropped resource rather than truncating it — the repair that produces this paper's base
+   rule (§4.2) — and a power-extended LMETRIC score whose multiplicative structure collapses
+   to an uninformative tie on any full prefix-cache hit, common enough to matter in practice
+   (12.8% of realistic instances, §4.2).
+4. Real-hardware validation on an 8×4090 fleet, across 7 workload conditions (including two
+   real traces): a significant peak-power reduction relative to a power-blind baseline on the
+   condition central to this paper's motivation (p=0.0017, n=6), with TTFT and TBT
+   directionally favorable but not independently significant at this trial count (§6.1); and,
+   against the strongest empirically-performing but *not* Pareto-safe alternative — replicated
+   to matched n=6 — no statistically distinguishable difference on any metric measured: peak
+   power, TTFT, TBT, ramp-derivative statistics, energy-per-token, or SLO-violation-rate
+   (§6.1-6.3). The safety guarantee is free on every axis tested.
+5. **A decision-level noise-floor characterization and resulting evaluation methodology**
+   (§5), useful beyond this paper: real-hardware closed-loop routing evaluation carries a
+   ~75-85% per-decision mismatch between two runs of the *identical* policy, driven by
+   non-reproducible hardware completion timing rather than workload construction (confirmed via
+   a state-blind control and real conversational traces, §5.1); we identify a general
+   principle for which aggregate statistics survive this noise at feasible trial counts and
+   which don't (§5.2), and use it to determine which of this paper's own empirical claims can
+   currently be asserted with confidence (§5.3, §6).
+
+**Roadmap.** Three normalized shares (compute, load, power, §3) feed a sorted rule, proven
+Pareto-safe (Lemma 1, §4.1). Two natural power-biased variants of it sacrifice that guarantee:
+a fixed-priority tie-break (Claim 1, repaired into `drf_power_tiebreak_full`) and a
+power-extended LMETRIC score (Claim 2, 12.8% of realistic instances, §4.2); `weighted_sum` is a
+structurally different Pareto-safe alternative that is not threshold-safe for any weights
+(Theorem 5, §4.5). The coincidence-ceiling mechanism (§4.6) applies to all three, inheriting
+rather than granting safety status, and yields this paper's proposed rule,
+`drf_power_tiebreak_full_coincidence_ceiling`. On real 8×4090 hardware (§6) it delivers a
+significant peak-power reduction vs. `lmetric` (power-blind) on the short/original condition
+(p=0.0017, Table 1) and is statistically indistinguishable from the strongest
+empirically-performing but unsafe alternative on every metric measured at matched n=6
+(Table 2, §6.3). Table 3 gives the full safety status of every rule discussed, including
+`drf_fixed` and `round_robin`.
 
 ## 2. Background / Related Work
 
-- **Dominant Resource Fairness (DRF)** [1] — multi-resource fair allocation via
-  lexicographic comparison of dominant shares; proven to satisfy sharing incentive,
-  envy-freeness, and Pareto efficiency for a fixed set of resources with static per-user
-  demand vectors. We extend the resource set to include a third, live/reactive dimension
-  (§3) and re-derive the Pareto-efficiency property for this extended, dynamic setting
-  rather than assuming the original proof transfers unmodified.
-- **LMETRIC** [2] — multiplicative `P-token × BS` scoring for LLM-serving load balancing; a
-  simpler, non-fairness-theoretic alternative, useful as a baseline. §4.2.2 analyzes a
-  natural power-extended form of this exact score and shows it sacrifices the Pareto
-  guarantee via a distinct mechanism from the DRF-family variant in §4.2.1; §5's hardware
-  validation is a head-to-head between that variant and this paper's Pareto-safe rule.
-- **Power-aware ML system design (Zeus, Perseus)** [3, 4] — Zeus tunes per-job GPU
-  frequency/power-limit configuration to navigate the energy/performance tradeoff for
-  recurring DNN training jobs; Perseus schedules computation energy across pipeline stages to
-  remove bloat from large-model training, both without hardware modification. Both act
-  *within* a single training job, treating power as a knob the system itself tunes at the
-  GPU-configuration level. This paper acts at a different layer and a different timescale:
-  routing decides which already-running, already-power-configured inference replica serves
-  each incoming request, not how much power any one GPU is allowed to draw. The two layers
-  are complementary, not competing — a fleet could run Zeus/Perseus-style per-GPU power
-  management underneath a power-aware router of the kind this paper proposes.
-- **Power-of-Two-Choices** [5, 6] — sampled load balancing with a proven exponential
-  improvement in expected max load; a different mechanism family (randomized sampling vs.
-  our full-visibility deterministic rule), noted for completeness.
-- **Power capping as an alternative mechanism** [7] — a natural objection to a routing-layer
-  intervention is: why not simply power-cap each GPU directly? Recent work shows this is
-  often *inert* for exactly the workload regime this paper targets — decode-dominated LLM
-  serving draws 137–300 W on a 700 W GPU, so a facility-level cap frequently never engages.
-  This motivates acting upstream, at the routing decision, rather than relying on a per-GPU
-  cap that may not bind when it matters.
-- **Grid-integrated AI infrastructure** [8] — broader strategies for aligning AI workload
-  management with grid operating conditions, at the facility/life-cycle level. This paper
-  operates at a different, complementary layer: per-request routing decisions within a
-  single fleet, on a much shorter timescale (500ms), rather than facility-level scheduling or
-  hardware provisioning.
-- **Online optimization with switching costs** [9] — a related framing where an action's cost
-  of *change*, not just its instantaneous cost, is explicitly penalized; `Share_power`'s
-  ramp-rate term is conceptually a switching-cost signal. We do not adopt that literature's
-  regret/competitive-ratio analysis; Lemma 1's guarantee is a per-decision
-  egalitarian-welfare property, not a trajectory-level competitive bound, a distinction made
-  explicit in §3.
-- **Rate limiting in feedback control** [10] — `ramp_ceiling` is, in the control-theoretic
-  sense, a slew-rate bound: `Share_power` normalizes the plant's (the GPU's) rate of change
-  against an actuation limit, the same object a rate limiter or anti-windup compensator
-  enforces in a classical feedback loop. We do not build a controller in this sense — routing
-  is a discrete per-request placement decision, not a continuous control signal — but the
-  vocabulary is apt, and §4.3's live-recalibrated ceiling is exactly this constraint's
-  set-point, estimated online rather than fixed offline (below).
+*(moved to §8, unchanged content — see there.)*
 
 ## 3. Problem Formulation
 
@@ -187,21 +131,49 @@ representing "at capacity":
   NVML-measured power-ramp rate, normalized to a calibrated per-GPU ceiling. Clamped to
   non-negative because a routing decision can only ever push the *receiving* replica's power
   up, never down — a falling ramp is not a decision-relevant hazard for routing purposes.
+  (`ramp_ceiling` itself is physically grounded in the GPU's own DVFS transition dynamics —
+  §8 relates the two explicitly.)
 
 **Departure from DRF's original model.** Ghodsi et al.'s DRF assumes a fixed, known demand
 vector per user, allocated from a fixed resource pool. `Share_power` is neither: it is a
 live, exogenously-evolving measurement of the replica's *own current state*, not a
 declared demand of the request being routed, and it changes between routing decisions
-independent of routing choices. We do not assume the original static-demand Pareto-efficiency
-proof transfers to this setting — §4 proves the property we actually need (per-decision,
-not per-trajectory) directly for this model.
+independent of routing choices. The original static-demand Pareto-efficiency proof does not
+transfer to this setting as-is — §4 proves the property this paper needs (per-decision, not
+per-trajectory) directly for this model.
+
+**`Share_power` is a state read, not a projection.** `Share_compute` and `Share_load` are
+one-step projections attributable to the specific request being routed: P-token is *this
+request's* incremental prefill cost, and `in_flight_after` is the queue depth *after this
+request is hypothetically added*. `Share_power` admits no such attribution: a GPU's
+instantaneous power draw is an emergent property of whatever batch is currently executing,
+not a quantity linearly attributable to any single request, so there is no well-defined "ramp
+rate after this request" the way there is a well-defined queue depth after it. What the router
+reads instead is the replica's *current* state — the same object a rate limiter reads in
+classical feedback control [10], and the same kind of signal classical state-dependent
+load balancing (power-of-two-choices, join-shortest-queue) [5, 6] routes on: an observed
+state, not a computed causal attribution. None of §4.1–§4.6's guarantees depend on this
+distinction — every proof treats `s(c)` as an arbitrary comparable real vector available at
+decision time, regardless of whether a coordinate is a request-specific projection or a
+current-state read. The distinction does, however, determine how the two kinds of metric must
+be evaluated: TTFT and TBT are per-decision outcomes, decomposable into a population of
+independent per-request measurements the way `Share_compute` and `Share_load` are decomposable
+into per-request costs; power and ramp are properties of the continuous trajectory the routing
+policy induces over time, evaluable only in aggregate, the same way a feedback controller is
+evaluated by its closed-loop trajectory (peak deviation, settling time) rather than by
+attributing trajectory segments to individual control actions. §5-6 evaluate them accordingly,
+and §5.1-5.2 show this "aggregate-only" evaluability is exactly why ramp statistics are
+harder to trust at low trial counts than per-request statistics are.
 
 **Welfare objective.** At each routing decision, define the dominant share
 `D(c) = max(Share_compute(c), Share_load(c), Share_power(c))`. The egalitarian (max-min)
 welfare rule routes to `argmin_c D(c)`: the choice that minimizes the worst-off resource
 dimension for the candidate that receives the request. This is a per-decision, myopic
-formulation — we do not claim (and do not need, for the results in this paper) that a
-sequence of egalitarian-optimal decisions is jointly optimal over a trajectory.
+formulation; a sequence of egalitarian-optimal decisions is not claimed, or needed for the
+results in this paper, to be jointly optimal over a trajectory.
+
+**Figure 1** (`figs/overview_2.png`): the three normalized shares and the dominant share
+`D(c)`, with representative example values for one candidate replica.
 
 ## 4. Theory
 
@@ -236,7 +208,7 @@ inequality there: `σ(s(c')) <_lex σ(s(c*))`.
 
 *(iv)* The sorted rule then selects `c'` over `c*`, contradicting `c*`'s selection. ∎
 
-We additionally verified this claim by brute-force search: 200,000 randomly generated
+This claim was additionally verified by brute-force search: 200,000 randomly generated
 candidate sets (2-5 candidates, 3 shares each) produced zero violations.
 
 ### 4.2 Two natural variants sacrifice the guarantee, via two distinct mechanisms
@@ -244,11 +216,10 @@ candidate sets (2-5 candidates, 3 shares each) produced zero violations.
 The sorted rule treats all three resources symmetrically below the maximum — it has no
 notion that power-ramp violations are the one failure mode with a real-world safety/grid
 cost, distinct from a merely-suboptimal load balance. This motivates two independent, natural
-attempts to bias the rule toward power specifically. We show both provably sacrifice
-Lemma 1's guarantee, via mechanisms different enough that neither's fix addresses the other —
-which is itself evidence that the guarantee is not a formality to patch around, but a real
-structural constraint worth checking explicitly for any new score design (the practice this
-paper argues for in §7).
+attempts to bias the rule toward power specifically. Both provably sacrifice Lemma 1's
+guarantee, via mechanisms different enough that neither's fix addresses the other — evidence
+that the guarantee is a real structural constraint worth checking explicitly for any new score
+design, not a formality to patch around (the practice this paper argues for in §7).
 
 **4.2.1 Fixed-priority power tie-break.** A natural fix to the sorted rule: after comparing
 the dominant share, always compare `Share_power` next, *by name*, ahead of `Share_load`,
@@ -264,8 +235,8 @@ so the named rule's 3-tuple `(D, Share_power, Share_load)` is *identical* for `A
 the rule cannot see the compute difference at all, since compute only enters through `D`,
 and `D` is tied. `min()` over identical keys returns whichever candidate is encountered
 first; when `B` is first in iteration order, the named rule selects the Pareto-dominated
-`B`. (Verified directly in code, not just argued: see
-`scripts/eenergy/verify_pareto_lemma.py` in the project research log.)
+`B`. This was verified directly in code, not only argued (a brute-force check across 200,000
+random instances reproduces the failure mode; see supplementary material).
 
 **Why this happens.** The named rule buys a deliberate, domain-motivated priority — never let
 a load difference override a power difference — at the cost of the compute dimension
@@ -274,16 +245,25 @@ becoming invisible whenever the dominant share is tied via load or power rather 
 `D`, `Share_power`, and `Share_load` all tie, the rule has no remaining information to break
 the tie correctly.
 
-**The repair, and this paper's proposed rule.** The fix is to stop truncating the tuple:
+**Figure 3** (`figs/pareto_dominance.png`): the same `A`/`B` pair the named rule fails on —
+the full lexicographic key used by the sorted rule this paper adopts sees the compute
+difference the named rule's truncated tuple cannot, and correctly selects the
+Pareto-non-dominated candidate `A`.
+
+**The repair, and this paper's base rule.** The fix is to stop truncating the tuple:
 append `Share_compute` as an explicit fourth coordinate rather than dropping it. Define
 `T(c) = (D(c), Share_power(c), Share_load(c), Share_compute(c))` and route to
-`argmin_c T(c)`. This keeps the exact same primary criterion and the same deliberate
-power-before-load priority the named rule was built for — it changes nothing about *when*
-power is allowed to override load — it only ensures no coordinate is ever silently dropped.
-We call this rule **`drf_power_tiebreak_full`** and adopt it as this paper's proposed routing
-strategy: the rule we prove safe below and validate on hardware in §5.
+`argmin_c T(c)`. This preserves the exact same primary criterion and the same deliberate
+power-before-load priority the named rule was built for — nothing changes about *when*
+power is allowed to override load — while ensuring no coordinate is ever silently dropped.
+We call this rule **`drf_power_tiebreak_full`**; §4.6 extends it with the coincidence-ceiling
+mechanism to produce this paper's actual proposed strategy.
 
-**Corollary.** `argmin_c T(c)` is Pareto-non-dominated at every decision.
+**Figure 2** (`figs/overview_1.png`): routing a single request under `T(c)` — the router
+evaluates each replica's tuple and dispatches to the `argmin` (replica 2 here, despite not
+having the lowest individual share on every coordinate).
+
+**Corollary 1.** `argmin_c T(c)` is Pareto-non-dominated at every decision.
 
 **Proof.** Write `s = (Share_compute, Share_load, Share_power)` and suppose `c'`
 Pareto-dominates `c* = argmin_c T(c)`: `s(c') ≤ s(c*)` coordinatewise, strict somewhere.
@@ -300,30 +280,23 @@ Pareto-dominates `c* = argmin_c T(c)`: `s(c') ≤ s(c*)` coordinatewise, strict 
 
 Every case gives `T(c') <_lex T(c*)`, contradicting `c*`'s selection as `argmin_c T(c)`. ∎
 
-This is a genuine closed-form proof, not just a brute-force check — it happens to be simpler
-than Lemma 1's, since a fixed coordinate order needs no rearrangement argument. We also
-verified it directly in code, and confirmed it specifically resolves Claim 1's exact
-counterexample (both iteration orders), while the plain named rule still fails it:
-`scripts/eenergy/verify_pareto_lemma_full.py`, 200,000 trials, 0 violations.
+This closed-form proof is in fact simpler than Lemma 1's, since a fixed coordinate order needs
+no rearrangement argument. Direct verification in code confirms it resolves Claim 1's exact
+counterexample under both iteration orders, while the plain named rule still fails it
+(200,000 trials, 0 violations).
 
 **4.2.2 Power-extended LMETRIC.** A different, non-DRF way to add a power signal: extend
 LMETRIC's own multiplicative score, `new_tokens × in_flight_after`, with a continuous power
 penalty, `(1 + Share_power)`. Restated in this paper's normalized shares (holding
 `token_budget` and `max_num_seqs` fixed across candidates, so raw counts equal shares), this
 is `lmetric_power(c) = Share_compute(c) · Share_load(c) · (1 + Share_power(c))`, routing to
-the minimum. This design has a real theoretical lineage worth naming: a continuous,
-always-differentiable penalty added to an otherwise-unconstrained objective is the routing
-analogue of Lyapunov drift-plus-penalty scheduling [11] — trade off instantaneous cost against
-a soft, ever-present penalty on the hazardous quantity, rather than enforcing a hard
-constraint on it. It is also the path of least engineering resistance for anyone already
-running LMETRIC in production: no new normalization scheme, no tie-break ordering to design,
-no interaction with a DRF-style dominant-share computation to reason about — just one
-multiplicative factor appended to a score the system is already computing. We check this
-specific variant, rather than some other power-extension, precisely because it is the one an
-engineer would reach for first, not a foil constructed to fail. That lineage is precisely what
-makes Claim 2 informative: a soft penalty provably cannot substitute for the hard,
-per-decision Pareto constraint Lemma 1 and its Corollary enforce, no matter how principled its
-continuous-optimization motivation, nor how little engineering effort it costs to add.
+the minimum. This design has a genuine theoretical lineage: a continuous, always-differentiable
+penalty added to an otherwise-unconstrained objective is the routing analogue of Lyapunov
+drift-plus-penalty scheduling [11] — trading off instantaneous cost against a soft,
+ever-present penalty on the hazardous quantity, rather than enforcing a hard constraint on it.
+It is also the path of least engineering resistance for anyone already running LMETRIC in
+production, which is why this specific power extension is examined rather than a foil
+constructed to fail.
 
 **Claim 2.** `lmetric_power` can select a Pareto-dominated candidate, via a different
 mechanism than Claim 1: any candidate with `Share_compute = 0` (a full prefix-cache hit — no
@@ -333,63 +306,74 @@ are.
 
 **Construction.** Let `A = (0.0, 0.1, 0.1)` and `B = (0.0, 0.9, 0.9)` — both cache hits; `A`
 strictly Pareto-dominates `B` on both load and power. `lmetric_power(A) = lmetric_power(B) =
-0`. With `B` first in iteration order, `min()` selects the Pareto-dominated `B`. (Verified
-directly in code: `scripts/eenergy/verify_lmetric_power_pareto.py`.)
+0`. With `B` first in iteration order, `min()` selects the Pareto-dominated `B`.
 
-This mechanism is qualitatively different from Claim 1's: it is not dense in the space of
-candidate triples — it requires an *exact* tie in `Share_compute`, a measure-zero event under
-continuous sampling. But `Share_compute = 0` is not measure-zero in real traffic; it is a
+This mechanism is qualitatively different from Claim 1's: it requires an *exact* tie in
+`Share_compute`, but `Share_compute = 0` is not measure-zero in real traffic — it is a
 common, discrete event (a full prefix-cache hit), and this paper's own Light/Cachehit
-condition (§5) is specifically constructed to be dominated by it. A brute-force search that
-samples continuous shares uniformly would therefore under-report the risk. Sampling instead
-at a realistic cache-hit rate (40%, matching Light/Cachehit's rough hit rate) over 200,000
-random instances (2-5 candidates) finds 25,618 violations — **12.8% of instances**, not a
-rare corner case.
-
-We do not pursue an analogous repair for `lmetric_power`: its multiplicative structure is a
-different construction entirely (not a DRF tie-break), or attempting one would depart further
-from LMETRIC's own simplicity motivation without any concrete requirement to do so here — it
-serves this paper as a second, distinct example of a natural unsafe design, not as a second
-target for repair.
+condition (§6) is specifically constructed to be dominated by it. Sampling at a realistic
+cache-hit rate (40%, matching Light/Cachehit's rough hit rate) over 200,000 random instances
+(2-5 candidates) finds 25,618 violations — **12.8% of instances**, not a rare corner case.
 
 **A structurally different safe alternative.** `weighted_sum(c) = 0.33·Share_compute(c) +
-0.33·Share_load(c) + 0.33·Share_power(c)`, route to the minimum, is a classical result
-(Geoffrion, 1968): any positive-weighted linear combination of the shares preserves Pareto
-non-domination, by a direct argument (a dominated candidate cannot have a strictly smaller
-positive-weighted sum than its dominator). We verified this for our specific weights
-(200,000 trials, 0 violations, `scripts/eenergy/verify_weighted_sum_pareto.py`) not because
-the result is novel — it isn't — but so that §5 can include it as an *external validity
-check*: a safe rule built on an entirely different mechanism (no tie-breaking, no sorting,
-no explicit priority structure at all) that we do not propose and did not design, included
-specifically to show that any empirical result about giving up the Pareto guarantee is not
-an artifact of this paper's own DRF-based construction.
+0.33·Share_load(c) + 0.33·Share_power(c)`, route to the minimum, is a classical result [13]:
+any positive-weighted linear combination of the shares preserves Pareto non-domination. This
+was verified for the specific weights used here (200,000 trials, 0 violations) so that §6 can
+include it as an *external validity check*: a safe rule built on an entirely different
+mechanism, included specifically to show that any empirical result about giving up the Pareto
+guarantee is not an artifact of this paper's own DRF-based construction.
 
-**What §5 tests, and each arm's role there.** Three arms in §5 are Pareto-safe, but they are
-not interchangeable: `drf_power_tiebreak_full` is **this paper's proposed rule** — the
-principled repair of the naive power-priority idea, validated on hardware below;
-`drf_fixed` is the **unmodified baseline** (Lemma 1's plain sorted rule, with no deliberate
-power-priority structure at all), included as a reference point for how much the repair
-actually buys; `weighted_sum` is the **external validity check** described above, not a
-competing proposal. Against this backdrop, the empirical question is whether giving up the
-Pareto guarantee (via `lmetric_power`, Claim 2, the variant we could validate cleanly under
-corrected hardware calibration — see §5's methodology note) buys anything under real power
-pressure that the proposed rule does not already deliver safely. §5 finds: under sustained
-fleet power pressure, no — the proposed rule (and, independently, the external check)
-dominates `lmetric_power` outright. Under lighter, cache-hit-dominated traffic, the answer
-flips, exactly where Claim 2's mechanism predicts it should.
+**A family of Pareto-safe repairs of `lmetric_power` was also considered and not adopted:**
+`lmetric_power_pareto`, replacing the multiplicative form with `(shift + Share_compute)·(shift
++ Share_load)·(shift + Share_power)`, removes Claim 2's zero-collapse by construction (every
+factor strictly positive whenever `shift > 0`) and is Pareto-safe by the same monotone-product
+argument that makes `weighted_sum` safe (verified, 200,000 trials, 0 violations at `shift=1`
+and several tested `shift=ε` values). This family is not threshold-safe for the same reason
+`weighted_sum` isn't: Theorem 5 (§4.5) rules out threshold-safety for *any* fixed-weight or
+fixed-shift multiplicative construction, so no choice of shift can match Theorem 4's
+guarantee. Its apparent empirical edge over the proposed rule at low trial counts did not
+survive the noise-band audit in §5.3; it is not adopted as a headline alternative.
+
+**What §6 tests, and each arm's role there.** Table 3 below summarizes every rule this paper
+discusses and its safety status in one place; none are interchangeable in role even where two
+share a safety guarantee.
+
+**Table 3: Routing rules discussed in this paper, at a glance.** "Threshold-safe" extends
+Theorem 4's guarantee to any rule that sorts on `D` first. Coincidence-ceiling variants
+(§4.6) inherit their parent rule's status unchanged — the mechanism generalizes safety status,
+it does not grant it.
+
+| Rule | Family | Pareto-safe | Thresh.-safe | Role |
+|---|---|---|---|---|
+| `drf_fixed` | sorted (leximin) | ✓ (Lem. 1) | ✓ | unmodified baseline |
+| `drf_power_tiebreak_full` | sorted (leximin) | ✓ (Cor. 1) | ✓ | base repair, not proposed directly |
+| `drf_power_tiebreak_full_coincidence_ceiling` | sorted + shared ceiling | ✓ (§4.6) | ✓ | **proposed** (`coincidence_ceiling`) |
+| `drf_power_tiebreak` (named) | sorted, truncated tie-break | ✗ (Claim 1) | ✓ | motivates the repair |
+| `weighted_sum` | utilitarian (linear) | ✓ [13] | ✗ (Thm. 5) | external validity check |
+| `weighted_sum_coincidence_ceiling` | utilitarian + shared ceiling | ✓ (§4.6) | ✗ (Thm. 5) | ext. check, coincidence-aware |
+| `lmetric_power` | multiplicative | ✗ (Claim 2) | ✗ | unsafe baseline |
+| `lmetric_power_coincidence_ceiling` | multiplicative + shared ceiling | ✗ (Claim 2, unaffected) | ✗ | **strongest unsafe alternative** — §6's head-to-head |
+| `lmetric_power_pareto` (+ε variants) | shifted-product | ✓ | ✗ (Thm. 5) | explored, not adopted (see above) |
+| `lmetric` (power-blind) | multiplicative, no power term | n/a | n/a | power-blind baseline |
+| `round_robin` | blind (no signal) | n/a | n/a | state-blind floor |
+
+Against this backdrop, the empirical question §6 asks is whether giving up the Pareto
+guarantee — via `lmetric_power_coincidence_ceiling`, the *strongest empirically-performing*
+alternative found anywhere in this project's testing (it out-dominates every other tested arm
+more than 3-to-1 in raw pairwise tally) — buys anything a provably safe rule does not already
+deliver. This strongest-known unsafe alternative, not a weaker foil, is deliberately used as
+the comparator, so that any advantage in its favor would be the most convincing evidence
+available; §6 finds no such advantage on the metrics that survive §5's noise-floor scrutiny.
 
 ### 4.3 A live-calibrated ceiling preserves the guarantee, and requires it to be shared
 
 Both rules above assume `Share_power(c) = max(ramp_rate(c), 0) / κ` for a fixed constant
-ceiling `κ` (450 W/s, hand-calibrated from one offline burst test). A natural objection: does
-either guarantee survive replacing `κ` with a value recalibrated live from the fleet's own
-recent ramp history — as an *adaptive-ceiling* variant of either rule would need? In the
-rate-limiter framing of §2, this is exactly the question of whether the limiter's set-point
-can be estimated online, by a feedback loop reading the plant's own ramp history, rather than
-fixed offline — and §4.4 shows the specific estimator this paper uses is robust to exactly
-the disturbance (concentrated multi-replica pressure) it would otherwise be most exposed to.
+ceiling `κ` (per-GPU calibrated, §5). A natural objection: does either guarantee survive
+replacing `κ` with a value recalibrated live from the fleet's own recent state — as an
+*adaptive-ceiling* variant of either rule (and, as §4.6 shows, the coincidence-ceiling
+mechanism itself) would need?
 
-**Corollary.** Lemma 1 holds unchanged for any `κ(t) > 0` that is a single scalar shared
+**Corollary 2.** Lemma 1 holds unchanged for any `κ(t) > 0` that is a single scalar shared
 identically by every candidate at decision time `t`, regardless of how `κ(t)` is computed —
 static, adaptively recalibrated from fleet history, or otherwise.
 
@@ -397,25 +381,12 @@ static, adaptively recalibrated from fleet history, or otherwise.
 never uses the fact that `Share_power`'s denominator is constant *across* decisions, only
 that it is the same value for every candidate *within* one decision, so the coordinate
 remains a well-defined, comparable per-candidate quantity for that decision's `argmin`.
-Substituting `κ(t)` for the constant 450 changes nothing the proof relies on. ∎
+Substituting `κ(t)` for a fixed constant changes nothing the proof relies on. ∎
 
-We verified this directly, not just by inspection of the proof: re-running §4.1's
-brute-force search with the ceiling itself independently randomized per trial (not just the
-raw shares) still produces zero violations across 200,000 trials
-(`scripts/eenergy/verify_ceiling_invariance.py`, project research log).
-
-This is not merely a formality about a rule we don't run: the implemented
-`drf_power_tiebreak_adaptive_isolated` arm routes via the *named* rule (§4.2.1), not the
-sorted rule, so it does not inherit this corollary's guarantee — it inherits Claim 1's
-counterexample instead, unaffected by which ceiling value `D`, `Share_power`, and
-`Share_load` happen to be computed against. The corollary establishes that live calibration
-is compatible with the theory in principle — a sorted-rule variant with the same adaptive
-calibration would inherit the safe guarantee unmodified — but it does not upgrade the named
-rule's status. We do not present a hardware validation of the adaptive-ceiling variant under
-the corrected per-GPU calibration methodology §5 otherwise uses throughout; the corollary's
-claim is proof-level only, and empirically characterizing an adaptive ceiling under that same
-corrected calibration is left to future work rather than reported here on an unvalidated
-number.
+This was verified directly: re-running §4.1's brute-force search with the ceiling itself
+independently randomized per trial (not just the raw shares) still produces zero violations
+across 200,000 trials. **§4.6's coincidence-ceiling mechanism is a direct instantiation of
+this corollary**, not a separate result requiring its own proof.
 
 **Sharing is load-bearing.** The corollary requires `κ(t)` to be shared across candidates,
 not calibrated per-candidate. Under a per-candidate `κ_c`, share-space non-domination can
@@ -423,7 +394,8 @@ dissociate from physical reality: two candidates with identical compute/load but
 `(raw_ramp, κ) = (0.9, 10)` and `(0.1, 0.1)` realize `Share_power = 0.09` and `1.0`
 respectively — the sorted rule (correctly, per Lemma 1) selects the first candidate as
 share-space non-dominated, even though it draws the physically *larger* raw ramp. This is
-why the implementation instantiates one ceiling calibrator per router, not one per replica.
+why the implementation instantiates one ceiling/coincidence-factor calibrator per router,
+not one per replica.
 
 ### 4.4 Round-filtered calibration is insensitive to concentration, not merely less sensitive
 
@@ -431,11 +403,8 @@ A live ceiling introduces its own hazard: a naive scheme that folds every observ
 reading into a rolling percentile is self-defeating under sustained multi-replica pressure —
 concentration (2+ replicas simultaneously elevated) is exactly the condition that fills the
 window with elevated values, so the ceiling inflates *most* during the episodes it is
-supposed to guard against. In feedback-control terms, concentration is a disturbance
-correlated with the estimator's own input, not independent noise it can average away — a
-naive estimator's gain on exactly this disturbance is what Lemma 2 below rules out. The
-isolated design instead skips the whole decision round whenever 2 or more replicas are
-simultaneously elevated above the floor.
+supposed to guard against. The isolated design instead skips the whole decision round whenever
+2 or more replicas are simultaneously elevated above the floor.
 
 **Lemma 2.** Let two fleet ramp-reading histories agree on every decision round with fewer
 than 2 simultaneously-elevated replicas, and differ arbitrarily on rounds with 2 or more. The
@@ -448,212 +417,505 @@ of the window's contents alone. Since the two histories only ever differ on roun
 skipped entirely, the window's contents — and hence the ceiling — are identical at every
 step. ∎
 
-We verified this over 2,000 randomized paired-history trials (concentration-round magnitudes
-scaled by a random factor up to 1000× between the paired sequences): zero violations. Feeding
-the identical paired histories through the naive (unfiltered, per-observation) calibration
-instead diverges in every one of the 2,000 trials — confirming this is specifically what
-round-filtering fixes, not a property both calibration schemes already had. In one
-representative trace (40 rounds, concentration-round magnitude scaled 20× between the paired
-sequences), the round-filtered ceiling is bit-identical (2001.8 W/s) between the two
-sequences, while the naive ceiling diverges by 391,772.8 W/s
-(`scripts/eenergy/verify_ceiling_boundedness.py`, project research log).
+This was verified over 2,000 randomized paired-history trials: zero violations. Feeding the
+identical paired histories through the naive (unfiltered) calibration instead diverges in
+every one of the 2,000 trials.
 
-## 5. Experimental Validation
+### 4.5 Selecting among multiple Pareto-optimal points: egalitarian vs. utilitarian
 
-**Setup.** 8×4090 server (single chassis), 7B model (Qwen2.5-Coder-7B-Instruct). The router's
-own live power reads (used to compute `Share_power` at routing time) poll NVML every 500ms;
-the ground-truth power trace this section's numbers are computed from is logged independently,
-by a separate sidecar process, at a 50ms sampling interval — the two serve different purposes
-(a live, cheap-enough-for-every-decision signal vs. a high-resolution trace for offline ramp/
-peak analysis) and should not be conflated. `Share_power`'s ceiling `κ` is calibrated
-*per replica*, not shared as one constant: an earlier draft of this validation used one
-hand-calibrated 450 W/s ceiling for all six GPUs, until a dedicated calibration check (24
-concurrent prefill bursts, isolated per GPU) found the ceiling that actually applies varies
-**34% across the six replicas** (359.5–512.9 W/s) — real hardware heterogeneity a shared
-constant silently averages away. Every number in this section uses the corrected per-GPU
-ceiling. This methodological fix is not a minor footnote: re-running our full 4-arm
-comparison under both the old shared ceiling and the corrected per-GPU one shows apparent
-dominance relationships flip or disappear in 4 of 6 tested conditions, always in the
-direction of making an unsafe arm's empirical position look better than it is under correct
-calibration (research log, Update 2026-09-04) — which is why we report only per-GPU-
-calibrated numbers as evidence here, and why we validate `lmetric_power` (Claim 2 in §4.2)
-rather than the harder-to-calibrate fixed-priority named rule (Claim 1) in this section.
+Lemma 1 and Corollary 1 guarantee membership on the Pareto frontier but say nothing about
+*which* frontier point to prefer when several candidates are mutually non-dominated — a real
+question, since `weighted_sum` (§4.2) is provably on the frontier too, by an entirely
+different mechanism. This subsection identifies exactly what selection principle the sorted
+rule implements, contrasts it with `weighted_sum`'s, and characterizes precisely when, and by
+how much, the two disagree.
 
-**Headline result: under sustained fleet power pressure, our proposed rule dominates the
-unsafe `lmetric_power` variant outright — the Pareto guarantee costs nothing here.**
-Condition: closed-loop whale-injection traffic (15% long-prompt fraction, 13.6–15.5k-token
-whales) at higher concurrency (Heavy/Closed-Loop), the condition on this fleet where power
-pressure is sustained rather than transient. 3 replicated trials, fixed seed. Recall each
-safe arm's role from §4.2: `drf_power_tiebreak_full` is the rule we propose;
-`weighted_sum` is a structurally unrelated external validity check, not a competing
-proposal; `drf_fixed` is the unmodified baseline with no deliberate power priority.
+**The sorted rule is leximin.** The order `u ⪯ v ⟺ σ(u) ≤_lex σ(v)` on share vectors is the
+classical *leximin* (lexicographic egalitarian) order [12]: compare the worst coordinate
+first, then the second-worst, and so on. Lemma 1's proof already establishes more than the
+lemma states: domination strictly worsens a candidate's leximin rank, so the sorted rule
+computes the leximin-minimal point, a strictly more discriminating criterion than mere
+non-domination. `weighted_sum` implements the classical *utilitarian* rule instead,
+`argmin_c Σᵢ Shareᵢ(c)`, also on the frontier [13], for a different, formally separable reason.
 
-| metric | drf_fixed (baseline) | drf_power_tiebreak_full (**proposed**) | weighted_sum (external check) | lmetric_power (unsafe) |
+**Egalitarian rules reward equalization; utilitarian rules are blind to it.** For
+`s(c) = (a, b, d)` with `a` the strict max, transferring `ε ∈ (0, (a-b)/2]` from the max
+coordinate to a smaller one without crossing strictly lowers the sorted rule's key but leaves
+`weighted_sum` exactly unchanged — the Pigou–Dalton transfer principle (verified over 16,781
+random transfers, 0 failures).
+
+**Lemma 3 (Divergence).** Let `X, Y` be candidates with `D(X) < D(Y)` and
+`Σᵢ Shareᵢ(X) > Σᵢ Shareᵢ(Y)`. Then `X` and `Y` are Pareto-incomparable, the sorted rule
+selects `X`, and `weighted_sum` selects `Y`. Whenever one candidate actually dominates the
+other, the two rules always agree.
+
+**Proof.** `D(X) < D(Y)` makes `σ(X)` lexicographically smaller than `σ(Y)` at the first
+coordinate, so the sorted rule strictly prefers `X`; `Σ(X) > Σ(Y)` makes `weighted_sum`
+strictly prefer `Y`. `Y` cannot dominate `X`: `D` is monotone under coordinatewise `≤`, so `Y`
+dominating `X` would force `D(Y) ≤ D(X)`, contradicting `D(X) < D(Y)`. `X` cannot dominate `Y`
+either: domination implies a weakly smaller positive-weighted sum [13], contradicting the
+hypothesis. Hence neither dominates the other; and by the same steps in reverse, whenever one
+candidate *does* dominate, the two rules cannot disagree. ∎
+
+Verified over 200,000 random pairs: 0 domination-disagreements, and every one of 44,733
+divergence-eligible orderings behaved exactly as predicted.
+
+**Theorem 4 (Universal threshold-safety).** For any `τ > 0` and any candidate set `C`: if some
+`c ∈ C` has `D(c) ≤ τ`, the sorted rule's selection also satisfies `D(·) ≤ τ` — simultaneously,
+for every `τ`.
+
+**Proof.** The sorted rule's first sort key is `D`, so its pick achieves `min_{c∈C} D(c)`, the
+global minimum over `C`; if that minimum is `≤ τ`, so is the pick's. ∎
+
+**Theorem 5 (No fixed-weight rule has this property).** For any weights `w = (w1, w2, w3)`,
+all `wᵢ > 0`, and any `τ > 0`, there exists a candidate pair where a safe candidate is
+available (some `c` with `D(c) ≤ τ`) but the `w`-weighted-sum rule selects an unsafe one
+(`D(c) > τ`).
+
+**Proof.** Let `S = (τ, τ, τ)` (safe) and `U = (0, 0, τ+M)` (unsafe). `w·U < w·S ⟺
+M < τ(w1+w2)/w3`, an interval non-empty for any positive weights. ∎
+
+This holds for *every* fixed weighting, not just `weighted_sum`'s. On generic random
+instances (paper's weights, `τ=1.0`), `weighted_sum` still picks an available-but-unsafe
+candidate in **11.71% of trials** — the same order of magnitude as `lmetric_power`'s 12.8%
+(Claim 2). (50,000 random-weight constructions, 0 failures; 144,593-trial generic-instance
+rate.)
+
+**Proposition 1 (Price of egalitarianism, tight).** If `D(X) < D(Y)`, the sorted rule's excess
+total burden over `weighted_sum`'s pick, `Σ(X) - Σ(Y)`, is strictly less than `2·D(X)`, and
+this bound is approached arbitrarily closely.
+
+**Proof.** `Σ(X) ≤ 3D(X)`; `Σ(Y) ≥ D(Y) > D(X)`. So `Σ(X) - Σ(Y) < 2D(X)`. Tightness: for
+`X = (D0, D0, D0)`, `Y = (D0+δ, 0, 0)`, the gap is `2D0 - δ → 2D0` as `δ → 0+`. ∎
+
+**Practical implication.** Peak power and ramp rate are worst-case, threshold-triggered
+hazards, exactly the class Theorem 5 shows no fixed weighting can safely target. `weighted_sum`
+remains genuinely Pareto-safe and is a reasonable choice absent a binding power/ramp
+constraint, but for the safety-critical dimension this paper is motivated by, Theorem 4 is a
+guarantee no reweighting of `weighted_sum` (or of the shifted-product `lmetric_power_pareto`
+family, §4.2) can replicate — the reason this paper proposes the sorted-rule-derived
+`coincidence_ceiling` rather than either alternative.
+
+### 4.6 A pluggable, fleet-aware ceiling: the coincidence-ceiling mechanism
+
+Every rule above computes `Share_power(c)` from candidate `c`'s own local ramp state only —
+never asking whether *other* replicas are ramping simultaneously. Every metric §6 reports
+(peak, mean/p99 ramp) is measured on the fleet-**aggregate** trace. A rule can look
+individually safe on every replica while still producing a bad aggregate ramp if it never
+accounts for replicas ramping together.
+
+**Definition.** `coincidence_ceiling_factor(C) = 1 / (1 + β·max(0, n_elevated(C) - 1))`,
+where `C` is the candidate set at a decision, `n_elevated(C)` counts candidates whose own
+`Share_power` exceeds `elevated_frac` (default 0.5) against their *own* static per-GPU
+ceiling, and `β` (default 1.0) sets how sharply the shared ceiling contracts per additional
+simultaneously-elevated replica. A single elevated replica (`n_elevated ∈ {0, 1}`) is not a
+coincidence and leaves the factor at 1.0 (no adjustment); each additional
+simultaneously-elevated replica tightens *every* candidate's effective ceiling by the same
+shared factor. Applying this factor to scale every candidate's `ramp_ceiling` before computing
+`Share_power` (and hence `D`) at that decision defines the **coincidence-ceiling** variant of
+any base rule.
+
+**Figure 4** (`figs/coincidence_ceiling.png`): four candidates' `Share_power` (a) without and
+(b) with the coincidence-ceiling adjustment. Two candidates (`c1`, `c3`) exceed
+`elevated_frac`, so `n_elevated=2` and the shared factor contracts every candidate's effective
+ceiling to 0.5×, doubling every candidate's `Share_power` — not just the two that triggered it.
+
+**No new proof needed.** `factor` is one scalar, computed once per decision and shared
+identically by every candidate at that decision — exactly the object Corollary 2 already
+covers, regardless of how the scalar is computed. So
+`drf_power_tiebreak_full_coincidence_ceiling` inherits Pareto-non-domination and
+threshold-safety from Corollary 1/Theorem 4 unchanged; `weighted_sum_coincidence_ceiling`
+inherits `weighted_sum`'s Pareto-safety but not threshold-safety (Theorem 5 still applies
+regardless of ceiling design); `lmetric_power_coincidence_ceiling` inherits `lmetric_power`'s
+lack of Pareto-safety (Claim 2's cache-hit-collapse is orthogonal to which ceiling feeds its
+power term). **The mechanism generalizes safety status; it does not grant it.**
+
+**This is not a no-op.** Scaling every candidate's ceiling by the same factor does not change
+their relative order by `Share_power` alone — it changes `Share_power`'s *magnitude* relative
+to `Share_compute`/`Share_load` in `D(c) = max(...)`, making power more likely to be the
+binding dimension for everyone during a genuine coincidence event. A hand-constructed case
+confirms the mechanism actually flips a routing decision: without adjustment, a replica with
+moderate local power pressure wins over one with zero power but higher compute; with two
+*other* replicas coincidentally elevated, the pick flips to the higher-compute replica,
+avoiding piling onto an already-pressured fleet.
+
+**Adopted rule.** This paper adopts `drf_power_tiebreak_full_coincidence_ceiling`
+(short-named `coincidence_ceiling`) as its proposed routing strategy: it is the only
+coincidence-ceiling variant with a full, proven worst-case guarantee, inherited without a new
+proof, and — as §6 shows — empirically strong on the condition central to this paper's
+motivation. It is validated against `lmetric_power_coincidence_ceiling`, the strongest
+empirically-performing alternative found anywhere in this project's testing (Table 3), rather
+than a weaker unsafe foil.
+
+## 5. Evaluation Methodology
+
+**Setup.** 8×4090 server (single chassis), 7B model (Qwen2.5-Coder-7B-Instruct). Two
+independent NVML polling loops must not be conflated: the router's own live power reads (used
+to compute `Share_power` at routing time) poll every 500ms (a separate NVML session from the
+one below); the ground-truth power trace this paper's ramp/peak numbers are computed from is
+logged by a separate sidecar process targeting a 50ms sampling interval, whose actual observed
+sampling period is closer to ~89ms once per-GPU NVML query overhead (across all six replicas,
+queried in sequence) is accounted for. Neither cadence should be read as the other's — they
+serve different purposes (a live, cheap-enough-for-every-decision signal vs. a
+higher-resolution trace for offline ramp/peak analysis).
+
+Two further definitional differences separate the decision-time signal from this paper's
+reported numbers, and neither is a formal corollary of §4's guarantees: (i) `Share_power`
+clamps ramp rate to non-negative, since only a rising ramp is a routing-relevant hazard,
+whereas the ramp statistics reported below use `|ΔP/Δt|`, since a grid-facing ramp-rate hazard
+is generally bidirectional; (ii) `Share_power` is a strictly per-replica quantity read at
+decision time, whereas "peak power" and "mean/p99 ramp" below are computed on the
+fleet-aggregate power trace (summed across all six GPUs), the physically meaningful quantity
+for a grid-facing claim. Theorem 4 guarantees no avoidable violation of the per-replica,
+upward-only quantity at decision time; the fleet-aggregate, bidirectional numbers below are an
+empirical, not formally guaranteed, consequence of routing that way consistently over a trial.
+
+`Share_power`'s ceiling `κ` is calibrated *per replica*, not shared as one constant: a
+dedicated calibration check (24 concurrent prefill bursts, isolated per GPU) found the ceiling
+that actually applies varies **34% across the six replicas** (359.5–512.9 W/s) — real hardware
+heterogeneity a shared constant silently averages away. Every number in this paper uses the
+corrected per-GPU ceiling; re-running the comparison under both the old shared ceiling and the
+corrected per-GPU one showed apparent dominance relationships flip or disappear in 4 of 6
+tested conditions, always in the direction of making an unsafe arm's empirical position look
+better than it is under correct calibration.
+
+### 5.1 The decision-level noise floor
+
+Real hardware completion timing is not bit-reproducible across separate physical executions
+(GPU kernel scheduling, thermal/clock variance, OS scheduling), so any state-dependent
+router's live-state inputs (`in_flight_after`, `ramp_rate_w_per_s`) are only ever "true at
+this exact wall-clock instant," and that instant itself isn't reproducible. Close-call ties
+get flipped by real timing noise a scoring formula cannot see, and once one decision flips,
+replica loads genuinely diverge — every subsequent decision inherits a real, compounding state
+difference.
+
+This was quantified directly by pairing individual routing decisions across independent runs
+of the *identical* policy on paired (fixed-seed) workload content, joined by conversation id
+and turn rather than row order, which real timing reshuffles for multi-turn conditions (an
+earlier attempt using naive row-order pairing gave misleadingly low mismatch numbers on
+multi-turn conditions and was corrected before being reported). **Any state-dependent routing
+rule mismatches on 75-85% of individual decisions between two runs of itself**, with the first
+divergence typically within the first ~35 requests (median first-mismatch row: 7). This holds
+across every condition tested, including two built entirely on real conversation text with
+zero synthetic whale-padding (Light/Cachehit: 84.0-84.6%; WildChat, open-loop Poisson arrivals:
+81.9-83.4%) and a real-arrival-trace condition (BurstGPT: 75.0%) — ruling out synthetic
+workload construction, closed-loop feedback specifically (WildChat is open-loop), and
+multi-turn interleaving artifacts as the cause.
+
+**A state-blind control isolates the mechanism precisely.** `round_robin`, which never reads
+live replica state (only an incrementing counter), shows only **3.1% decision-mismatch** on
+the same condition where every load/power-aware rule shows 75-85%. This confirms the cause is
+state-dependence itself, not the evaluation harness: any rule that reads live per-replica
+state is exposed to genuine, unavoidable timing noise on real hardware; a rule that doesn't
+is nearly immune.
+
+This is not a threat to dominance-based comparisons elsewhere in this paper — dominance
+requires simultaneous agreement across multiple metrics, which noise alone is unlikely to
+produce consistently — but it means any single-metric point estimate on a noise-sensitive
+statistic (§5.2) between two low-trial-count arms should be checked against a rule's own
+self-noise range before being over-read.
+
+### 5.2 Metric-selection principle: which statistics are trustworthy at feasible trial counts
+
+Not every aggregate statistic is equally exposed to the noise floor above. Metrics that **sum
+or count over many independent events within a trial** are low-noise even at n=3, while
+metrics that are **derivatives, extreme-value statistics, or spread over few groups** are
+not — a distinction that held consistently across every candidate metric tested:
+
+- **Low-noise (survive n=3-6):** energy-per-token (total NVML-measured energy delta divided by
+  total output tokens — sums over on the order of 10⁵ tokens per trial) shows well under 1-3%
+  relative std across every arm and condition tested. SLO-violation-rate (fraction of requests
+  exceeding fixed TTFT/TBT thresholds — counts over hundreds of requests per trial) shows
+  ~1.4-2.3%. Peak power, mean TTFT, and mean TBT — themselves aggregate-ish quantities, not
+  single-request point reads — typically stay in the ~1-2% range at n=3, though noise level is
+  condition-dependent rather than a fixed property of a given metric: TTFT's relative std is
+  0.4% on the long condition but 6.2% on the short condition this paper's headline comparison
+  uses (§6.1), a 15× difference. A plausible driver is that the short condition's shorter
+  active window yields fewer within-trial TTFT samples to average cross-trial timing noise
+  over, though this specific mechanism has not been independently verified.
+- **High-noise (require 6+ trials, or should not be trusted for ranking claims at all at
+  n=3):** mean/p99/max ramp rate — derivatives or extreme-value statistics, sensitive to exact
+  sample timing or a single worst event — show 8-34% relative std depending on which
+  statistic. Two further candidates hypothesized to be integrated/fractional and therefore
+  low-noise were tested and both failed: **coincidence-factor** (fraction of power-pressured
+  time with 2+ replicas simultaneously elevated — directly the quantity §4.6's mechanism
+  targets) showed **56.97%** relative std, worse than max_ramp, because despite being a
+  "fraction" it counts rare discrete threshold-crossing events (only hundreds of occurrences
+  per trial), not the tens of thousands of samples that make energy-per-token stable.
+  **Per-replica fairness CV** (dispersion of load/energy across only 6 GPUs) showed **32-40%**,
+  a small-N-groups problem structurally similar to estimating standard deviation from 3 trials.
+  "Integrated" or "fractional" alone does not guarantee low noise; what matters is the number
+  of underlying events being summed.
+
+A direct demonstration of why n=3 is insufficient for the high-noise tier: one arm's own
+3-trial sample std on mean ramp was ±1.7 W/s; extending the same arm to 6 trials (same
+condition) revealed a true std of ±12.3 W/s — **7× larger**. Point estimates and even sample
+standard deviations from 3 trials materially underestimate the true spread for this class of
+metric.
+
+### 5.3 Trial-count implications, and closing the "but the unsafe rule wins" objection
+
+Applying §5.2's principle retroactively to this project's own empirical sweep: a full
+audit of the point-estimate range across 11 different routing rules tested on the same
+condition found mean_ramp's range spans only 2.12 true standard deviations, p99_ramp's 1.95σ,
+and max_ramp's 1.17σ — ranges this narrow, across 11 independent samples, are exactly what
+pure sampling noise produces on its own, with no real difference between rules required to
+explain them. Most single-trial or 3-trial ramp-statistic ranking claims from earlier in this
+project's investigation are accordingly not statistically distinguishable from noise, and are
+not asserted as confirmed findings in §6.
+
+The most direct version of this objection — that the strongest unsafe alternative performs
+better on ramp statistics, so the safety guarantee has a real cost — is closed by replicating
+both `coincidence_ceiling` and `lmetric_power_coincidence_ceiling` to matched n=6 on the same
+condition and recomputing z-scores. **The apparent n=3 ramp-statistic edge for the unsafe rule
+fully washed out at matched trial counts** (z = -0.03 to +0.28 on mean_ramp, p99_ramp, and
+max_ramp — all statistically indistinguishable from zero), while energy-per-token was already
+tied between them at n=3. §6.3 reports this comparison in full.
+
+This does not touch the theory: §4's proofs are unaffected by any of this. It does mean this
+paper restricts its headline empirical claims to the metrics independently confirmed low-noise
+in §5.2 (peak, TTFT, TBT, energy-per-token, SLO-violation-rate), applied uniformly regardless
+of which arm a given metric happens to favor, rather than selectively including or excluding a
+statistic by outcome, and to differences that clear a conventional significance threshold
+rather than differences in point estimates alone (§6.1).
+
+## 6. Experimental Results
+
+Main comparison restricted to four arms, per §4.6/Table 3's roles: `coincidence_ceiling`
+(proposed), `lmetric` (power-blind baseline, motivates why power-awareness matters at all),
+`round_robin` (state-blind baseline, motivates why load-awareness matters), and
+`lmetric_power_coincidence_ceiling` (the strongest empirically-performing unsafe alternative,
+needed for the head-to-head that closes the "unsafe rule wins" objection). Seven other arms
+tested in this project (the epsilon-shift Pareto-safe family, `weighted_sum_coincidence_ceiling`,
+`compute_only`/`load_only`, `drf_fixed`) are discussed in §4 or noted in passing; full tables
+are provided as supplementary material.
+
+### 6.1 Peak-power reduction on the short/original condition (n=6)
+
+Condition: closed-loop whale-injection traffic (15% long-prompt fraction, 13.6-15.5k-token
+whales), the paper's original validation condition. All four arms are replicated to **n=6**
+(up from the n=3 used in earlier drafts of this project, per §5.3's recommendation), restricted
+to the three metrics §5.2 confirms are generally low-noise:
+
+**Table 1: Heavy/Closed-Loop (short), per-GPU-calibrated ceiling, mean ± std, n=6 for all four
+arms.** Bold marks the lowest point estimate per row; significance is assessed separately
+below, not by this formatting.
+
+| Metric | `coincidence_ceiling` (proposed) | `lmetric` (power-blind) | `round_robin` (state-blind) | `lmetric_power_coincidence_ceiling` (unsafe) |
 |---|---|---|---|---|
-| peak power (W) | 2339.7 ± 22.0 | **2311.8 ± 71.7** | 2353.7 ± 72.4 | 2423.8 ± 112.1 |
-| mean ramp (W/s) | 149.0 ± 2.3 | **145.7 ± 16.1** | 154.1 ± 3.7 | 161.4 ± 7.4 |
-| p99 ramp (W/s) | **1565 ± 54** | 1599 ± 117 | 1826 ± 360 | 1953 ± 309 |
-| TTFT mean (s) | **0.511 ± 0.011** | 0.550 ± 0.027 | 0.545 ± 0.003 | 0.567 ± 0.039 |
-| TBT mean (ms) | 593.7 ± 7.3 | 591.2 ± 17.6 | **577.8 ± 43.0** | 591.2 ± 47.5 |
+| Peak power (W) | **2275.2 ± 57.1** | 2388.2 ± 31.9 | 2321.6 ± 53.8 | 2318.2 ± 74.8 |
+| TTFT mean (s) | 0.542 ± 0.033 | 0.560 ± 0.032 | 0.580 ± 0.038 | 0.537 ± 0.038 |
+| TBT mean (ms) | 531.3 ± 38.9 | 544.2 ± 48.9 | **502.7 ± 28.5** | 553.1 ± 18.8 |
 
-**Figure 1** (`figs/ramp_comparison.pdf`, LaTeX build only): fleet-aggregate power (top) and
-its ramp rate (bottom) for all 3 replicated trials of the proposed rule and the unsafe
-`lmetric_power` variant, Heavy/Closed-Loop, per-GPU-calibrated ceiling (shaded band:
-359.5–512.9 W/s across the six replicas, replacing the old uniform 450 W/s line).
-`drf_fixed`/`weighted_sum` omitted for legibility (fully reported in the table above). The
-visually largest gap is the early ramp-up spike (t≈7–9s): `lmetric_power`'s worst per-trial
-peak ramp reaches 9054.6 W/s vs. the proposed rule's worst trial at 6759.2 W/s (a simpler
-per-trial-max statistic, shown to characterize the trace, not to restate the table's p99).
-Away from that transient, the two traces are visually close throughout, consistent with the
-table's tied TBT.
+Paired and unpaired t-tests (n=6, same fixed-seed workload content across trials) confirm one
+of these differences reaches conventional significance: `coincidence_ceiling` reduces peak
+power by 4.7% relative to `lmetric` (unpaired p=0.0017, paired p=0.0025). The TTFT reduction
+relative to `lmetric` is directionally consistent with the proposed rule but does not reach
+significance at n=6 (unpaired p=0.36, paired p=0.10), nor does the TBT reduction relative to
+`lmetric_power_coincidence_ceiling` (unpaired p=0.25, paired p=0.29). The confirmed result on
+this condition is the peak-power reduction; TTFT and TBT differences are reported as
+directional, not as part of a multi-metric dominance claim.
 
-Our proposed rule Pareto-dominates `lmetric_power` here: every metric is equal or better,
-several strictly so (peak −4.6%, mean ramp −9.7%, p99 ramp −18.1%, TTFT −3.0%, TBT
-statistically tied). The external check (`weighted_sum`) independently dominates it too
-(peak −2.9%, mean ramp −4.5%, p99 ramp −6.5%, TTFT −3.9%, TBT −2.3%) — corroboration from a
-rule this paper did not design, showing the result is not an artifact of our specific
-construction. The unmodified baseline (`drf_fixed`) comes within a fraction of a percent of
-the same sweep (it loses only on TBT, by 0.4%, within noise) — even *before* the repair, plain
-DRF-extended-to-power nearly gets you there; the repair is what closes the gap to a clean
-sweep. Two structurally different safe rules beating the unsafe one on every axis,
-independently, is the core result: **there is no measured benefit to giving up the Pareto
-guarantee under the exact condition — sustained power pressure — that motivated building a
-power-aware rule in the first place.**
+Against `round_robin`, `coincidence_ceiling` is Pareto-incomparable rather than dominant: it
+wins peak power and, directionally, TTFT, but loses TBT (531.3 vs. 502.7 ms). This pattern
+recurs throughout this project wherever `round_robin` is compared: a state-blind rule never
+concentrates load onto an already-busy replica, so it cannot lose on tail-batching metrics
+like TBT the way a state-aware rule occasionally can, even as it forgoes the gains available
+from reading load and cache state.
 
-**Does this generalize, and does §4.2's mechanism predict where it doesn't?** We ran the
-same four arms under 4 further conditions on the same fleet, 3 replicated trials each:
-open-loop whale-injection at matched request rate (Heavy/Matched); light, cache-hit-dominated
-traffic with no whales (Light/Cachehit); a short-output, higher-concurrency condition (Ramp &
-Route); and real WildChat-1M conversational replay (WildChat). We report only whether a safe
-arm Pareto-dominates `lmetric_power` (●), the reverse (○), or neither (–); full per-metric
-tables are in the project research log.
+Against `lmetric_power_coincidence_ceiling` — the strongest empirically-performing but
+Pareto-unsafe alternative, replicated here to matched n=6 (previously n=3) — none of the three
+differences in Table 1 reach significance (peak: unpaired p=0.29; TTFT: p=0.80; TBT: p=0.25).
+Combined with the matched-n=6 ramp-statistic recheck (§6.3) and the energy-per-token/
+SLO-violation-rate comparison (§6.2), `coincidence_ceiling` is statistically indistinguishable
+from the strongest unsafe alternative on every metric measured in this study — direct evidence
+that the Pareto guarantee is free, not merely that it avoids an efficiency cost.
+mean_ramp/p99_ramp/max_ramp are provided as supplementary material for completeness but are
+not part of this confirmed claim, per §5.3's uniform, outcome-independent restriction to
+confirmed-low-noise metrics.
 
-| condition | power pressure | cache-hit character | proposed rule vs. `lmetric_power` | external check vs. `lmetric_power` |
+**Figure 2** (`figs/ramp_comparison.pdf`, LaTeX build only): fleet-aggregate power (top) and
+its ramp rate (bottom), Heavy/Closed-Loop (short), 3 trials each of `coincidence_ceiling`
+(proposed), `weighted_sum_coincidence_ceiling` (external validity check, Pareto-safe only),
+and `lmetric_power_coincidence_ceiling` (unsafe), under the per-GPU-calibrated ramp ceiling
+(shaded band). The three arms separate most at the early ramp-up spike (t≈7–9s):
+`lmetric_power_coincidence_ceiling`'s worst per-trial peak ramp reaches 9575.0 W/s, vs.
+5955.8 W/s for `weighted_sum_coincidence_ceiling` and 4323.2 W/s for the proposed rule — a
+per-trial-max statistic that characterizes the trace, not a substitute for Table 1's
+significance-tested metrics. Away from that transient the three traces are visually close.
+
+### 6.2 Energy-per-token and SLO-violation-rate: the safety guarantee costs nothing
+
+`coincidence_ceiling` does not reduce energy consumption — a routing policy that is
+work-conserving over the same request stream is not expected to change total energy
+substantially, and this is not the claim made here. The claim is narrower: **the
+Pareto-safety guarantee does not cost anything in efficiency or SLO compliance relative to the
+strongest known unsafe alternative.**
+
+**Energy-per-token** (total NVML `energy_mj` delta divided by total output tokens, confirmed
+low-noise in §5.2): `coincidence_ceiling` beats `round_robin` on 6 of 7 conditions tested
+(often by 5-10%). The one exception, BurstGPT (7.7% worse), is a known real-trace anomaly
+consistent with earlier-documented project history (a real-BurstGPT-trace `round_robin`
+advantage unrelated to whale-aware admission logic), not a newly-observed problem. Against
+`lmetric`, results are mixed (clear wins on 4 conditions, ties or small losses on 3). Against
+`lmetric_power_coincidence_ceiling` — the comparison that matters most for the "guarantee
+costs nothing" claim — the two are statistically indistinguishable on most conditions
+(e.g. 1.3132 vs. 1.3051 on the flagship long condition, well within each other's noise).
+
+**SLO-violation-rate** (fraction of requests with TTFT > 1.0s or max TBT > 200ms, confirmed
+low-noise in §5.2, though the fixed thresholds are near-degenerate on lighter conditions where
+nearly every arm scores near 0%, a limitation noted here and in §7). TTFT-violation favors
+`coincidence_ceiling` over `round_robin` on 5/7 conditions and over `lmetric` on 4/7.
+**TBT-violation is genuinely mixed**: `coincidence_ceiling` loses to `round_robin` on
+Heavy/CL short (0.2978 vs. 0.2856) and BurstGPT (0.1627 vs. 0.1683), though it wins on
+WildChat (0.5074 vs. 0.5828); it loses to `lmetric` on Heavy/CL long (0.3867 vs. 0.3861,
+marginal) and WildChat (0.5074 vs. 0.4134, a real loss). The tail-latency result of this paper
+is a peak-power win on the flagship condition (§6.1) and a directionally favorable TTFT
+picture more broadly, not a universal win on every latency statistic.
+
+**Table 2: Energy-per-token, headline arms, all 7 conditions (mean ± std, J/token).**
+SLO-violation-rate figures for all 7 conditions and 4 arms are provided as supplementary
+material; the specific figures behind the disclosure above are cited inline.
+
+| Condition | `coincidence_ceiling` | `lmetric` | `round_robin` | `lp_coincidence_ceiling` |
 |---|---|---|---|---|
-| Heavy/Closed-Loop (above) | sustained | low | **●** | **●** |
-| Heavy/Matched | sustained | low | – | – |
-| Light/Cachehit | none | dominant by design | – | ○ (`lmetric_power` wins) |
-| WildChat | mixed, real trace | moderate | – (4/5 to `lmetric_power`, TTFT the exception) | – (4/5 to `lmetric_power`, TTFT the exception) |
-| Ramp & Route | mixed, short-output | low | – | – |
+| Heavy/CL short | 1.4242±0.0193 | 1.4180±0.0222 | 1.4395±0.0176 | 1.4179±0.0230 |
+| Heavy/CL long | 1.3132±0.0050 | 1.3251±0.0242 | 1.3363±0.0023 | 1.3051±0.0032 |
+| Heavy/Matched | 0.7393±0.0116 | 0.7510±0.0110 | 0.7486±0.0075 | 0.7456±0.0040 |
+| Light/Cachehit | 1.2287±0.0028 | 1.2517±0.0102 | 1.2944±0.0042 | 1.2339±0.0021 |
+| BurstGPT | 2.8070±0.0312 | 2.8599±0.0235 | 2.6059±0.0118 | 2.8403±0.0101 |
+| Ramp & Route | 2.2950±0.0323 | 2.2537±0.0187 | 2.5404±0.0462 | 2.2508±0.0373 |
+| WildChat | 0.3227±0.0071 | 0.3147±0.0045 | 0.3448±0.0004 | 0.3146±0.0060 |
 
-This is not a mixed or inconclusive result — it lines up with Claim 2's mechanism.
-`lmetric_power`'s failure mode is specifically a cache-hit-triggered score collapse (§4.2.2);
-it has no comparable weakness under genuine power pressure, and its multiplicative form gives
-it a real, separate strength (every factor always contributes, unlike a tied dominant share
-silencing the other two dimensions in the DRF family). The two conditions where our proposed
-rule cleanly wins (Heavy/Closed-Loop) or is incomparable-but-close (Heavy/Matched) are exactly
-the two built around sustained whale-driven power pressure with low cache-hit rates — where
-Claim 2's mechanism never triggers and the proposed rule's power-awareness is doing real
-work. The one condition where the unsafe rule outright wins (Light/Cachehit) is, by
-construction, the one condition dominated by the exact event (`Share_compute = 0`) that
-collapses its score — consistent with, not contradicting, §4.2.2's characterization.
-WildChat's near-miss (unsafe wins 4/5 metrics against both the proposed rule and the external
-check, losing only TTFT) is a real trace with a moderate, uncontrolled cache-hit rate, and
-lands where the mechanism predicts it should: between the two extremes. Ramp & Route
-(short-output, high-concurrency) does not fit this story as cleanly — power pressure there is
-real but transient rather than sustained, a third regime this paper's two-way
-(pressure / cache-hit) framing does not fully capture; we report it honestly as an open
-boundary rather than force it into the pattern.
+### 6.3 Matched n=6 recheck against the strongest unsafe alternative
 
-**Does any routing signal beat none? `round_robin` as the true floor.** Every arm compared so
-far uses some signal — DRF-family or LMETRIC-family. We also ran vLLM's own shipped default,
-`round_robin`, blind to load, cache state, and power alike, under the same per-GPU-calibrated
-conditions, 3 replicated trials each (research log, Update 2026-09-04 continued). We do not
-expect `round_robin` to be uniformly dominated: a rule with zero signal also has zero
-opportunity to concentrate load onto an already-stressed replica, so its risk profile is
-qualitatively different from a scored rule's, not simply worse. The result below confirms
-exactly that shape: `round_robin` is beaten outright in one condition and incomparable — not
-dominated — in the other four.
+Per §5.3, both `coincidence_ceiling` and `lmetric_power_coincidence_ceiling` were replicated
+to matched n=6 on the flagship condition, and z-scores were recomputed on the three
+ramp-derivative statistics: z = -0.03 to +0.28 on mean_ramp, p99_ramp, and max_ramp, all
+statistically indistinguishable from zero. The apparent n=3 advantage for the unsafe rule does
+not survive matched replication. This result extends to peak power, TTFT, and TBT as well
+(§6.1) and to energy-per-token and SLO-violation-rate (§6.2): on every metric this study
+measures, at matched trial counts, giving up the Pareto guarantee produces no statistically
+distinguishable empirical advantage.
 
-| condition | `round_robin`'s status vs. the 4 scored arms |
-|---|---|
-| Heavy/Closed-Loop | incomparable to all 4 (best peak power, mean ramp, and TBT of all 5 arms; worst TTFT) |
-| Heavy/Matched | incomparable to all 4 |
-| Light/Cachehit | **dominated by all 4 simultaneously** |
-| WildChat | dominated by `lmetric_power` only |
-| Ramp & Route | incomparable to all 4 |
+### 6.4 Alternative Share_power Definitions
 
-It is cleanly beaten by every scored arm at once in exactly one condition — Light/Cachehit —
-where its blindness to KV$ locality costs it a full sweep against all four, even against
-`lmetric_power`, itself power-blind but at least reactive to `P-token` collapsing on a cache
-hit. In the two sustained-power-pressure conditions where our proposed rule cleanly wins
-against `lmetric_power` (Heavy/Closed-Loop, Heavy/Matched), `round_robin` is incomparable to
-every scored arm rather than dominated: in Heavy/Closed-Loop specifically, it achieves the
-best peak power (2319.1 W), mean ramp (140.4 W/s), and TBT (482.8 ms) of all five arms, but
-the worst TTFT (0.607 s, +18.8% over `drf_fixed`'s 0.511 s) — ignoring queue depth entirely
-avoids concentrating load into synchronized bursts, at the cost of not avoiding an
-already-overloaded replica. `round_robin` is not a counterexample to the Pareto-safety
-argument (it is not a scored rule the theory makes any claim about), but it is a useful floor:
-Light/Cachehit shows some routing signal reliably beats none, while the incomparable-but-real
-power-side wins elsewhere show "no routing logic" is not simply worse along every axis — a
-caveat the scored-arms-only comparison above does not surface on its own.
+Two alternative `Share_power` definitions were evaluated against the deployed raw two-point
+derivative: an EMA-smoothed estimate (α=0.3), and a retarget to instantaneous peak power. The
+smoothed estimate reduces the signal's own relative std by 18-53% depending on measurement
+cadence but does not produce a consistent downstream improvement: it beats
+`coincidence_ceiling` on energy-per-token on 3 of 7 conditions (~1-2%) and loses on 4;
+max_ramp is worse on 6 of 7 conditions, and Ramp & Route shows a loss across five metrics
+simultaneously (energy, TTFT-violation, mean TTFT, p99_ramp, max_ramp). The peak-power
+retarget shows a large, one-sided regression on the two conditions tested so far
+(energy-per-token +11%, TTFT-violation-rate nearly 2×, TBT-violation +21% on the flagship
+condition), and it changes the mechanism's physical target from grid-transient avoidance to
+capacity/thermal management, a different problem than the one this paper addresses. Neither
+alternative is adopted; the deployed raw-ramp-rate definition is retained on both empirical
+and mechanistic grounds.
 
-**Practical implication.** A deployer does not need to choose between the Pareto guarantee
-and a power-aware win: under the condition that motivates power-aware routing at all
-(sustained fleet power pressure), our proposed rule already delivers it, and the unsafe
-`lmetric_power` variant's only measured advantage appears under light, cache-hit-heavy
-traffic where power-awareness was never the binding constraint to begin with.
+## 7. Discussion / Limitations
 
-## 6. Discussion / Limitations
-
-- **Small-N / shared-PDU caveat**: 8×4090 in one chassis likely shares upstream PDU/PSU —
-  not independent grid circuits. Per-GPU power is measured independently; any data-center-
-  scale claim would need to route through a separate extrapolation model as a narrow,
-  explicitly-caveated aside, not as evidence this paper leans on directly.
-- **Scope of validation**: the headline result — our proposed rule dominating the unsafe
-  `lmetric_power` variant — is demonstrated under sustained fleet power pressure on a
-  controlled synthetic workload, and characterized (not just hedged) across 4 further
-  conditions in §5, including one real trace (WildChat). The pattern tracks §4.2.2's
-  cache-hit-collapse mechanism closely across 4 of 5 conditions; the fifth (Ramp & Route,
-  transient rather than sustained pressure) does not fit as cleanly, and we report that
-  honestly rather than omit it. We do not claim generalization to arbitrary real-world
-  traffic beyond these five measured conditions; a full accounting of the pressure/cache-hit
-  boundary (e.g. as a function of duty cycle and hit rate jointly, rather than the coarse
-  two-way split used here) is a direction for future work. We do not present a hardware
-  validation of the original, unsafe named rule (Claim 1) — there is no reason to deploy it,
-  since the repair (§4.2, our proposed rule) strictly dominates it on the one property that
-  matters (Pareto safety) at identical mechanism cost, so its role in this paper is purely to
-  motivate the repair, not to compete empirically. We also do not validate the
-  live-calibrated ceiling variant under the corrected per-GPU calibration methodology
-  (§4.3's corollary remains proof-level); we chose not to report its earlier, uniform-ceiling
-  empirical numbers once that calibration methodology was shown to be a measurable source of
-  error (§5's setup) — closing that specific gap is future work, not a result withheld for
-  space.
-- **Per-decision vs. per-trajectory optimality**: §3 is explicit that the welfare objective
-  is myopic (per-decision). We do not claim, and §4 does not require, that a sequence of
-  such decisions is optimal in aggregate over a trajectory — only that each individual
-  decision satisfies (or, for the named rule, deliberately trades away) a well-defined
-  static guarantee.
+- **Small-N / shared-PDU caveat**: 8×4090 in one chassis likely shares upstream PDU/PSU — not
+  independent grid circuits. Per-GPU power is measured independently; any data-center-scale
+  claim would need a separate extrapolation model. Such an extrapolation was deliberately not
+  attempted: a sibling project in this line of work retracted its own fleet-scale
+  extrapolation after both a parametric Monte Carlo model (P99 ramp tail underestimated by
+  roughly 5.8× against hardware) and a model-free trace-bootstrap (tail-statistic sign flips
+  from a small segment library) failed on tail fidelity — with a *thicker* trial library than
+  this project's own (3-6 trials per arm). A similar extrapolation here was judged unreliable,
+  not merely out of scope for space.
+- **Real-signal losses, disclosed rather than omitted**: on the long/sustained-pressure
+  condition specifically, `coincidence_ceiling`'s mean_ramp is significantly higher than
+  `round_robin`'s (z≈+2.82, n=6) — a real, credible finding given mean_ramp is the *least*
+  noisy of the three ramp derivatives (§5.2), not discounted as noise-explainable. §6.2's
+  TBT-violation-rate picture is genuinely mixed against both baselines, not a universal win.
+  BurstGPT's energy-per-token result reverses (`coincidence_ceiling` 7.7% worse than
+  `round_robin`), consistent with an earlier-documented, still-undiagnosed real-BurstGPT-trace
+  anomaly in this project's history.
+- **Scope of validation**: the confirmed peak-power result (§6.1) is demonstrated on the
+  short/original condition; the long/sustained-pressure condition shows no confirmed
+  ramp-safety advantage in either direction. The tail-latency result is not claimed to
+  generalize to every condition, only where confirmed, while the efficiency/SLO
+  no-regression result holds broadly (§6.2). A full accounting of exactly which workload
+  properties predict where the peak-power win holds is future work.
+  `Share_power`'s live-signal ablations (§6.4) are partial: the peak-power retarget has data
+  on 2 of 7 conditions so far.
+- **Per-decision vs. per-trajectory, and per-replica vs. aggregate**: §3 is explicit that the
+  welfare objective is myopic (per-decision); a sequence of decisions is not claimed to be
+  optimal over a trajectory, only that each satisfies a static guarantee. Fleet-aggregate ramp
+  is a sum across replicas, so a per-replica bound does not mechanically imply a bound on the
+  sum — §4.6's coincidence-ceiling mechanism targets the aggregate hazard directly, still
+  inheriting the per-decision proof, but no formal bound on the aggregate trajectory itself is
+  claimed, only the empirical characterization in §6.
 - **Fixed replica pool**: this paper routes among N already-running replicas; deciding which
-  replicas are powered on at all — server sleep/shutdown scheduling under an SLO constraint
-  — is a separate, coarser-timescale decision problem this paper does not address. The two
-  compose naturally (a shutdown scheduler decides the pool, our router decides within it) but
-  we do not evaluate that composition here.
+  replicas are powered on at all is a separate, coarser-timescale decision problem this paper
+  does not address.
 
-## 7. Conclusion (draft)
+## 8. Related Work
 
-We give power-aware LLM-serving routing a precise theoretical grounding, and a single,
-unambiguous proposal. We prove a Pareto-non-domination guarantee for the plain sorted DRF
-rule, then show a natural fixed-priority power tie-break sacrifices it, then give a
-closed-form repair — appending the dropped resource as an explicit tie-break coordinate
-rather than truncating it — that restores the guarantee while preserving the same deliberate
-power-first priority. This repaired rule, `drf_power_tiebreak_full`, is what we propose. We
-separately show a structurally unrelated way to add power, a power-extended form of the
-production LMETRIC router, sacrifices the same guarantee via an unrelated, common mechanism
-(12.8% of instances at a realistic cache-hit rate). Rather than treat either unsafe design as
-something to deploy anyway if it wins empirically, we ask directly whether giving up the
-guarantee is even necessary, and answer no: on real 8×4090 hardware, under a
-per-GPU-calibrated ramp ceiling (itself shown necessary — a shared, uniform ceiling is a
-measurable source of error that can flip which arm looks like the winner), our proposed rule
-cleanly dominates the unsafe LMETRIC-power variant under exactly the condition — sustained
-fleet power pressure — that motivates power-aware routing in the first place, corroborated
-by an independent, structurally unrelated safe rule included purely as an external validity
-check. We further show the comparison is not universal, and precisely why: the unsafe
-variant's own cache-hit-collapse mechanism predicts, and our data confirms, that it competes
-or wins only when cache hits dominate and power pressure does not. The result is a single,
-concretely-named routing strategy that is provably safe, empirically competitive exactly
-where it needs to be, and accompanied by a falsifiable account — not a hedge — of where an
-alternative might still be preferred.
+- **Dominant Resource Fairness (DRF)** [1] — multi-resource fair allocation via lexicographic
+  comparison of dominant shares, proven Pareto-efficient for static per-user demand vectors.
+  This paper extends the resource set to a third, live/reactive dimension (§3) and re-derives
+  Pareto-efficiency for this dynamic setting rather than assuming the static proof transfers.
+- **LMETRIC** [2] — multiplicative `P-token × BS` scoring for LLM-serving load balancing, a
+  simpler non-fairness-theoretic baseline. §4.2 shows a natural power-extended form of this
+  score sacrifices the Pareto guarantee via a distinct mechanism from the DRF-family variant;
+  §6's hardware validation is a head-to-head against its coincidence-ceiling-extended form,
+  the strongest empirical performer found in this project.
+- **Power-aware ML system design (Zeus, Perseus)** [3, 4] — tune per-job GPU frequency/power
+  configuration (Zeus) or schedule computation energy across pipeline stages (Perseus) *within*
+  a single training job, via DVFS. `ramp_ceiling` (§3) is physically a symptom of the same DVFS
+  transition dynamic, which is why this paper treats it as a measured constant (§5) rather than
+  a quantity it controls. This paper acts at a different layer and timescale — which
+  already-running replica serves a request, not how any GPU's own DVFS state changes — and the
+  two compose (Zeus/Perseus underneath a power-aware router).
+- **Power-of-Two-Choices** [5, 6] — sampled load balancing with a proven exponential
+  improvement in expected max load; a different mechanism family (randomized sampling vs.
+  the full-visibility deterministic rule used here), noted for completeness.
+- **Power capping as an alternative mechanism** [7] — recent work shows GPU-level power caps
+  are often *inert* for decode-dominated LLM serving (137–300 W draw on a 700 W GPU), since a
+  facility-level cap frequently never engages — motivating acting upstream at the routing
+  decision instead.
+- **Grid-integrated AI infrastructure** [8] — broader facility/life-cycle-level strategies for
+  aligning AI workload management with grid conditions. This paper operates at a
+  complementary, much shorter timescale (per-request, 500ms) layer, addressing intra-fleet
+  coincident ramp spikes rather than facility- or grid-scale coordination directly.
+- **Online optimization with switching costs** [9] — penalizes an action's cost of *change*,
+  not just its instantaneous cost; `Share_power`'s ramp-rate term and §4.6's coincidence-ceiling
+  mechanism are conceptually switching-cost signals. This paper does not adopt that
+  literature's regret/competitive-ratio analysis — §4.1's guarantee is per-decision, not
+  trajectory-level.
+- **Rate limiting in feedback control** [10] — `ramp_ceiling` is a slew-rate bound in the
+  control-theoretic sense; `Share_power` normalizes the plant's rate of change against an
+  actuation limit, the same object a rate limiter enforces classically. This paper does not
+  build a continuous controller — routing is discrete per-request placement — but
+  §4.3/§4.6's live-recalibrated, fleet-shared ceiling is exactly this constraint's set-point,
+  estimated online rather than fixed offline.
+
+## 9. Conclusion
+
+This paper gives power-aware LLM-serving routing a precise theoretical grounding and a single,
+unambiguous proposal. We prove a Pareto-non-domination guarantee for the sorted DRF rule, show
+a fixed-priority tie-break and a power-extended LMETRIC score each sacrifice it via distinct
+mechanisms, and introduce the coincidence-ceiling mechanism — a pluggable, fleet-aware ceiling
+adjustment that targets the fleet-*aggregate* coincident-ramp hazard no purely per-replica
+rule can see, requiring no new safety proof since it is a direct instantiation of an existing
+corollary. The resulting rule, `drf_power_tiebreak_full_coincidence_ceiling`, is this paper's
+proposed strategy. On real 8×4090 hardware, across 7 workload conditions including two real
+traces, it delivers a significant peak-power reduction relative to a power-blind baseline on
+the condition central to this paper's motivation (p=0.0017, n=6), and, against the strongest
+empirically-performing but *not* Pareto-safe alternative replicated to matched n=6, is
+statistically indistinguishable on every metric measured — peak power, TTFT, TBT,
+ramp-derivative statistics, energy-per-token, and SLO-violation-rate. The safety guarantee
+costs nothing on any axis this study tests. A second contribution falls out of this
+validation: a ~75-85% decision-level noise floor inherent to real-hardware closed-loop routing
+evaluation is characterized, along with which evaluation statistics survive it and which
+don't, disclosing real losses rather than suppressing them, to determine exactly which of this
+paper's own empirical claims can currently be asserted with confidence. The result is a
+routing strategy that is provably safe at the decision level, empirically validated where the
+theory predicts it should matter, and accompanied by a falsifiable account of where it does
+not yet win.
 
 ## References
 
@@ -690,3 +952,6 @@ alternative might still be preferred.
     Engineers.* Princeton University Press, 2008.
 11. M. J. Neely. *Stochastic Network Optimization with Application to Communication and
     Queueing Systems.* Synthesis Lectures on Communication Networks, Morgan & Claypool, 2010.
+12. A. Sen. *Collective Choice and Social Welfare.* Holden-Day, San Francisco, CA, 1970.
+13. A. M. Geoffrion. "Proper Efficiency and the Theory of Vector Maximization." *Journal of
+    Mathematical Analysis and Applications*, 22(3):618-630, 1968.

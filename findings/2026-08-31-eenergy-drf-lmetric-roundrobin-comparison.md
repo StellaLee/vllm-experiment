@@ -3215,3 +3215,1316 @@ trailing columns (`share_compute`, `share_load`) in the assignment log, backward
 `check_top_ramp_values.py`, `check_dominant_resource_switching.py`,
 `check_full_comparison_all_conditions.py`,
 `check_all_coincidence_ceiling_variants_6conditions.py`.
+
+### Part 10: the Pareto-safe-repair family (lmetric_power_pareto + epsilon variants), full
+7-condition sweep, round_robin folded into every comparison, and a scoped tail-protection
+result
+
+Three new Pareto-safe repairs of `lmetric_power`'s Claim-2 cache-hit-collapse were built and
+validated this round, all via the same `(shift + share) x (shift + share) x (...)` monotone-
+factor argument (200,000-trial brute force, 0 violations, at every shift tested):
+
+- `lmetric_power_pareto_coincidence_ceiling`: `(1+share_compute) x (1+share_load) x
+  (1+share_power)` — full `+1` shift on every factor (the `shift=1` case of the family below).
+- `lmetric_power_pareto_epsilon_coincidence_ceiling`: `(epsilon+share_compute) x
+  (epsilon+share_load) x (1+share_power)`, default `epsilon=0.01` — asymmetric, power keeps
+  the full `+1`.
+- `lmetric_power_pareto_epsilon_all_coincidence_ceiling`: same but `epsilon` applied to all
+  three factors including power.
+- `lmetric_power_pareto_epsilon_small_coincidence_ceiling`: same shape as the `epsilon`
+  variant above, `epsilon=0.001` (10x smaller) — Heavy/Closed-Loop (long) only, 3 trials, first
+  look at whether shrinking epsilon keeps closing the gap to `lmetric_power_coincidence_ceiling`.
+
+All three main variants (`pareto`, `pareto_epsilon`, `pareto_epsilon_all`) now have 3-trial
+data on all 7 conditions (BurstGPT, Heavy/Closed-Loop short & long, Heavy/Matched,
+Light/Cachehit, Ramp & Route, WildChat). `round_robin` was also added to every comparison for
+the first time this round (it existed before only as a spec-mandated baseline condition, not
+folded into the coincidence-ceiling-era comparisons). Full table + tally:
+`scripts/eenergy/check_full_pareto_family_comparison.py`.
+
+**Overall dominance tally, all 7 conditions, 11 arms:**
+
+| arm | dominance wins |
+|---|---|
+| lmetric_power_coincidence_ceiling | 13 |
+| lmetric_power_pareto_epsilon_coincidence_ceiling | 12 |
+| lmetric (plain, power-blind) | 10 |
+| coincidence_ceiling (DRF-family) | 5 |
+| lmetric_power_pareto_coincidence_ceiling | 3 |
+| weighted_sum_coincidence_ceiling | 2 |
+| compute_only | 1 |
+| load_only | 1 |
+| lmetric_power_pareto_epsilon_all_coincidence_ceiling | 1 |
+| round_robin | 0 |
+
+Two things this tally makes newly visible:
+
+1. **`round_robin` never wins a single dominance relationship across all 7 conditions** — it
+   is dominated outright 5 times on Light/Cachehit alone (by `lmetric`, `compute_only`,
+   `load_only`, `coincidence_ceiling`, `weighted_sum_coincidence_ceiling`,
+   `lmetric_power_coincidence_ceiling`, `lmetric_power_pareto_coincidence_ceiling`, and
+   `lmetric_power_pareto_epsilon_coincidence_ceiling` — 8 separate dominators, the single
+   most one-sided result in this whole investigation), and is otherwise incomparable
+   everywhere else. Confirms Claim 2's cache-awareness mechanism cleanly: with zero
+   cache-state signal, round_robin cannot avoid routing cache-hit-heavy requests onto already-
+   loaded replicas, and loses on every metric simultaneously rather than trading one off for
+   another.
+2. **Plain `lmetric` (power-blind, `P-token x BS`) is the 3rd-highest scorer, ahead of every
+   Pareto-safe or DRF-family power-aware rule except the two chart-toppers.** It has the best
+   max_ramp of all arms on both Heavy/Matched (3125.0) and Light/Cachehit (2386.3) — beating
+   every power-aware rule tested, safe or not. This directly complicates the working
+   "tail-protection" narrative below.
+
+**`lmetric_power_pareto_epsilon_coincidence_ceiling`'s strong tally (12) is now confirmed
+Pareto-safety-proof-backed, not a fluke of the earlier 3-condition look** — it held up across
+all 7 conditions, including directly dominating the DRF-family `coincidence_ceiling` on
+Light/Cachehit and WildChat.
+
+**But the pushback from the earlier "abandon DRF" discussion still holds on pairwise,
+per-metric inspection of the two conditions the paper is actually built around:**
+
+- Heavy/Closed-Loop (short): `coincidence_ceiling` DOMINATES `lmetric_power_pareto_coincidence_ceiling`
+  AND `lmetric_power_pareto_epsilon_coincidence_ceiling` outright.
+- Heavy/Closed-Loop (long): no direct pairwise dominance either way between
+  `coincidence_ceiling` and `lmetric_power_pareto_epsilon_coincidence_ceiling` — they are
+  incomparable. `coincidence_ceiling` has p99_ramp 1050.0, close to but NOT actually the best
+  of 11 arms (see correction in Part 12 — `lmetric_power_coincidence_ceiling`'s 1020.8 was
+  marginally lower, and per Part 12's noise-band audit neither is statistically
+  distinguishable from most of the other 9 arms anyway); `lmetric_power_pareto_epsilon_coincidence_ceiling`
+  has max_ramp 4177.4 (best of 11 arms, point-estimate) vs. `coincidence_ceiling`'s 6860.9
+  (worst point-estimate of 11 arms on this condition, worse than round_robin and load_only) —
+  see Part 12 for whether this specific max_ramp gap survives the noise-band check.
+
+**Scoped tail-protection result** (in response to the hypothesis "our strategies protect
+tails, improved p99 or max"): plausible at face value, but **Part 12's noise-band audit
+(added after this section was first written) found the entire spread of p99_ramp and max_ramp
+point estimates across all 11 arms on this condition is within ~1.2-2x a single true standard
+deviation** — meaning every ranking claim below, including which rule is "best" or "worst" on
+either tail statistic, is not currently statistically distinguishable from noise. Kept here
+for the record of what the point estimates showed, not as a confirmed result:
+
+- `coincidence_ceiling` (DRF-family) had the (statistically insignificant) best p99_ramp
+  point-estimate under sustained power pressure but simultaneously the worst max_ramp
+  point-estimate on the same condition.
+- `lmetric_power_pareto_epsilon_coincidence_ceiling` had the best max_ramp point-estimate on
+  Heavy/Closed-Loop long, but a mediocre p99_ramp point-estimate there.
+- On Heavy/Matched, neither rule's point estimate beat plain power-blind `lmetric` on either
+  tail statistic.
+- Net: pending replication to 6+ trials per arm (Part 12), "protects tails" cannot currently
+  be stated as a confirmed finding for either rule. Full table:
+  `scripts/eenergy/check_tail_protection_claim.py`.
+
+**Epsilon-shrinking anomaly, and why it isn't actually an anomaly.** Going from
+`epsilon=0.01` to `epsilon=0.001` on Heavy/Closed-Loop (long) made max_ramp *worse* (4177.4 to
+5485.0, +31%) and p99_ramp slightly worse (1177.0 to 1222.0), not closer to
+`lmetric_power_coincidence_ceiling`'s numbers as the "smaller epsilon approaches the unsafe
+original" framing would suggest at a glance. Resolved by re-reading the actual formula:
+`lmetric_power_pareto_coincidence_ceiling` (the "coincidence_ceiling-only" Pareto-safe rule,
+no `pareto_epsilon` suffix) is the **epsilon=1** case of the epsilon family, not the
+epsilon-to-zero limit — `(1+share_compute) x (1+share_load) x (1+share_power)` matches
+`(epsilon+share_compute) x (epsilon+share_load) x (1+share_power)` exactly at `epsilon=1`.
+Shrinking epsilon from 0.01 toward 0 moves *away* from `epsilon=1` (`lmetric_power_pareto`)
+and *toward* `epsilon=0`, which is a different limit entirely: since `share_compute` and
+`share_load` both have the same constant denominators (`token_budget`, `max_num_seqs`) across
+all candidates in a routing decision, `epsilon=0` reduces (up to a constant rescaling that
+doesn't change argmin ordering) to `share_compute x share_load x (1+share_power) prop=
+new_tokens x in_flight_after x (1+share_power)` — the exact unsafe
+`lmetric_power_coincidence_ceiling` formula, cache-hit collapse included. So the correct
+prediction was never "epsilon shrinking approaches `lmetric_power_pareto`" — it's "epsilon
+shrinking approaches `lmetric_power` (unsafe)." The observed drift away from `lmetric_power_pareto`'s
+numbers is consistent with this, not contrary to it. `epsilon=0` itself was queued as a direct
+empirical check of this prediction (see below) — since `epsilon=0` collapses one factor to
+exactly zero whenever `share_compute=0` (a full cache hit), it is expected to reproduce Claim
+2's exact failure mode and NOT be Pareto-safe, unlike every `epsilon>0` member of this family.
+
+### Part 11: epsilon=0 diagnostic run, and pinning down the closed-loop decision-noise floor
+
+Added a diagnostic-only `lmetric_power_pareto_epsilon_zero_coincidence_ceiling` (epsilon=0.0,
+explicitly NOT Pareto-safe — the proof requires every factor strictly positive) to test a
+prediction directly: since `share_compute`/`share_load` share the same constant denominators
+(`token_budget`, `max_num_seqs` — confirmed identical across all replicas via
+`launch_router_experiment.sh`'s single global `TOKEN_BUDGET`/`MAX_NUM_SEQS`), epsilon=0's
+score is an exact positive rescaling of `lmetric_power_score_coincidence_ceiling`'s raw score
+for every candidate in a decision, so `argmin` (and therefore every routing decision) should
+be provably identical to `lmetric_power_coincidence_ceiling` — NOT to
+`lmetric_power_pareto_coincidence_ceiling`, which is this family's `epsilon=1` case, not its
+`epsilon=0` case. 3 trials, Heavy/Closed-Loop (long).
+
+**First look (3 trials each) matched on peak/TTFT/TBT (within 0.1-1.2%) but showed an
+unexplained gap on mean_ramp (-11.6%) and p99_ramp (+21.5%).** Investigated two ways:
+
+1. **Row-level decision pairing.** Assignment logs record `raw_tokens` per dispatched request
+   (a content fingerprint — the harness pairs whale placement/content across arms via a fixed
+   `--pad-seed`, confirmed: only ~1-2% of rows differ in `raw_tokens` between any two runs) and
+   `replica_id` (the actual routing decision). Pairing `epsilon_zero` trial 1 against
+   `lmetric_power_coincidence_ceiling` trial 1 row-by-row: **706/901 (78%) of decisions differ
+   even where content matches**, first divergence at row 7.
+2. **Self-vs-self control.** To check whether that 78% reflects a real rule difference or just
+   harness noise, extended `lmetric_power_coincidence_ceiling` itself from 3 to 6 trials
+   (same condition, same paired content) and pairwise-compared all `C(6,2)=15` trial pairs the
+   same way. **Every single pair mismatches on 76-82% of decisions** (mean ~79.5%), diverging
+   within the first ~35 requests every time (median first-mismatch row: 7) — statistically
+   indistinguishable from the `epsilon_zero` vs. `lmetric_power_coincidence_ceiling` comparison.
+
+**Conclusion: the argmin-equivalence proof holds, and there is no real gap to explain.**
+`epsilon=0` provably makes identical decisions to `lmetric_power_coincidence_ceiling` given
+identical visible state — but this is a closed-loop feedback system (routing decisions change
+replica load, which changes what the next decision sees), and real execution has sub-ms timing
+noise (decode speed jitter, NVML sampling timing, OS scheduling, other jobs on the shared box)
+that a scoring formula cannot control for. A single early tied-decision flip cascades into a
+completely different global assignment sequence within ~35 requests — this is inherent to the
+harness under closed-loop load, present for ANY single policy replicated across trials, not
+specific to comparing two different rules. Confirmed quantitatively: `lmetric_power_coincidence_ceiling`'s
+own trials 4-6 (mean_ramp 142.8±10.9) land almost exactly where `epsilon_zero`'s 3 trials
+landed (142.5) — the "gap" from trials 1-3 (161.3±1.7) was trials 1-3 sitting on the high side
+of this arm's own natural range, not `epsilon_zero` diverging from it. `lmetric_power_coincidence_ceiling`
+1-6 aggregate: peak 2433.9±41.5, mean_ramp 152.0±12.3, p99_ramp 1095.6±103.4, max_ramp
+6653.7±2286.5, ttft 0.429±0.005, tbt 712.5±15.3 — noticeably wider std than the earlier
+3-trial numbers on every ramp statistic, now that the natural range is visible.
+
+**Practical implication:** this harness's decision-level noise floor (~80% mismatch between
+any two runs of the identical policy) means single-trial or even 3-trial comparisons between
+*different* rules on ramp statistics (mean_ramp, p99_ramp, max_ramp specifically — peak/TTFT/
+TBT are comparatively stable) should be read cautiously; a real mechanism difference and pure
+harness noise can look identical at n=3. This doesn't invalidate the dominance-based
+comparisons elsewhere in this doc (dominance requires simultaneous agreement across all 5
+metrics, which noise alone is unlikely to produce consistently), but it does mean any
+single-metric point-estimate gap on mean_ramp/p99_ramp/max_ramp between two 3-trial arms
+should not be over-read without checking it against a rule's own self-noise range first.
+
+### Data and repro (Part 10-11)
+
+Analysis: `check_full_pareto_family_comparison.py`, `check_lp_pareto_epsilon_vs_no_power.py`,
+`check_tail_protection_claim.py`, `check_epsilon_zero_vs_lmetric_power.py`,
+`check_lmetric_power_cc_self_noise_floor.py`, `pairwise_decision_mismatch.py`. Orchestration:
+`run_pergpu_closedloopheavylong_lp_pareto_coincidence_ceiling.sh`,
+`run_pergpu_lp_pareto_coincidence_ceiling_6conditions.sh`,
+`run_pergpu_closedloopheavylong_lp_pareto_epsilon_variants.sh`,
+`run_pergpu_lp_pareto_epsilon_variants_6conditions.sh`,
+`run_pergpu_closedloopheavylong_lp_pareto_epsilon_small.sh`,
+`run_pergpu_closedloopheavylong_lp_pareto_epsilon_zero.sh`,
+`run_pergpu_closedloopheavylong_lmetric_power_cc_self_replicate.sh`,
+`run_pergpu_lp_pareto_epsilon_small_6conditions.sh`.
+
+### Part 12: the noise floor is large enough to make most ramp-statistic rankings in Parts
+8-10 currently unconfirmed — a significant caveat, not just a footnote
+
+Two follow-on investigations, prompted by the epsilon_zero mean_ramp/p99_ramp gap in Part 11
+not fully closing on the first look.
+
+**1. Real-data control on the decision-mismatch mechanism.** Part 11 showed
+`lmetric_power_coincidence_ceiling`'s own trials mismatch on ~80% of individual routing
+decisions against each other (pairing by request identity, not row order). Two follow-ups:
+
+- *Is this specific to whale-padded synthetic content?* No. Re-ran the same pairwise check
+  (properly joined by `conv_id`+`turn` via nearest dispatch-time matching, not naive row
+  order — row order is invalid for multi-turn conditions since real timing reshuffles
+  conversation interleaving) on BurstGPT (real arrival trace + synthetic filler text, 75.0%),
+  Light/Cachehit (real ShareGPT text, zero whale injection, 84.0-84.6%), and WildChat (real
+  WildChat text, zero whale injection, open-loop Poisson arrivals, 81.9-83.4%). All four
+  conditions land in the same 75-85% band — the two conditions built entirely on real
+  conversation text with zero synthetic padding showed slightly *higher* mismatch, not lower.
+  This also rules out "closed-loop feedback specifically" as the necessary cause, since
+  WildChat is open-loop.
+- *Is this a property of state-dependent rules specifically, not the harness generally?*
+  Yes, confirmed directly: `round_robin` (which never reads live replica state, only an
+  incrementing counter) shows **3.1% decision-mismatch** on the same condition where every
+  load/power-aware rule shows 75-85%. This pins the mechanism down precisely: real request
+  completion timing is not bit-reproducible across separate physical executions (GPU kernel
+  scheduling, thermal/clock variance, OS scheduling), so a router's live-state inputs
+  (`in_flight_after`, `ramp_rate_w_per_s`) are only ever "true at this exact wall-clock
+  instant" and that instant itself isn't reproducible. Close-call ties get flipped by
+  real timing noise the formula can't see, and once one decision flips, replica loads
+  genuinely diverge (not just measurement noise around a shared trajectory) — every
+  subsequent decision inherits real, compounding state difference. `round_robin` never makes
+  a state-dependent tie-break, so it's nearly immune.
+
+**2. Quantitative noise-band audit: does the 80% decision-mismatch translate into
+aggregate-metric noise large enough to swamp this session's rankings?** Computed z-scores for
+`epsilon_zero`, `lmetric_power_pareto_epsilon_coincidence_ceiling` (ε=0.01), and
+`lmetric_power_pareto_coincidence_ceiling` (ε=1) against `lmetric_power_coincidence_ceiling`'s
+true 6-trial noise band (mean_ramp 152.0±12.3, p99_ramp 1095.6±103.4, max_ramp
+6653.7±2286.5) — all three arms fall within ±1.4σ on every ramp metric, i.e. statistically
+indistinguishable from `lmetric_power_coincidence_ceiling`'s own spread.
+
+Extended the check to all 11 arms tested on Heavy/Closed-Loop (long) — the **full range**
+across every different routing rule tested, for each ramp metric, compared to the true 1-std
+band:
+
+| metric | range across 11 arms | true 1-std band | range in std-widths |
+|---|---|---|---|
+| mean_ramp | 26.0 (138.9-164.9) | ±12.3 | 2.12σ |
+| p99_ramp | 201.2 (1020.8-1222.0) | ±103.4 | 1.95σ |
+| max_ramp | 2683.4 (4177.4-6860.9) | ±2286.5 | 1.17σ |
+
+A full range under ~2 true standard deviations across 11 independent samples is exactly what
+pure sampling noise produces on its own — no real difference between rules is required to
+explain it. **This means essentially none of the mean_ramp/p99_ramp/max_ramp rankings,
+"best/worst of N arms" claims, or close-margin dominance relationships elsewhere in this
+document (Parts 8-10 particularly) are currently statistically confirmed** — most arms have
+only 3 trials, and 3-trial sample std badly underestimates true variance (demonstrated
+directly: `lmetric_power_coincidence_ceiling`'s own t1-3 std on mean_ramp was ±1.7; the true
+6-trial std was ±12.3, 7x larger).
+
+**What this does and does not affect:**
+- Does NOT affect the theory (Lemma 1, Theorem 4, Theorem 5) — proofs, not empirical claims.
+- Does NOT affect peak/TTFT/TBT-based comparisons — these showed ~1-2% relative std even at
+  n=3 throughout this investigation, a genuinely different (much lower) noise regime.
+- DOES affect most mean_ramp/p99_ramp/max_ramp rankings in Parts 8-10, including the specific
+  "coincidence_ceiling has the best p99_ramp" framing used in the "abandon DRF" pushback
+  (corrected above) and the tail-protection scoping result (corrected above). `dominates()`
+  requires simultaneous wins on 5 metrics; 3 are reliable (peak/ttft/tbt) but the other 2
+  (mean_ramp, p99_ramp) are within the noise band demonstrated here, so any dominance
+  relationship found in this document has a real, currently-unquantified chance of being
+  partly noise-driven rather than a genuine effect.
+
+**Recommendation going forward:** any ramp-statistic claim intended for the paper needs
+replication to 6+ trials (the extension that surfaced this issue in the first place) before
+being stated with confidence, not the 3 trials used for most of this investigation.
+
+**epsilon=0.001 (`lmetric_power_pareto_epsilon_small_coincidence_ceiling`) now has 3-trial
+data on all 7 conditions** (extended from Heavy/Closed-Loop long only). Per the audit above,
+any comparison of this new data against other 3-trial arms on mean_ramp/p99_ramp/max_ramp
+should be read with the same caution — not presented as confirmed rankings pending the same
+6-trial replication treatment.
+
+### Data and repro (Part 12)
+
+Analysis: `pairwise_decision_mismatch.py`, `pairwise_mismatch_real_conditions.py`,
+`pairwise_mismatch_by_convid.py`, `pairwise_mismatch_roundrobin_control.py`,
+`audit_noise_claims.py`. No new orchestration beyond what's listed in Part 11 (this part is
+analysis of already-collected data) plus `run_pergpu_lp_pareto_epsilon_small_6conditions.sh`'s
+completed results.
+
+### Part 13: the recommended rule's flagship comparison replicated to n=6 — a real, confirmed
+win on the short condition, no confirmed win on the long condition, plus an independent
+low-noise metric (energy-per-token) that reads more favorably
+
+Per Part 12's finding that `drf_power_tiebreak_full_coincidence_ceiling` (short-named
+`coincidence_ceiling`) had zero 6-trial data anywhere despite being the recommended rule,
+extended it — plus its two natural baselines `lmetric` (power-blind) and `round_robin`
+(state-blind) — to 6 trials on both flagship conditions
+(`run_pergpu_flagship_headline_replicate.sh`; caught and fixed a real bug first — the script
+initially set the router's `POLICY` env var to the literal string `"coincidence_ceiling"`
+instead of `drf_power_tiebreak_full_coincidence_ceiling`, which is not a registered policy
+name and crashed the router on startup; corrected before any of the 15 runs completed, no bad
+data produced).
+
+**Heavy/Closed-Loop (short), n=6:**
+
+| arm | peak | mean_ramp | p99_ramp | max_ramp | ttft | tbt |
+|---|---|---|---|---|---|---|
+| coincidence_ceiling | 2275.2±57.1 | 140.6±8.7 | 1674.3±125.8 | 4611.1±748.3 | 0.542±0.033 | 531.3±38.9 |
+| lmetric | 2388.2±31.9 | 151.8±8.4 | 1710.4±170.5 | 5971.4±710.1 | 0.560±0.032 | 544.2±48.9 |
+
+**`coincidence_ceiling` DOMINATES `lmetric` outright — every metric simultaneously better, at
+n=6 with real (not underestimated) standard deviations.** A genuine, confirmed result, not
+noise. Against `round_robin`, directionally favorable on all three ramp metrics (z=-0.94 to
+-1.47 using `coincidence_ceiling`'s own std as scale) — consistently in the right direction,
+not yet clearing a strict significance threshold, never against.
+
+**Heavy/Closed-Loop (long), n=6:**
+
+| arm | peak | mean_ramp | p99_ramp | max_ramp | ttft | tbt |
+|---|---|---|---|---|---|---|
+| coincidence_ceiling | 2438.7±10.2 | 152.3±4.8 | 1128.6±97.7 | 6126.6±1272.8 | 0.426±0.002 | 704.7±30.6 |
+| lmetric | 2472.1±58.6 | 153.9±3.2 | 1176.5±91.0 | 5028.0±939.5 | 0.434±0.009 | 699.3±15.6 |
+
+**No dominance either direction, against either baseline.** The p99_ramp "advantage" over
+`lmetric` that earlier framing (Part 10) leaned on has washed out entirely at n=6 (z=-0.49,
+statistically indistinguishable) — confirms Part 12's warning was correct. More concerning: a
+**real, non-noise signal against** — `coincidence_ceiling`'s mean_ramp is significantly higher
+than `round_robin`'s (z=+2.82) on this specific condition. This is not something to minimize:
+on the "sustained power pressure" condition specifically, the naive baseline may have a real
+edge on average ramp over the recommended rule.
+
+**Addendum (2026-09-09): `round_robin`'s own n=6 numbers and `lmetric_power_coincidence_ceiling`'s
+n=3 numbers for the short condition, filling a gap left when this table was first written (only
+`coincidence_ceiling` and `lmetric` were tabulated; `round_robin` was described only via z-score,
+and `lmetric_power_coincidence_ceiling` wasn't in this specific table at all):**
+
+| arm | n | peak | ttft | tbt |
+|---|---|---|---|---|
+| coincidence_ceiling | 6 | 2275.2±57.1 | 0.542±0.033 | 531.3±38.9 |
+| lmetric | 6 | 2388.2±31.9 | 0.560±0.032 | 544.2±48.9 |
+| round_robin | 6 | 2321.6±53.8 | 0.580±0.038 | 502.7±28.5 |
+| lmetric_power_coincidence_ceiling | 3 | 2361.4±88.9 | 0.557±0.046 | 552.8±22.9 |
+
+`coincidence_ceiling` beats `round_robin` on peak and ttft but loses on tbt (502.7 < 531.3) —
+**incomparable, not dominated**, consistent with the general pattern established elsewhere in
+this doc that `round_robin` is never simply worse, only sometimes better on tbt specifically
+(it never concentrates load). Against `lmetric_power_coincidence_ceiling`,
+`coincidence_ceiling` wins all three (peak, ttft, tbt) — a clean dominance, though at n=3 vs
+n=6 (mismatched trial counts, not yet replicated to matched n like the ramp-stat recheck in
+Part 15).
+
+**Honest synthesis:** confirmed ramp-safety dominance on the short/original condition;
+no confirmed ramp-safety advantage on the long/sustained-pressure condition, with one real
+signal running the other way. This doesn't touch the theory (Theorem 4 is a proof, unaffected
+by any of this) — but the empirical claim "the guaranteed-safe rule also wins on ramp
+statistics under sustained pressure" is not currently supported and should not be asserted in
+the paper as-is.
+
+**A separate, independent, low-noise metric reads more favorably on both conditions:
+energy-per-token.** Motivated by the observation that ramp statistics are noisy *by
+construction* — they're either derivatives (rate-of-change, sensitive to exact sample timing)
+or extreme-value statistics (dominated by a single worst event) — while an *integrated*
+quantity like total energy consumed per token produced should average out the same
+decision-trajectory noise that plagues ramp stats, the same way peak/TTFT/TBT (also
+aggregate-ish) stayed stable while mean_ramp/p99_ramp/max_ramp didn't. Computed directly from
+each trial's power trace's cumulative `energy_mj` NVML counter (exact hardware energy
+delta, not a derived/integrated approximation) divided by total `output_tokens` across all
+completed requests in that trial — no new experiments needed, computed retroactively from
+existing power traces and records.
+
+**Confirmed dramatically lower noise than every ramp statistic**: every arm on every one of
+all 7 conditions tested showed relative std under ~3% (mostly under 1-2%), vs. 8-34% for
+mean_ramp/p99_ramp/max_ramp — roughly an order of magnitude tighter, trustworthy even at n=3.
+`coincidence_ceiling` beats `round_robin` on energy-per-token on 6 of 7 conditions (often by
+5-10%, real given the sub-1% stds), including both flagship conditions (-1.1% short, -1.7%
+long) and especially Light/Cachehit (-5.1%), Ramp & Route (-9.7%), WildChat (-6.4%). The one
+exception — BurstGPT, where `coincidence_ceiling` is 7.7% *worse* — is not a new problem: it's
+consistent with an earlier-documented finding in this project's history (real-BurstGPT-trace
+round_robin advantage, 2026-09-01, unrelated to whale-aware admission logic) already scoped
+out of the paper's headline for that reason. Against `lmetric`, results are more mixed (clear
+wins on 4 conditions, ties or small losses on 3), but `coincidence_ceiling` and
+`lmetric_power_coincidence_ceiling` are statistically indistinguishable on this metric on
+Heavy/Closed-Loop long (1.3132 vs 1.3051, well within each other's noise) — a reassuring
+alignment: the theoretically-safe rule isn't trading efficiency for its guarantee.
+
+**Important scope note: energy-per-token measures a different claim than the theory
+guarantees.** Theorem 4's threshold-safety is about avoiding dangerous *coincident ramp
+spikes* (a tail/transient risk to grid-facing infrastructure), not average efficiency — a rule
+could be very energy-efficient on average while still occasionally producing a dangerous
+simultaneous multi-GPU spike, which would barely move an average diluted across hundreds of
+thousands of tokens. Energy-per-token is a genuine, complementary pillar (confirmed:
+recommended rule is not wasteful, and beats naive baselines on efficiency specifically), not a
+replacement for validating the safety claim itself.
+
+**Current honest state of the paper's empirical case, given everything in Parts 11-13:**
+theory (Theorem 4/5 + Claim 2 counterexample) fully solid; ramp-safety confirmed on the
+short/original condition only; energy-efficiency confirmed on both flagship conditions (and
+5 of 7 total); ramp-safety on the long/sustained-pressure condition specifically remains
+unconfirmed, with one real signal against. Next: checking whether a coincidence-factor style
+metric (fraction of time multiple GPUs are simultaneously pressured — directly what
+`coincidence_ceiling`'s mechanism targets, and plausibly low-noise the same way energy-per-
+token is, since it's also an integrated/fractional statistic rather than a derivative or
+extreme value) clarifies the long-condition picture.
+
+### Data and repro (Part 13)
+
+Orchestration: `run_pergpu_flagship_headline_replicate.sh`. Analysis:
+`check_flagship_headline_6trial.py`, `check_energy_per_token_noise.py`,
+`check_energy_per_token_all_arms.py`, `check_energy_per_token_all_conditions.py`.
+
+### Part 14: two more candidate low-noise metrics tried — coincidence-factor and per-replica
+fairness CV both fail (informative negative results); SLO-violation-rate succeeds
+
+Motivated by Part 13's open question (does an integrated, non-derivative metric clarify the
+long-condition picture the way energy-per-token did), tried two more candidates before landing
+on SLO-violation-rate.
+
+**Coincidence-factor** (fraction of power-pressured wall-clock time during which 2+ GPUs are
+simultaneously elevated — directly the quantity `coincidence_ceiling`'s mechanism targets)
+turned out to be *noisier* than the ramp statistics it was meant to improve on: **56.97%
+relative std**, worse than max_ramp's ~34%. Root cause: despite being a "fraction," it counts
+rare discrete threshold-crossing events (only hundreds of occurrences per trial), not the tens
+of thousands of samples that make energy-per-token stable — "integrated/fractional" alone
+doesn't guarantee low noise; what matters is the number of underlying events being summed.
+
+**Per-replica fairness CV** (dispersion of per-GPU load/energy across only 6 GPUs) similarly
+failed: **32-40% relative std**. Same underlying cause from a different angle — estimating
+spread from only 6 groups is a small-N problem, structurally similar to estimating std from 3
+trials.
+
+**SLO-violation-rate** (fraction of requests with `ttft > 1.0s` or `max(tbt_ms) > 200.0ms`)
+succeeded: **~1.4-2.3% relative std**, in the same low-noise tier as energy-per-token, because
+it counts over hundreds of individual requests per trial rather than a handful of threshold
+crossings. Real limitation: the fixed thresholds are near-degenerate (both near 0%) on lighter
+conditions (Light/Cachehit, WildChat, BurstGPT) where almost every arm already meets them,
+so the metric is only informative on the higher-load conditions.
+
+**Full cross-arm, cross-condition table** (n=3-6 per cell; energy-per-token repeated here from
+Part 13 alongside the new violation rates; computed via
+`check_energy_and_slo_all_arms_conditions.py`, all 7 conditions, 11 arms):
+
+Headline-relevant rows only (`coincidence_ceiling`, `lmetric`, `round_robin`,
+`lmetric_power_coincidence_ceiling`) — full 11-arm table available by re-running the script:
+
+| Condition | arm | J/token | ttft_viol | tbt_viol |
+|---|---|---|---|---|
+| Heavy/CL short | coincidence_ceiling | 1.4242±0.0193 | 0.1989±0.0160 | 0.2978±0.0241 |
+| | lmetric | 1.4180±0.0222 | 0.2389±0.0229 | 0.3111±0.0248 |
+| | round_robin | 1.4395±0.0176 | 0.2422±0.0172 | 0.2856±0.0240 |
+| | lmetric_power_coincidence_ceiling | 1.4179±0.0230 | 0.2133±0.0067 | 0.3222±0.0168 |
+| Heavy/CL long | coincidence_ceiling | 1.3132±0.0050 | 0.1878±0.0043 | 0.3867±0.0189 |
+| | lmetric | 1.3251±0.0242 | 0.1972±0.0047 | 0.3861±0.0086 |
+| | round_robin | 1.3363±0.0023 | 0.1917±0.0041 | 0.3752±0.0049 |
+| | lmetric_power_coincidence_ceiling | 1.3051±0.0032 | 0.1954±0.0042 | 0.3943±0.0090 |
+| Heavy/Matched | coincidence_ceiling | 0.7393±0.0116 | 0.5747±0.0701 | 0.7160±0.0035 |
+| | lmetric | 0.7510±0.0110 | 0.6031±0.0436 | 0.7271±0.0068 |
+| | round_robin | 0.7486±0.0075 | 0.6293±0.0074 | 0.6849±0.0020 |
+| | lmetric_power_coincidence_ceiling | 0.7456±0.0040 | 0.5538±0.0465 | 0.7338±0.0068 |
+| Light/Cachehit | coincidence_ceiling | 1.2287±0.0028 | 0.0020±0.0000 | 0.0000±0.0000 |
+| | lmetric | 1.2517±0.0102 | 0.0020±0.0000 | 0.0000±0.0000 |
+| | round_robin | 1.2944±0.0042 | 0.0020±0.0000 | 0.0000±0.0000 |
+| | lmetric_power_coincidence_ceiling | 1.2339±0.0021 | 0.0020±0.0000 | 0.0000±0.0000 |
+| BurstGPT | coincidence_ceiling | 2.8070±0.0312 | 0.0057±0.0012 | 0.1627±0.0051 |
+| | lmetric | 2.8599±0.0235 | 0.0053±0.0006 | 0.1493±0.0021 |
+| | round_robin | 2.6059±0.0118 | 0.0040±0.0000 | 0.1683±0.0019 |
+| | lmetric_power_coincidence_ceiling | 2.8403±0.0101 | 0.0043±0.0006 | 0.1423±0.0087 |
+| Ramp & Route | coincidence_ceiling | 2.2950±0.0323 | 0.2111±0.0102 | 0.2756±0.0379 |
+| | lmetric | 2.2537±0.0187 | 0.2267±0.0115 | 0.2467±0.0067 |
+| | round_robin | 2.5404±0.0462 | 0.2578±0.0102 | 0.2444±0.0077 |
+| | lmetric_power_coincidence_ceiling | 2.2508±0.0373 | 0.2489±0.0077 | 0.2400±0.0467 |
+| WildChat | coincidence_ceiling | 0.3227±0.0071 | 0.0021±0.0004 | 0.5074±0.0379 |
+| | lmetric | 0.3147±0.0045 | 0.0020±0.0012 | 0.4134±0.0087 |
+| | round_robin | 0.3448±0.0004 | 0.0024±0.0013 | 0.5828±0.0067 |
+| | lmetric_power_coincidence_ceiling | 0.3146±0.0060 | 0.0017±0.0007 | 0.4055±0.0154 |
+
+**Reading the table:** `coincidence_ceiling` beats `round_robin` on TTFT-violation on 5/7
+conditions (ties/degenerate on Cachehit, loses narrowly on BurstGPT) and on energy-per-token on
+6/7 (BurstGPT the one exception, per Part 13). Against `lmetric`, TTFT-violation favors
+`coincidence_ceiling` on 4/7 (short, long, matched, BurstGPT-narrow), loses on Ramp & Route and
+WildChat (both near-degenerate/noisy at this load level). TBT-violation is genuinely mixed
+against both baselines — real losses to `round_robin` on short/BurstGPT/WildChat, real losses
+to `lmetric` on long/WildChat — reported honestly, not glossed over. Against
+`lmetric_power_coincidence_ceiling` (the strongest unsafe alternative), energy-per-token and
+SLO-violation are statistically indistinguishable on most conditions, consistent with Part 13's
+"safety costs no efficiency" finding.
+
+### Data and repro (Part 14)
+
+Analysis: `check_coincidence_factor.py`, `check_replica_fairness.py`,
+`check_slo_violation_rate.py`, `check_slo_violation_flagship.py`,
+`check_energy_and_slo_all_arms_conditions.py`.
+
+### Part 15: recommended paper rewrite (title, layout, headline strategy, table policy) — not
+yet applied to paper.md/tex, this is the agreed plan
+
+**Headline strategy: `drf_power_tiebreak_full_coincidence_ceiling`** (short-named
+`coincidence_ceiling`), unchanged from the standing recommendation, but now backed by the
+most rigorous evidence base it's had at any point this investigation:
+- Only rule with the threshold-safety guarantee (Theorem 4) — proof-level, unaffected by
+  anything empirical.
+- Confirmed n=6 dominance over `lmetric` on Heavy/Closed-Loop (short).
+- Confirmed n=6 energy-per-token advantage over `round_robin` (6/7 conditions) and
+  competitive-to-better vs `lmetric` (4/7 conditions, ties/small losses on 3).
+- Confirmed n=6 TTFT-violation-rate advantage over both baselines where the metric is
+  non-degenerate.
+- **Matched n=6-vs-n=6 re-check against `lmetric_power_coincidence_ceiling`** (the
+  strongest empirically-performing but Pareto-unsafe alternative) **found NO confirmed
+  advantage for the unsafe rule on any ramp metric** — the apparent n=3 edge (lower
+  p99_ramp/max_ramp) fully washed out once both were replicated to matched trial counts
+  (z=-0.03 to +0.28 on all three ramp stats) — and energy-per-token was already
+  statistically tied between them. This directly and rigorously closes the "but the unsafe
+  rule performs better" objection: it doesn't, once compared properly.
+- Explicitly rejected alternatives and why: `lmetric_power_coincidence_ceiling` (not
+  Pareto-safe, Claim 2's cache-hit collapse is a deterministic counterexample, not a
+  statistical claim any amount of replication could fix); the `lmetric_power_pareto_epsilon`
+  family (Theorem 5 proves no fixed-weight/multiplicative rule can ever be threshold-safe,
+  and its apparent empirical edge over `coincidence_ceiling` didn't survive the noise-band
+  audit either — see Part 12).
+
+**Title (recommended): "Fleet-Coincidence-Aware Power Routing: A Provably Safe Mechanism for
+Multi-GPU LLM Serving."** Names the actual novel mechanism (coincidence-ceiling) rather than
+a vague "power-aware" framing, states the guarantee up front, does not claim a sustained-
+pressure ramp-statistics win (which isn't confirmed — see Part 13). Alternates considered:
+"Provably Safe Power-Aware Routing, Without the Efficiency Cost" (leads with the efficiency-
+tie result); "Routing as a Power-Regulation Lever: A Provable Mechanism and Its Real-Hardware
+Evaluation" (closer to an earlier user-proposed framing).
+
+**New layout — three pillars instead of one** (proof + mechanism, evaluation methodology,
+experimental results), replacing the current single-pillar (theory + one validation
+condition) structure:
+1. Abstract — leads with the guarantee + the efficiency-neutral result + one sentence on the
+   methodology contribution. Does NOT lead with the sustained-pressure ramp gap.
+2. Introduction — three contributions stated explicitly (guarantee hierarchy + coincidence-
+   ceiling mechanism; real-hardware evaluation showing no efficiency cost + tail-latency
+   wins; decision-noise-floor characterization + resulting metric-selection methodology,
+   useful beyond this paper).
+3. Problem formulation — largely unchanged (3-resource DRF-style welfare).
+4. Theory — Lemma 1 + counterexample (unchanged); the coincidence-ceiling mechanism
+   presented as its own general, pluggable contribution (not just an add-on to one rule);
+   Theorem 4 (threshold-safety); Theorem 5 (no fixed-weight/multiplicative rule can ever
+   achieve it — motivates why the guarantee hierarchy matters); brief honest mention of the
+   epsilon-shift Pareto-safe family as a weaker-guarantee option, not a competing headline.
+5. **Evaluation methodology (new section)** — hardware/harness setup; the decision-level
+   noise floor (~75-85% mismatch between identical-policy runs, diagnosed via the
+   `round_robin` state-blind control at ~3%, shown robust across real unpadded conversation
+   data in 3 conditions, not a synthetic-workload artifact); the metric-selection principle
+   (sum-over-many-events metrics are low-noise, derivative/extreme-value/small-group-spread
+   metrics are not — illustrated with both the metrics that worked, energy-per-token and
+   SLO-violation rate, AND the ones that didn't, coincidence-factor and per-replica fairness
+   CV, as a negative-result cross-check); trial-count implications (n=3 insufficient for
+   ramp statistics, demonstrated directly via the 3-vs-6-trial std comparison).
+6. Experimental results — 4-arm main comparison table (see table policy below); confirmed
+   dominance on the short condition; confirmed energy-efficiency + TTFT-tail wins on the
+   long condition with the ramp-statistic result addressed per the table policy below; the
+   matched-n=6 head-to-head against `lmetric_power_coincidence_ceiling` (closes the "unsafe
+   rule wins" objection); brief honest mention of the mixed TBT-violation picture.
+7. Limitations — BurstGPT real-trace anomaly (disclosed, mechanism unresolved, consistent
+   with prior project history); no fleet-scale extrapolation attempted, with the retracted
+   PES-IM parametric/bootstrap approach cited as the reason (thin trial libraries + tail-
+   statistic fragility — this project's library is thinner still); single hardware
+   generation/model size.
+8. Related work, 9. Conclusion — largely unchanged.
+
+**Arm/table policy (resolves the "reduce clutter" request):** main comparison table limited
+to 4 arms — `coincidence_ceiling` (recommended), `lmetric` (power-blind baseline, motivates
+why power-awareness matters), `round_robin` (state-blind baseline, motivates why load-
+awareness matters), `lmetric_power_coincidence_ceiling` (strongest empirically-performing
+unsafe alternative, needed for the head-to-head that closes the "unsafe rule wins"
+objection). The other 7 arms tested this session (epsilon variants, `weighted_sum`,
+`compute_only`/`load_only`) get a sentence or an appendix table, not main-table space.
+
+**Negative-result disclosure policy (resolves the tension between "reduce distraction" and
+scientific integrity — discussed and NOT resolved by omission):** negative/mixed findings
+against the chosen strategy (the long-condition mean_ramp signal favoring `round_robin`, the
+mixed TBT-violation picture, the BurstGPT reversal) are NOT dropped from the paper — they are
+moved out of the main results table into a plainly-labeled Limitations subsection in prose,
+disclosed but not competing for attention with the headline comparison. Explicitly rejected:
+omitting them from the paper entirely, on two grounds — (1) it would directly contradict the
+paper's own methodology-section pitch (rigorous, noise-aware honesty about what's confirmed),
+and (2) it isn't needed, since the theory + efficiency-tie + methodology contributions don't
+require a universal ramp-statistics win to carry the paper.
+
+**mean_ramp specifically was checked, not casually dropped as noise-explainable:** it is the
+least-noisy of the three ramp derivatives (~8% relative std vs. p99_ramp's ~9% and
+max_ramp's ~34%), and the specific long-condition signal against `coincidence_ceiling`
+(z≈+2.8 vs `round_robin`) is one of the more statistically credible findings in the whole
+ramp-stats investigation — tighter stds on both sides than most of the p99_ramp/max_ramp
+comparisons that were dismissed as noise elsewhere in this doc. Also: mean_ramp is one of the
+five metrics behind the confirmed short-condition dominance claim, so dropping it only when
+inconvenient (keeping it when it supports the headline win) would be outcome-based metric
+selection, not a principled noise argument. **Resolved: the paper's headline "confirmed
+dominance/win" claims will be restricted to the metrics independently confirmed low-noise
+(peak, ttft, tbt, energy-per-token, SLO-violation rate) — checked and this does NOT cost the
+short-condition win, which holds on peak/ttft/tbt alone (2275.2 vs 2388.2 peak, 0.542 vs
+0.560 ttft, 531.3 vs 544.2 tbt, all favoring `coincidence_ceiling`) — rather than selectively
+including/excluding ramp derivatives by whether they happen to favor the recommended rule.**
+mean_ramp/p99_ramp/max_ramp remain reported (per the disclosure policy above) but are not
+part of any headline "confirmed" claim going forward.
+
+**Open, in-progress: whether Share_power's definition (currently raw two-point ramp_rate,
+`(p1-p0)/(t1-t0)` between consecutive power samples) should be smoothed (e.g. EMA over
+several samples) rather than redefined to target peak power or energy rate directly.**
+Discussed and NOT resolved by conflating two different questions: what the routing decision
+should target (a physically-motivated choice — ramp rate is the right quantity for the
+grid-transient-stress problem this whole project line, including the sibling PES-IM
+coincidence-factor work, is built around) is a separate question from what the paper should
+report as evidence (a measurement-quality choice — peak power and energy-per-token are
+low-noise regardless of what the routing rule internally targets). Retargeting Share_power at
+peak power or energy rate would silently change the mechanism's physical claim from
+grid-transient-avoidance to capacity/thermal management, and was not adopted for that reason.
+**Smoothing the ramp_rate estimate (same physical target, less noisy estimate of it) was
+identified as the more surgical, lower-risk option** — plausible reason to test: if
+Share_power reacts to a noisy raw two-point derivative, that noise could be feeding directly
+into the ~75-85% decision-mismatch finding (Part 12/13), on top of the already-confirmed
+state-divergence mechanism, and smoothing might reduce it without changing what the rule is
+trying to accomplish. Believed (not yet re-verified) that Theorem 4's proof is agnostic to
+what Share_power specifically measures, only to the ratio-to-ceiling structure via the
+"any shared κ(t) inherits safety" corollary — smoothing (or even retargeting) likely does not
+require new proofs, only confirmation the structural argument still applies. **Next: build
+and test a smoothed-ramp Share_power variant** (see Part 16 once run).
+
+### Part 16: Share_power redesign resolved — neither an EMA-smoothed ramp estimate nor a
+peak-power retarget beats raw ramp_rate; keep the original definition
+
+Built and tested two alternative Share_power definitions, both structurally Pareto-safe (built
+via the established `_full` sorted-tie-break-vector pattern):
+`drf_power_tiebreak_full_coincidence_ceiling_smoothed_ramp` (EMA, α=0.3, over the same raw
+two-point ramp_rate) and `drf_peak_power_tiebreak_full` (Share_power retargeted at
+instantaneous power draw / peak ceiling instead of ramp rate — also fixed a real pre-existing
+Pareto-safety bug in the older non-`_full` `pick_drf_peak_power_tiebreak`, which reproduced the
+same domination counterexample the original unfixed ramp-based rule had). First validated on
+the Heavy/Closed-Loop long reference condition (3 trials each), then the smoothed-ramp variant
+extended to all 6 remaining conditions (peak-power-full's extension still in progress at time
+of writing).
+
+**Signal-level check, corrected after an initial methodology bug.** The router's live ramp
+signal and the `power_logger.py` sidecar (which writes the power-trace CSV used for all
+evaluation) are two *independent* NVML polling loops at different cadences: the sidecar targets
+50ms (`--interval-ms 50`, actual ~89ms observed due to per-GPU query overhead across 6 GPUs),
+while the router's own internal loop that feeds `ramp_rate_w_per_s`/`smoothed_ramp_rate_w_per_s`
+polls at `ROUTER_POWER_INTERVAL_S`, defaulting to 500ms and never overridden in these launches.
+An initial reconstruction of the live signal (replaying `update_ramp_state` over the sidecar's
+~89ms-spaced samples) reported raw ramp relative std 454.8%, smoothed 214.3%, and a 38x
+reduction in ceiling-crossing frequency (1.52%→0.04%) — **this used the wrong dt and was
+corrected** by resampling to the router's actual ~500ms cadence: raw relative std **191.1%**,
+smoothed **157.3%** (an ~18% reduction, not ~53%), and ceiling-crossing already near-zero under
+*raw* ramp at the correct cadence (0.03% vs smoothed's 0.00%) — the "smoothing kills ceiling-
+detection" claim does not survive the corrected cadence and should not be used as a reason to
+prefer or reject either variant.
+
+**Evaluation-metric comparison (unaffected by the cadence bug — computed directly from the
+trace, same methodology as every other arm), smoothed-ramp vs `coincidence_ceiling`, all 7
+conditions:**
+
+| Condition | J/token Δ | TTFT-viol Δ | max_ramp Δ |
+|---|---|---|---|
+| Heavy/CL short | −1.8% (better) | better | +35% (worse) |
+| Heavy/CL long | +0.6% | ~tie | −36% (better) |
+| Heavy/Matched | +2.4% (worse) | −12% (better) | +26% (worse) |
+| Light/Cachehit | −1.2% (better, best of 12 arms) | tie | +42% (worse) |
+| BurstGPT | −0.4% (better) | ~tie | +33% (worse) |
+| Ramp & Route | +3.7% (worse) | +23% (worse) | +44% (worse) |
+| WildChat | +3.0% (worse) | tie | +38% (worse) |
+
+No clean win: smoothed-ramp beats `coincidence_ceiling` on energy-per-token on 3/7 conditions
+(small, ~1-2%), loses on 4/7. **max_ramp is worse for smoothed-ramp on 6/7 conditions**, often
+by a large margin. **Ramp & Route is a consistent loss across five independent metrics at
+once** (energy +3.7%, TTFT-violation +23%, mean TTFT +27%, p99_ramp +23%, max_ramp +44%) — the
+strongest single piece of evidence against adopting the smoothed variant.
+
+**`drf_peak_power_tiebreak_full` (peak-power retarget): large, one-sided regression on both
+conditions completed so far.** On the long reference condition: energy-per-token +11%
+(1.4581 vs 1.3132), TTFT-violation nearly 2x (0.3607 vs 0.1878), TBT-violation +21% (0.4667 vs
+0.3867) — not close to noise. Partial BurstGPT data (n=2) shows the same direction
+(TTFT-violation 0.0150 vs 0.0057, TBT-violation 0.2230 vs 0.1627). Retargeting Share_power at
+peak power also changes the mechanism's physical claim from grid-transient-avoidance to
+capacity/thermal management — a materially different problem than the one this paper is about,
+which is a second, independent reason not to adopt it regardless of the numbers.
+
+**Resolved: keep the original raw `ramp_rate_w_per_s` definition of Share_power.** Neither
+alternative improves on it empirically, and both weaken or change the mechanism's connection to
+its stated physical target. The justification for tolerating raw ramp_rate's instantaneous
+noisiness is structural, not a measurement-quality argument: (1) Theorem 4's Pareto-safety
+proof only requires D_i be computed and compared correctly at decision time — it does not
+depend on how precise or smooth any individual share's underlying reading is, so noise in
+Share_power can degrade how well the mechanism performs but cannot break the safety guarantee;
+(2) Share_power only becomes the binding (max) term during genuinely large, real ramp
+excursions — exactly where a real signal is large relative to sample noise — combined with
+resampling every 0.5s, a sustained real event gets many chances to be caught even if any single
+sample is off; (3) this is now an empirically tested claim, not just an assumption — deliberately
+damping the instantaneous noise via EMA smoothing did not improve, and often worsened, the
+confirmed low-noise evaluation metrics, which is direct evidence the instantaneous noise isn't
+actually harming the mechanism's real function.
+
+### Data and repro (Part 16)
+
+Implementation: `scoring.py` (`share_power_smoothed`, `coincidence_ceiling_factor_smoothed`,
+`dominant_share_vector_power_priority_full_coincidence_ceiling_smoothed_ramp`,
+`pick_drf_power_tiebreak_full_coincidence_ceiling_smoothed_ramp`,
+`dominant_share_vector_peak_priority_full`, `pick_drf_peak_power_tiebreak_full`); `ramp.py`
+(`update_ramp_state` extended with `smoothing_alpha` EMA, backward-compatible default);
+`replica_state.py` (`smoothed_ramp_rate_w_per_s` field). Orchestration:
+`run_pergpu_closedloopheavylong_smoothed_ramp.sh`,
+`run_pergpu_closedloopheavylong_peak_power_full.sh`,
+`run_pergpu_share_power_variants_6conditions.sh`. Analysis:
+`check_smoothed_ramp_in_share_power.py` (signal reconstruction, resampled to ~0.5s),
+`check_smoothed_ramp_vs_cc_full_metrics.py` (peak/ramp/ttft/tbt side-by-side),
+`check_energy_and_slo_share_power_variants.py` (energy/SLO side-by-side).
+
+### Part 17: a simulated peer-review pass catches two real problems with the headline Table 1
+claim — neither survives proper significance testing, and the "unsafe rule wins" story is now
+closed on peak/TTFT/TBT too, not just ramp stats and efficiency
+
+Ran a genuine adversarial self-review (simulating an ACM e-Energy "Systems and applied
+modeling" track reviewer) against the post-rewrite paper. Two catches, both verified against
+real per-trial data (not just the reported mean±std) rather than accepted or dismissed by
+argument alone.
+
+**Catch 1: Table 1's "dominates on every low-noise metric simultaneously" claim (short
+condition, `coincidence_ceiling` vs `lmetric`, n=6) does not survive a proper significance
+test.** Pulled real per-trial peak/TTFT/TBT values and ran both unpaired and paired t-tests
+(scipy):
+
+| Metric | diff (cc−lmetric) | unpaired p | paired p |
+|---|---|---|---|
+| Peak power | −113.0 W | **0.0017** | **0.0025** |
+| TTFT | −0.018 s | 0.355 | 0.101 |
+| TBT | −12.9 ms | 0.624 | 0.605 |
+
+Only peak power clears significance. The paper's mean±std table made all three look like a
+clean sweep because each point estimate is numerically lower for `coincidence_ceiling`, but
+"lower point estimate" and "statistically distinguishable at n=6" are different claims, and
+the paper's own §5.2/§5.3 methodology exists specifically to make this distinction — it just
+wasn't applied to the paper's own headline table. **Corrected claim: a real, significant peak
+power win over `lmetric` (p<0.01); TTFT/TBT are directionally favorable but not independently
+significant at n=6.**
+
+**Root cause check for why TTFT failed significance despite §5.2 calling TTFT generally
+low-noise:** TTFT's relative std is condition-dependent, not a fixed property of the metric.
+On the short condition (the one Table 1 uses): 0.542±0.033, relative std **6.2%**. On the long
+condition: 0.426±0.002, relative std **0.4%** — a 15x difference. §5.2's "TTFT stays in the
+~1-2% range" claim was true on average across conditions tested elsewhere in this project but
+not on the specific condition backing the headline table — an inconsistency worth disclosing
+explicitly (which condition-property drives this is not yet diagnosed; plausibly the short
+condition's shorter active window means fewer effective within-trial TTFT samples averaging
+out cross-trial timing noise, but this is a hypothesis, not verified).
+
+**Catch 2: `lmetric_power_coincidence_ceiling` was only at n=3 on the short condition, an
+unmatched comparison sitting in the same table as three n=6 arms.** Replicated it to matched
+n=6 (`run_pergpu_closedloopheavy_lpcc_matched_n6.sh`, trials 4-6, same harness args as every
+other short-condition run) and recomputed the comparison properly:
+
+| Metric | `coincidence_ceiling` (n=6) | `lmetric_power_coincidence_ceiling` (n=6) | diff | t | p |
+|---|---|---|---|---|---|
+| Peak power (W) | 2275.2±57.1 | 2318.2±74.8 | −43.0 | −1.118 | 0.290 |
+| TTFT (s) | 0.542±0.033 | 0.537±0.038 | +0.005 | +0.257 | 0.803 |
+| TBT (ms) | 531.3±38.9 | 553.1±18.8 | −21.8 | −1.234 | 0.246 |
+
+**None of the three metrics are significant at matched n=6 — the "clean dominance over the
+unsafe rule" claim does not survive replication, and TTFT's point estimate direction flips**
+(the n=3 sample happened to show `lmetric_power_coincidence_ceiling` worse; at n=6 it's
+marginally better on TTFT specifically, though not significantly so either way).
+
+**This is not a worse result for the paper — it's a cleaner, more defensible one once
+correctly framed.** Combined with the already-established ties on energy-per-token,
+SLO-violation-rate, and the three ramp-derivative statistics (Part 13/15), `coincidence_ceiling`
+is now shown to be statistically indistinguishable from the strongest known unsafe alternative
+on *every* metric measured in this project, not just efficiency/SLO — which is direct,
+comprehensive support for "the safety guarantee costs nothing," a stronger and more coherent
+version of that claim than before. The one metric with a real, significant, standalone win is
+peak power against the power-blind baseline (`lmetric`), not the multi-metric sweep against
+the unsafe alternative previously claimed.
+
+**Resolution for the paper (not yet applied to paper.md/tex as of this entry):** rewrite the
+headline claim around (a) a significant peak-power win vs. `lmetric` (p=0.0017), (b)
+directional-but-unconfirmed TTFT/TBT advantages vs. `lmetric`, disclosed as such, and (c) a
+now-comprehensive statistical tie with `lmetric_power_coincidence_ceiling` across every metric
+tested (ramp stats, peak, TTFT, TBT, energy-per-token, SLO-violation-rate) as the paper's
+primary "safety is free" evidence. Also disclose TTFT's condition-dependent noise level in
+§5.2 rather than stating a single blanket relative-std range.
+
+### Data and repro (Part 17)
+
+Orchestration: `run_pergpu_closedloopheavy_lpcc_matched_n6.sh`. Real per-trial values and
+t-tests computed inline via `compare_closedloopheavy_duration.load_records`/`load_power` plus
+`scipy.stats.ttest_ind`/`ttest_rel`, not yet saved as a standalone script (ad hoc during this
+review pass — worth promoting to `check_table1_significance.py` if reused).
+
+### Part 18: theory-motivated (not outcome-selected) replication check on Heavy/CL long finds
+a second real, highly significant result — `coincidence_ceiling` beats `round_robin` on TTFT
+
+Per the discussion about avoiding selection bias (choosing where to replicate based on which
+point estimate currently looks favorable, rather than on a mechanistic prediction), picked
+Heavy/Matched and Heavy/CL long for further scrutiny specifically because both are the
+project's sustained-pressure, multiple-simultaneously-elevated-replica conditions — the
+regime the coincidence-ceiling mechanism is designed to matter in — decided *before* looking
+at which numbers currently favored the proposed rule there.
+
+Heavy/CL long already had all 4 headline arms at real n=6 (no new data needed); ran the same
+rigorous per-trial significance check used for Table 1 (findings Part 17) rather than trusting
+point estimates:
+
+| Comparison | Metric | diff | p (unpaired) |
+|---|---|---|---|
+| vs `lmetric` | peak | −33.4 W | 0.199 |
+| vs `lmetric` | TTFT | −0.008 s | 0.055 (borderline) |
+| vs `lmetric` | TBT | +5.4 ms | 0.708 |
+| vs `lmetric_power_coincidence_ceiling` | peak/TTFT/TBT | all small | 0.789 / 0.166 / 0.592 |
+| **vs `round_robin`** | **TTFT** | **−0.023 s** | **p<0.000001** |
+| vs `round_robin` | peak | +20.0 W | 0.115 |
+| vs `round_robin` | TBT | +24.9 ms | 0.083 (borderline) |
+
+**A second real, strong, confirmed result**: `coincidence_ceiling`'s TTFT is significantly
+lower than `round_robin`'s on the long/sustained-pressure condition — cc: 0.423-0.429s across
+all 6 trials; round_robin: 0.446-0.451s across all 6 trials, essentially non-overlapping
+(unpaired t=-19.74, p<1e-6; paired t=-22.57, p=3e-6). This is the first rigorously-tested,
+statistically solid win against `round_robin` found anywhere in this project — previous
+`round_robin` comparisons were framed only qualitatively ("incomparable"), never
+significance-tested this precisely. The mechanism is consistent with `round_robin`'s known
+weakness (§6.1/Table 1 discussion): ignoring queue depth risks concentrating load into
+synchronized bursts, which should cost TTFT specifically under sustained load — exactly what
+this shows, on exactly the condition the theory-motivated selection targeted.
+
+TBT vs `round_robin` trends the other way (borderline, p=0.083, consistent with `round_robin`
+never concentrating load and therefore never facing the TBT cost a state-aware rule
+occasionally does, per the existing short-condition disclosure) — reported honestly, not
+suppressed.
+
+**This is now a second condition with a real, non-noise confirmed result** (short: peak power
+vs `lmetric`, p=0.0017; long: TTFT vs `round_robin`, p<1e-6), found via the theory-motivated
+selection this session agreed on rather than by scanning for favorable point estimates, which
+is the methodologically legitimate way to have found it.
+
+**Next**: replicating Heavy/Matched (currently n=3 across all 4 headline arms, the other
+sustained-pressure condition) to matched n=6, for the same reason — not yet run as of this
+entry.
+
+### Data and repro (Part 18)
+
+Real per-trial TTFT/peak/TBT computed inline via `compare_closedloopheavy_duration`, same
+approach as `check_table1_significance.py` (Part 17) but applied to the already-existing
+`closedloopheavylongpergpu` n=6 data; worth extending that script to cover this condition too
+if reused again.
+
+### Part 19: Heavy/Matched replicated to n=6 — the TTFT-win/TBT-cost pattern against
+`round_robin` replicates on a second independent condition
+
+Completed the second half of the theory-motivated replication plan from Part 18: Heavy/Matched
+(the other sustained-pressure, multi-replica-elevation condition) extended from n=3 to n=6 for
+all 4 headline arms (`run_pergpu_matched_n6_headline.sh`, same pad-seed as every existing
+trial). Real per-trial significance check:
+
+| Comparison | Metric | `coincidence_ceiling` | other | diff | p |
+|---|---|---|---|---|---|
+| vs `lmetric` | peak | 2643.5±20.6 | 2652.3±25.3 | −8.7 | 0.527 |
+| vs `lmetric` | TTFT | 3.537±0.593 | 3.316±0.569 | +0.222 | 0.523 |
+| vs `lmetric` | TBT | 1288.6±36.1 | 1314.7±35.5 | −26.1 | 0.236 |
+| vs `lmetric_power_coincidence_ceiling` | peak/TTFT/TBT | --- | --- | --- | 0.288 / 0.630 / 0.058 |
+| **vs `round_robin`** | **TTFT** | **3.537±0.593** | **5.453±0.456** | **−1.916** | **0.00009** |
+| **vs `round_robin`** | **TBT** | **1288.6±36.1** | **1242.0±18.9** | **+46.6** | **0.019** |
+| vs `round_robin` | peak | 2643.5±20.6 | 2649.3±29.9 | −5.8 | 0.705 |
+
+**A real, large, highly significant TTFT win over `round_robin`** (~35% relative reduction,
+`round_robin`'s TTFT balloons past 5s under this condition's load while `coincidence_ceiling`
+stays under 3.6s) **paired with a smaller but still significant TBT loss** — the identical
+qualitative pattern found on Heavy/CL long (Part 18: TTFT win p<1e-6, TBT trend p=0.083, not
+quite significant there but same direction). Finding the same structural tradeoff on two
+independent conditions, both selected in advance for their sustained-pressure/multi-elevation
+character rather than for looking favorable, is a real replication, not two separate lucky
+draws. Mechanistically consistent with the existing account (§6.1's discussion, unchanged): a
+state-blind rule can never concentrate load onto an already-busy replica, so it structurally
+cannot lose TBT the way a state-aware rule occasionally does under real pressure, at the cost
+of not avoiding queue buildup the way a load-aware rule can — this is now shown twice, not
+asserted once.
+
+vs `lmetric` and `lmetric_power_coincidence_ceiling`: no significant differences on this
+condition either, consistent with the established comprehensive-tie picture (Parts 15/17).
+
+**Recommendation: fold this into the paper.** The paper currently reports only one confirmed
+result (short-condition peak power vs `lmetric`, §6.1) plus the comprehensive-tie story. This
+adds a second, independently-replicated, mechanistically-explained result (`round_robin`
+TTFT/TBT tradeoff on sustained-pressure conditions) that is at least as strong statistically
+and arguably more interesting, since it replicates rather than standing alone. Not yet applied
+to paper.md/tex as of this entry.
+
+### Data and repro (Part 19)
+
+Orchestration: `run_pergpu_matched_n6_headline.sh`. Analysis: same inline
+`compare_closedloopheavy_duration` + `scipy.stats.ttest_ind` approach as Parts 17-18, applied
+to `openloopwhalelongoutmatchedpergpu`.
+
+### Part 20: Heavy/Matched rate sweep — the TTFT-win/TBT-cost pattern is not monotonic with
+load; it peaks at moderate pressure and vanishes under saturation
+
+Extended Part 19's finding with a 3-point request-rate sweep on Heavy/Matched
+(`run_pergpu_matched_rate_sweep.sh` + `_ext.sh`): rate=7.0 (below the original 10.7) and
+rate=15.0 (above it), `coincidence_ceiling` vs `round_robin`, n=3 each (supplementary check,
+not headline-rigor n=6).
+
+| Rate | TTFT: cc vs rr | p | TBT: cc vs rr | p |
+|---|---|---|---|---|
+| 7.0 | 0.779±0.165 vs 1.347±0.113 | **0.00797** | 1058.1±40.8 vs 1040.0±30.5 | 0.572 |
+| 10.7 (Part 19, n=6) | 3.537±0.593 vs 5.453±0.456 | **0.00009** | 1288.6±36.1 vs 1242.0±18.9 | **0.019** |
+| 15.0 | 9.916±0.649 vs 9.923±0.320 | 0.988 | 1367.8±59.2 vs 1341.2±20.7 | 0.502 |
+
+**Not monotonic with load — this partially disconfirms the a priori prediction stated in Part
+18/19 (that higher load should strengthen the effect via more simultaneous-elevation
+opportunities), and that disconfirmation is reported as found, not omitted.** The TTFT
+advantage is real at both 7.0 and 10.7 (both p<0.01) but collapses entirely at 15.0, where
+both arms' TTFT balloons to ~9.9s and becomes statistically identical. The most likely
+mechanism: rate=15.0 saturates the fleet's real serving capacity — once arrival rate exceeds
+what the replicas can actually process, queueing delay is dominated by the capacity deficit
+itself, and routing policy (which replica gets which request) stops being able to help,
+regardless of how well-designed. This is consistent with, not contradictory to, the
+coincidence-ceiling mechanism's design: it manages *how* load is distributed among replicas
+that have spare capacity to receive it, not whether the fleet has enough capacity in
+aggregate. The TBT-cost effect appears only at the moderate/original rate (10.7), not at
+either the lighter or saturated extreme — narrower than the TTFT-win's range, but consistent
+with the existing account (round_robin's concentration-avoidance only pays off relative to a
+state-aware rule under real, sustained-but-not-yet-saturating pressure).
+
+**Honest summary for the paper**: `coincidence_ceiling`'s TTFT advantage over `round_robin`
+holds across a real range of loads (confirmed at 2 of 3 rates tested) but is not universal —
+it is a sustained-but-below-saturation-regime effect, not a load-independent property of the
+rule. This should be stated as an explicit scope qualifier if this result is added to the
+paper, not smoothed into an unconditional claim.
+
+### Data and repro (Part 20)
+
+Orchestration: `run_pergpu_matched_rate_sweep.sh`, `run_pergpu_matched_rate_sweep_ext.sh`
+(the latter's `lmetric_power_coincidence_ceiling`/`weighted_sum_coincidence_ceiling` arms not
+yet analyzed as of this entry — still running/queued). Analysis: same inline
+`compare_closedloopheavy_duration` + `scipy.stats.ttest_ind` approach as Parts 17-19.
+
+**Addendum to Part 20**: the comprehensive tie against `lmetric_power_coincidence_ceiling` and
+`weighted_sum_coincidence_ceiling` (established at rate=10.7 in Parts 17/19) also holds at
+both new rate points, n=3 each:
+
+| Rate | vs `lmetric_power_coincidence_ceiling` (peak/ttft/tbt p) | vs `weighted_sum_coincidence_ceiling` (peak/ttft/tbt p) |
+|---|---|---|
+| 7.0 | 0.080 / 0.146 / 0.462 | 0.333 / 0.269 / 0.955 |
+| 15.0 | 0.568 / 0.295 / 0.861 | 0.379 / 0.498 / 0.645 |
+
+No significant difference on any metric at either rate — the "safety costs nothing" result is
+robust across the load range tested here, not an artifact specific to rate=10.7.
+
+### Part 21: n=6 correction to Part 20 — the saturation finding was overstated at n=3
+
+Extended rate=7.0 and rate=15.0 from n=3 to n=6 (`run_pergpu_matched_rate_sweep_n6.sh`).
+Real per-trial results:
+
+| Rate | n | TTFT: cc vs rr | p | TBT: cc vs rr | p |
+|---|---|---|---|---|---|
+| 7.0 | 6 | 0.708±0.135 vs 1.218±0.187 | **0.00030** | 1041.5±43.1 vs 1020.5±38.4 | 0.393 |
+| 15.0 | 6 | 9.396±0.948 vs 10.171±0.509 | 0.108 | 1336.4±64.8 vs 1336.9±14.4 | 0.985 |
+
+**Correction to Part 20: "the effect vanishes entirely under saturation" was an overstatement
+built on an n=3 sample that happened to land on an almost-exact tie (rate=15.0 n=3: diff=-0.007,
+p=0.988).** At n=6, the point estimate shows a real 0.775s gap in the same direction as the
+lighter-load conditions (p=0.108 --- does not clear conventional significance, but is no longer
+a dead heat either). The honest, corrected statement: **the TTFT advantage weakens
+substantially under saturation and is no longer statistically confirmed there, not that it
+provably disappears.** This is a real example of why n=3 shouldn't be trusted for anything
+beyond a directional read, consistent with this project's own standing methodology (§5.2/5.3)
+--- the correction itself is evidence the standard is being applied consistently, not
+selectively.
+
+Rate=7.0's result, by contrast, only got stronger with more data (p=0.008 to p=0.0003) ---
+confirming that result was never fragile.
+
+TBT: no significant difference at either rate, consistent with Part 20's finding that the TBT
+cost is specific to the original moderate rate (10.7), not present at either tested extreme.
+
+### Data and repro (Part 21)
+
+Orchestration: `run_pergpu_matched_rate_sweep_n6.sh`. Same analysis approach as Parts 17-20.
+
+### Part 22: the round_robin TTFT/TBT tradeoff pattern does not generalize to WildChat or
+BurstGPT — real, condition-dependent mixed results, including one significant loss
+
+Checked `coincidence_ceiling` vs `round_robin` on two conditions outside the whale-injection
+family the Parts 18-21 pattern was established on: WildChat at rate=15.0 (n=3) and BurstGPT at
+1.5x compressed timing (n=3, see Part header on the rate-scale methodology note).
+
+| Condition | TTFT: cc vs rr | p | TBT: cc vs rr | p |
+|---|---|---|---|---|
+| WildChat rate=15.0 | 0.224 vs 0.408 (favors cc, not sig.) | 0.178 | **289.0 vs 334.4 (favors cc)** | **0.011** |
+| BurstGPT 1.5x | **0.174 vs 0.167 (favors rr --- a real loss)** | **0.0046** | 130.3 vs 132.6 (favors cc, modest) | 0.029 |
+
+**This does not replicate the clean TTFT-win/TBT-cost pattern from Parts 18-21.** WildChat
+shows the *opposite* TBT relationship (cc wins TBT, not `round_robin`); BurstGPT shows a real,
+significant TTFT *loss* for `coincidence_ceiling`. Both are real, non-noise results (clear
+p-values), not measurement artifacts.
+
+**Honest interpretation: the round_robin tradeoff pattern found on Heavy/CL long and
+Heavy/Matched is specific to that condition family (closed/open-loop synthetic whale-injection
+traffic with sustained multi-replica pressure), not a general property of
+`coincidence_ceiling` vs `round_robin`.** WildChat and BurstGPT differ structurally (real
+conversational/request-trace content, different load shapes) and produce a different,
+condition-specific comparison. This should be reported as a scope-limited finding if included
+in the paper, explicitly not generalized beyond the conditions where it was actually
+confirmed --- consistent with this project's standing policy of not smoothing mixed results
+into a cleaner-sounding universal claim.
+
+### Data and repro (Part 22)
+
+Orchestration: `run_pergpu_wildchat_rate15.sh`, `run_pergpu_burstgpt_ratescale15.sh`. Same
+analysis approach as Parts 17-21. n=3 only on both conditions --- not yet replicated to n=6;
+BurstGPT's real, significant TTFT loss in particular would benefit from replication before
+being treated as fully settled.
+
+### Part 23: the "comprehensive tie" against lmetric_power_coincidence_ceiling/
+weighted_sum_coincidence_ceiling does NOT hold on WildChat or BurstGPT — real, significant
+losses, a genuine correction to the paper's current headline scope
+
+Extended Part 22's check to the other two headline-adjacent arms (already queued in the same
+batteries). Real per-trial t-tests, `coincidence_ceiling` vs each:
+
+| Condition | vs `lmetric_power_coincidence_ceiling` | vs `weighted_sum_coincidence_ceiling` |
+|---|---|---|
+| WildChat rate=15.0 | peak **p=0.0036** (cc worse by 113W); TTFT p=0.162; TBT **p=0.0049** (cc worse by 53.5ms) | peak **p=0.0072** (cc worse by 49.6W); TTFT p=0.278; TBT **p=0.0053** (cc worse by 66.2ms) |
+| BurstGPT 1.5x | peak p=0.804; TTFT **p=0.0236** (cc worse); TBT **p=0.0001** (cc worse by 11.3ms) | peak p=0.607; TTFT p=0.195; TBT **p=0.0023** (cc worse by 8.7ms) |
+
+**This is a real, statistically confirmed correction to the paper's current claim** ("matches
+the strongest empirically-performing but unsafe alternative on every metric measured at
+matched $n{=}6$ --- the guarantee costs nothing on any axis tested," Abstract/Conclusion as of
+this session's last revision). That claim is accurate for the flagship whale-injection
+condition family (Heavy/CL short/long, Heavy/Matched at three rates --- Parts 17-21) but does
+**not** generalize to WildChat or BurstGPT, where `coincidence_ceiling` shows real, significant
+peak/TBT/TTFT losses against both the unsafe alternative and the Pareto-safe external check.
+
+This is consistent with, and now statistically sharpens, an existing narrow disclosure already
+in the paper's Limitations (the WildChat TBT-violation-rate loss from the original 7-condition
+sweep, Part 14) --- but the current headline language does not reflect how real and broad this
+is. **The paper's "costs nothing" claim needs to be explicitly scoped to the conditions where
+it was actually confirmed (the whale-injection family), not stated as if it holds on every
+condition/axis tested in this project.** Not yet applied to paper.md/tex as of this entry ---
+this is a correction that should be made before the current overly broad phrasing is read by a
+reviewer who checks it the way this project's own review pass did.
+
+### Data and repro (Part 23)
+
+Same batteries as Part 22 (`run_pergpu_wildchat_rate15.sh`, `run_pergpu_burstgpt_ratescale15.sh`),
+extended to the other two arms already collected in the same runs. n=3 only on both conditions.
+
+### Part 24: Part 23's WildChat/BurstGPT losses occurred under light, unsaturated load ---
+important context, not a retraction
+
+Checked directly whether WildChat rate=15.0 and BurstGPT 1.5x were actually under load when
+Part 23's losses were measured, rather than assuming so.
+
+**TTFT distributions (direct queueing-delay evidence):**
+
+| Condition | mean TTFT | p50 | p99 |
+|---|---|---|---|
+| Heavy/Matched rate=7.0 (lightest tested) | 0.935s | 0.086s | 7.803s |
+| Heavy/Matched rate=15.0 (saturated) | 10.310s | 8.757s | 30.977s |
+| WildChat rate=15.0 | 0.225s | 0.159s | 0.967s |
+| BurstGPT 1.5x | 0.174s | 0.115s | 0.957s |
+
+**Neither WildChat rate=15 nor BurstGPT 1.5x reaches meaningful load** --- both have lower p99
+TTFT than Heavy/Matched's own *lightest* tested rate point, nowhere near saturation. Consistent
+with neither condition having whale injection (real WildChat/BurstGPT content), so the
+workload is structurally lighter independent of arrival rate. Coincidence-ceiling-mechanism
+engagement rate (fraction of samples with $n_{elevated}\ge2$) is also low and similar across
+conditions including the known-saturated Heavy/Matched rate=15 case (0.49-0.79%), so engagement
+rate alone doesn't distinguish load level here --- TTFT/TBT is the clean signal.
+
+**This recontextualizes, but does not retract, Part 23's finding.** The significant peak/TBT/
+TTFT losses found there are real (the p-values and effect sizes stand), but they occurred in a
+regime where the coincidence-ceiling mechanism has essentially no real safety-relevant work to
+do --- it rarely triggers under this little pressure. The more accurate interpretation: under
+light, unsaturated load, small but statistically detectable differences arise from incidental
+tie-break behavior on compute/load shares (unrelated to the power-safety mechanism), not from
+the mechanism actively costing performance under the pressure it's designed to handle. This is
+a materially different and more benign story than "the guarantee costs something under real
+pressure" would be. **For the paper: the "costs nothing" claim should still be scoped to the
+conditions/regime it was confirmed under (Part 23's correction stands --- don't claim
+universality), but the WildChat/BurstGPT losses should be reported alongside this load context,
+not presented as evidence the mechanism fails when it matters.**
+
+### Data and repro (Part 24)
+
+Same power traces and records as Parts 22-23; TTFT distribution and coincidence-frac computed
+inline, not yet promoted to a standalone script.
+
+### Part 25: WildChat under genuine load (rate=30) --- clean win vs round_robin, but a
+persistent real TTFT cost vs both tie-broken alternatives that load does not resolve
+
+Confirmed WildChat rate=30.0 actually reaches real load this time (p99 TTFT 4.3-7.1s vs
+rate=15's 0.96s, comparable to Heavy/Matched's own lightest tested rate) before trusting the
+comparison, per the Part 24 lesson. Full 4-arm comparison, n=3:
+
+| Comparison | peak p | TTFT p (direction) | TBT p (direction) |
+|---|---|---|---|
+| vs `round_robin` | 0.757 (tie) | **0.0107** (cc wins: 0.924s vs 1.099s) | **0.0054** (cc wins: 377.6ms vs 410.2ms) |
+| vs `lmetric_power_coincidence_ceiling` | 0.087 (tie) | **0.045** (cc loses: 0.924s vs 0.888s) | 0.227 (tie) |
+| vs `weighted_sum_coincidence_ceiling` | 0.168 (tie) | **0.017** (cc loses: 0.924s vs 0.865s) | 0.082 (borderline, trending loss) |
+
+**Two real findings, both clean this time given genuine load:**
+1. **The `round_robin` comparison is now a clean double-win** (TTFT and TBT both significant,
+   same direction) --- unlike rate=15 (unloaded), where only TBT was significant. Consistent
+   with the load hypothesis: the mechanism's advantage over a state-blind baseline shows up
+   clearly once there's real pressure to route around.
+2. **The TTFT cost against both tie-broken alternatives persists even under real load** ---
+   this is not simply an artifact of the earlier unloaded test. `coincidence_ceiling` is
+   real y worse on TTFT specifically against both `lmetric_power_coincidence_ceiling` and
+   `weighted_sum_coincidence_ceiling`, at a condition now confirmed to be under genuine
+   pressure. The "comprehensive tie" claim does not hold on WildChat regardless of load level
+   tested so far --- this looks like a genuine, condition-specific property (real
+   conversational traffic, no whale injection), not a load-regime artifact.
+
+**Implication for the paper:** the "costs nothing" framing needs to be scoped to the
+whale-injection condition family specifically (as Part 23 already concluded), and this
+strengthens that conclusion rather than complicating it further --- WildChat's TTFT cost
+against the tie-broken alternatives is real and persistent, not something more load happens to
+fix.
+
+BurstGPT scale=3.0 (the other higher-load re-test) still pending as of this entry.
+
+### Data and repro (Part 25)
+
+Orchestration: `run_pergpu_load_extremes.sh` (stage 2). Same analysis approach as Parts 17-24.
+
+### Part 26: avoidable-threshold-violation rate measured directly for the first time --
+confirms the proof, and finds one real (not just theoretical) violation for
+lmetric_power_coincidence_ceiling
+
+Implemented the metric proposed in response to "threshold-safe doesn't buy us any benefits on
+the metrics we have so far -- can you think of a metric that is threshold-safe related?":
+`Router` now computes, for every routing decision, `D_chosen` (the picked candidate's dominant
+share, using whatever ceiling the active policy actually uses -- coincidence-ceiling-adjusted
+for any `_coincidence_ceiling` variant) and `min_D_available` (the minimum D(c) across the
+whole candidate set at that decision), and flags `avoidable_threshold_violation` whenever
+`D_chosen > tau` (default 1.0, matching Theorem 5's own worked example and the paper's "1.0 =
+at capacity" convention) while `min_D_available <= tau` -- i.e., the rule passed over an
+available safe candidate for an unsafe one. Logged as three new trailing columns in the
+assignment CSV (`router_core.py`, `proxy_server.py`; 3 new tests in
+`test_eenergy_router_core.py` including a direct reproduction of Theorem 5's exact
+counterexample through the real routing pipeline; 312 local / 309 remote, all passing).
+
+Measured on the flagship condition (Heavy/CL short), 3 trials each, `coincidence_ceiling`,
+`weighted_sum_coincidence_ceiling`, `lmetric_power_coincidence_ceiling`:
+
+| arm | avoidable violations | rate |
+|---|---|---|
+| `coincidence_ceiling` | 0/453 | 0.000% |
+| `weighted_sum_coincidence_ceiling` | 0/453 | 0.000% |
+| `lmetric_power_coincidence_ceiling` | 1/453 | 0.221% |
+
+**`coincidence_ceiling`'s zero rate matches the proof exactly** (Theorem 4/Corollary 1,
+deterministic, not a statistical claim -- this confirms the instrumentation is correct, not
+new information about the rule). **`lmetric_power_coincidence_ceiling`'s one violation is real,
+not synthetic**: replica r5 was picked with D_chosen=1.291 (power-dominated, unsafe) while
+another candidate had D=0.670 (safe) available -- inspected directly, a genuine instance of the
+predicted failure mode occurring on real traffic. **`weighted_sum_coincidence_ceiling` shows
+zero violations at this sample size**, despite Theorem 5 proving the failure mode exists --
+not a contradiction (the theorem is an existence proof, not a frequency claim), but suggestive
+that the failure mode is much rarer on real, structured traffic than the 11.71% found on
+uniform-random synthetic instances (Theorem 5's own generic-instance check, section 4.5) --
+real traffic's share distributions likely don't produce the adversarial-looking configurations
+uniform sampling does.
+
+**Honest statistical caveat**: 453 decisions/arm is a modest sample for a rare-event rate. Zero
+observed events does not mean zero true rate -- by the rule of three, the 95% upper bound on
+`weighted_sum_coincidence_ceiling`'s true rate given 0/453 is ~0.66%, not 0%. The paper should
+state this precisely: proof-level guarantee (confirmed empirically at 0/453) for
+`coincidence_ceiling`; one real observed violation for `lmetric_power_coincidence_ceiling`; no
+observed violations (but not a demonstrated zero rate) for `weighted_sum_coincidence_ceiling` at
+this sample size. This directly answers the "threshold-safety doesn't show up in any metric we
+have" objection -- it does, once measured at the right level (per-decision, not aggregate
+outcome), and the direct measurement is consistent with, not contradicted by, the theory.
+
+**Next**: this was only run on one condition (Heavy/CL short) at n=3. Extending to more
+conditions/trials, especially the higher-load variants where more coincidence-ceiling
+adjustment activity occurs, would sharpen the weighted_sum_coincidence_ceiling rate estimate
+and might surface more violations for the arms that lack the guarantee. Not yet done.
+
+### Data and repro (Part 26)
+
+Orchestration: `run_pergpu_threshold_violation.sh`. Instrumentation:
+`scripts/eenergy/router/router_core.py` (`last_D_chosen`, `last_min_D_available`,
+`last_avoidable_threshold_violation`, `THRESHOLD_TAU`), `proxy_server.py`
+(`format_assignment_record` extended). Analysis computed inline via the assignment CSV's new
+columns, not yet promoted to a standalone script.
+
+### Part 27: WildChat + whale injection at rate=10.7 is severely over-saturated --
+inconclusive for the long-context hypothesis, not evidence against it
+
+Tested whether pointing the Heavy family's exact whale-injection settings
+(`--whale-frac 0.15 --whale-min-chars 44000 --whale-max-chars 50000`) at real WildChat
+conversations (instead of synthetic ShareGPT) changes coincidence_ceiling's picture there,
+isolating content length from trace source. Same rate (10.7) as the plain-WildChat baseline
+for a clean before/after comparison.
+
+**The condition turned out far more loaded than intended**: mean TTFT 17.6s, p99 57.5s --
+worse than even Heavy/Matched's confirmed-saturated rate=15.0 point (mean ~10s). Whale
+injection stacked on real multi-turn WildChat content (up to 4 turns/conversation) is much
+heavier than either factor alone at this rate.
+
+Full 5-arm comparison, n=3, vs `coincidence_ceiling`:
+
+| vs | peak_p | ttft_p | tbt_p |
+|---|---|---|---|
+| lmetric | 0.250 | 0.683 | **0.010 (cc loses, 1388.6 vs 1349.9ms, ~3%)** |
+| round_robin | 0.874 | 0.176 | 0.231 |
+| lmetric_power_coincidence_ceiling | 0.981 | 0.992 | 0.452 |
+| weighted_sum_coincidence_ceiling | 0.937 | 0.964 | 0.444 |
+
+**Almost everything ties, matching the established saturation pattern (Part 20/21): once a
+condition is this deep in overload, aggregate fleet capacity dominates and routing-policy
+choice stops being able to help or hurt much, regardless of design.** This is not evidence
+against the long-context hypothesis (does whale-injected/long-context content specifically
+help coincidence_ceiling independent of trace source) -- it's evidence this particular test
+was run at a load level past the point where any routing comparison is informative. The one
+real signal (TBT vs lmetric) is small and consistent with "differences barely register under
+extreme saturation" rather than a meaningful directional finding.
+
+**To actually answer the long-context question, this needs re-running at a lower rate** --
+something in the range that produced Heavy/Matched's cleanest signal (comparable to its
+rate=7.0-10.7 range, not 15.0+), recalibrated for WildChat-whale's heavier per-request cost.
+Not yet done given time constraints; flagged as a clearly-scoped follow-up rather than treated
+as a completed, inconclusive test of the actual hypothesis.
+
+### Data and repro (Part 27)
+
+Orchestration: `run_pergpu_wildchat_whale.sh`. Same analysis approach as prior parts.
+
+### Part 28: avoidable-threshold-violation rate at 6x the sample, plus lmetric and round_robin
+-- a clean, interpretable ordering, no individual pairwise difference statistically confirmed
+
+Extended Part 26 to all 5 headline-adjacent arms (added `lmetric`, `round_robin`) on the
+Heavy/CL long condition (900 convs/trial vs the short condition's 150 -- ~2703 decisions/arm
+across 3 trials, 6x Part 26's 453/arm sample).
+
+| arm | violations | rate |
+|---|---|---|
+| `coincidence_ceiling` | 0/2703 | 0.000% |
+| `weighted_sum_coincidence_ceiling` | 0/2703 | 0.000% |
+| `lmetric_power_coincidence_ceiling` | 1/2703 | 0.037% |
+| `lmetric` | 1/2703 | 0.037% |
+| `round_robin` | 2/2703 | 0.074% |
+
+**A clean, sensible ordering**: the two rules with some formal safety property (proof-level
+threshold-safety for `coincidence_ceiling`; Pareto-safety only for
+`weighted_sum_coincidence_ceiling`) sit at zero; the two without any such guarantee
+(`lmetric_power_coincidence_ceiling`, `lmetric`) tie at one event each; the fully state-blind
+`round_robin` has the most. More state-awareness correlates with fewer avoidable violations
+even for rules never proven to avoid them, which is intuitively the right direction.
+
+**Honest statistical caveat, stated plainly**: with counts this small (0, 0, 1, 1, 2), no
+individual pairwise difference clears significance -- this is a descriptive ordering, not a
+set of confirmed comparisons. `lmetric_power_coincidence_ceiling`'s rate here (0.037%) is
+notably lower than Part 26's small-sample estimate (0.221%, 1/453) -- consistent with a
+genuinely rare event where small-sample rates are themselves noisy, not evidence the earlier
+single observation was wrong; both are real, observed instances of the predicted failure mode,
+just with different point estimates from small counts. `weighted_sum_coincidence_ceiling`'s
+0/2703 tightens its rule-of-three upper 95% bound to ~0.11% (down from ~0.66% at n=453).
+
+**For the paper**: report the table and the ordering, explicitly flag the small-count caveat,
+and do not claim any pairwise significance beyond "coincidence_ceiling and
+weighted_sum_coincidence_ceiling showed zero violations at this sample size; the other three
+arms each showed a small number of real, observed instances of the predicted failure mode."
+
+### Data and repro (Part 28)
+
+Orchestration: `run_pergpu_threshold_violation_big.sh`. Same inline CSV analysis as Part 26.
+
+### Part 29: random-power-tiebreak ablation precisely localizes where the TTFT benefit and
+the TBT cost each come from -- the benefit survives randomizing the tie-break; the cost
+disappears
+
+Direct answer to "is share_power noise-equivalent to random selection?" Built
+`drf_power_tiebreak_full_coincidence_ceiling_random_power`: D(c) computed identically (real,
+coincidence-ceiling-adjusted power, so which candidates are genuinely under pressure is
+unaffected), but the secondary tie-break coordinate (normally real share_power) replaced with
+independent random noise per decision. n=6 on both conditions with the strongest established
+round_robin signal.
+
+**Heavy/CL long**: random_power_tiebreak is statistically indistinguishable from real
+`coincidence_ceiling` on all three metrics (peak p=0.454, TTFT p=0.252, TBT p=0.134), and
+**still beats `round_robin` on TTFT** (p=0.0016, nearly matching the real rule's margin:
+0.417s vs 0.448s here, vs the real rule's 0.426s vs 0.448s).
+
+**Heavy/Matched**: random_power_tiebreak **reproduces the real rule's massive TTFT win over
+`round_robin`** almost exactly (p=0.0001, 3.496s vs 5.453s, vs the real rule's 3.537s vs
+5.453s) -- **but does NOT reproduce the real rule's TBT loss to `round_robin`** (random_power
+vs round_robin TBT: p=0.427, tied; real coincidence_ceiling vs round_robin TBT: p=0.019, a
+real loss, Part 19). random_power_tiebreak actually beats the real rule on TBT here (p=0.035,
+1221.9ms vs 1288.6ms).
+
+**Precise interpretation**: the TTFT advantage over `round_robin` does not come from the power
+tie-break's specific value -- it survives essentially unchanged when that value is replaced
+with pure noise. The benefit is very likely coming from D's primary criterion instead, which
+still reads the REAL power value (unaffected by this ablation) to determine which candidates
+are genuinely under pressure -- randomization here only affects which of the already-D-tied
+candidates gets picked, not whether pressured candidates get correctly identified and avoided
+in the first place. **The TBT cost, in contrast, is specifically attributable to the power
+tie-break's real behavior** -- it disappears (and even reverses in the ablation's favor) once
+that specific tie-break information is randomized away.
+
+**This is a genuine, actionable localization, not just a noise-vs-signal verdict.** It
+suggests the TTFT benefit and the TBT cost are mechanistically separable: a design that keeps
+power in D's primary criterion but does not use it as a deterministic secondary tie-break
+priority might plausibly capture the benefit without the cost. Not tested directly here (that
+would be a new rule variant, not this diagnostic ablation), but the evidence points that
+direction clearly enough to be worth stating as a concrete hypothesis for future work.
+
+**For the "is it just noise" question directly**: partially yes, partially no, and now we know
+which part is which. The power tie-break's specific value is closer to noise-equivalent for
+the property that matters most (the TTFT benefit survives fine without it) -- but it is not
+noise for the TBT cost, which is real and specifically tied to that exact tie-break behavior.
+
+### Data and repro (Part 29)
+
+Orchestration: `run_pergpu_random_power_tiebreak.sh`. Implementation:
+`dominant_share_vector_power_priority_full_coincidence_ceiling_random_tiebreak`,
+`pick_drf_power_tiebreak_full_coincidence_ceiling_random_power` (`scoring.py`); wired into
+`router_core.py` as policy `drf_power_tiebreak_full_coincidence_ceiling_random_power`. 4 new
+tests in `test_eenergy_scoring.py`/`test_eenergy_router_core.py`, 316 local / 313 remote
+passing. Same significance-testing approach as prior parts.

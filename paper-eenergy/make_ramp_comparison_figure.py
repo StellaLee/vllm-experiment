@@ -1,14 +1,19 @@
-"""Generates figs/ramp_comparison.pdf (paper.tex/paper.md's Figure 1): fleet-aggregate power
-and ramp rate, proposed rule (drf_power_tiebreak_full) vs. unsafe lmetric_power, all 3
-replicated trials of each, Heavy/Closed-Loop condition (the condition Table 1 reports) --
-under the corrected per-GPU-calibrated ramp ceiling, not the old uniform 450 W/s constant.
+"""Generates figs/ramp_comparison.pdf (paper.tex/paper.md's trace-comparison figure in SS6):
+fleet-aggregate power and ramp rate for the proposed rule (drf_power_tiebreak_full_
+coincidence_ceiling, logged under the short outname "coincidence_ceiling"), the unsafe
+lmetric_power_coincidence_ceiling, and weighted_sum_coincidence_ceiling (external validity
+check, Pareto-safe but not threshold-safe), 3 trials each, Heavy/Closed-Loop (short)
+condition (the condition Table 1 reports) -- under the corrected per-GPU-calibrated ramp
+ceiling, not the old uniform 450 W/s constant.
 
-drf_fixed and weighted_sum are omitted from the trace plot (already fully reported in
-Table 1) to keep the figure at 2 arms x 3 trials = 6 lines per panel, matching the prior
-figure's readability -- a 4-arm trace plot would be illegible at this size.
+drf_fixed is omitted from the trace plot (already fully reported in Table 1, and not part of
+the coincidence-ceiling family) to keep the figure at 3 arms x 3 trials = 9 lines per panel --
+already denser than the previous 2-arm version, so a 4th arm was judged to cost more
+readability than it adds.
 
 Source data: raw per-GPU power_trace CSVs from the closedloopheavypergpu_ batch
-(drf_power_tiebreak_full and lmetric_power, trials 1-3), pulled from the 8x4090 server
+(outnames "coincidence_ceiling", "lmetric_power_coincidence_ceiling",
+"weighted_sum_coincidence_ceiling", trials 1-3), pulled from the 8x4090 server
 (/root/pli/vllm-experiment/logs/ on 183.147.142.123) into DATA_DIR below. Not committed to
 this repo (raw trace CSVs, not source) -- re-pull that batch's power_trace files to rerun.
 """
@@ -38,6 +43,7 @@ TRIALS = [1, 2, 3]
 
 C_PROPOSED = "#4C6E9E"
 C_UNSAFE = "#C0562B"
+C_EXTCHECK = "#5B8C5A"
 C_CEIL = "#8A8478"
 
 
@@ -110,10 +116,12 @@ def main():
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7.0, 3.3), sharex=True,
                                     gridspec_kw={"height_ratios": [1, 1.2], "hspace": 0.12})
 
-    proposed_max = plot_arm(ax1, ax2, "drf_power_tiebreak_full", C_PROPOSED, 0.6,
-                             "Proposed rule (drf_power_tiebreak_full, Pareto-safe)")
-    unsafe_max = plot_arm(ax1, ax2, "lmetric_power", C_UNSAFE, 0.75,
-                           "lmetric_power (unsafe)")
+    proposed_max = plot_arm(ax1, ax2, "coincidence_ceiling", C_PROPOSED, 0.6,
+                             "Proposed rule (coincidence_ceiling, Pareto- and threshold-safe)")
+    extcheck_max = plot_arm(ax1, ax2, "weighted_sum_coincidence_ceiling", C_EXTCHECK, 0.6,
+                             "weighted_sum_coincidence_ceiling (external check, Pareto-safe)")
+    unsafe_max = plot_arm(ax1, ax2, "lmetric_power_coincidence_ceiling", C_UNSAFE, 0.75,
+                           "lmetric_power_coincidence_ceiling (unsafe)")
 
     ax1.set_ylabel("Fleet power (W)")
     ax1.legend(loc="lower right", handlelength=1.6, borderaxespad=0.3)
@@ -136,8 +144,9 @@ def main():
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     fig.savefig(OUT, bbox_inches="tight", pad_inches=0.03)
     print("saved:", OUT)
-    print("proposed rule per-trial max |ramp|:", [round(x, 1) for x in proposed_max])
-    print("lmetric_power per-trial max |ramp|:", [round(x, 1) for x in unsafe_max])
+    print("coincidence_ceiling per-trial max |ramp|:", [round(x, 1) for x in proposed_max])
+    print("weighted_sum_coincidence_ceiling per-trial max |ramp|:", [round(x, 1) for x in extcheck_max])
+    print("lmetric_power_coincidence_ceiling per-trial max |ramp|:", [round(x, 1) for x in unsafe_max])
 
 
 if __name__ == "__main__":
