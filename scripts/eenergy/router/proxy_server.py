@@ -14,6 +14,7 @@ from router_core import Router, WHALE_TOKEN_THRESHOLD
 from power_nvml import NvmlPowerReader
 from ramp import update_ramp_state
 from bs_telemetry import fetch_running_waiting
+from power_budget import PowerBudget, estimate_marginal_energy_j, DecodeByteEstimator
 
 
 def build_replica_states(replica_specs: list) -> list:
@@ -46,6 +47,14 @@ def format_assignment_record(ts: float, replica_id: str, gpu_index: int,
     dm = "" if min_d_available is None else f"{min_d_available:.6f}"
     av = "" if avoidable_threshold_violation is None else str(int(avoidable_threshold_violation))
     return f"{ts:.6f},{replica_id},{gpu_index},{new_tokens},{raw_tokens},{sc},{sl},{dc},{dm},{av}\n"
+
+
+def build_power_budget(peak_cap_w: float = None, peak_window_s: float = 30.0):
+    """Returns a fresh PowerBudget if peak-shaving is enabled (peak_cap_w is not None), else
+    None. Factored out of make_app so this construction decision is testable without needing
+    a real tokenizer/model load (make_app itself is not unit tested -- see this file's other
+    tests and the plan's Global Constraints)."""
+    return PowerBudget(peak_window_s) if peak_cap_w is not None else None
 
 
 def fleet_power_w(states: list) -> float:
@@ -84,11 +93,16 @@ async def bs_poll_loop(states: list, model_name: str, interval_s: float):
 
 
 def make_app(states: list, policy: str, model_name: str, assignment_log_path: str = None,
-             bs_source: str = "local", whale_token_threshold: int = WHALE_TOKEN_THRESHOLD):
+             bs_source: str = "local", whale_token_threshold: int = WHALE_TOKEN_THRESHOLD,
+             peak_cap_w: float = None, peak_window_s: float = 30.0,
+             peak_recheck_interval_s: float = 1.0, j_per_prefill_token: float = 0.068,
+             j_per_decode_token: float = 2.40, bytes_per_token: float = 3.235):
     router = Router(states, policy, bs_source=bs_source,
                      whale_token_threshold=whale_token_threshold)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     by_id = {s.config.replica_id: s for s in states}
+    budget = build_power_budget(peak_cap_w, peak_window_s)
+    decode_estimator = DecodeByteEstimator() if budget is not None else None
     assignment_log = None
     if assignment_log_path:
         # Truncate, not append: each run_router.py invocation is a fresh process (one per
@@ -103,6 +117,14 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
     async def handle_completions(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         token_ids = tokenizer.encode(body["prompt"])
+        if budget is not None:
+            fallback_tokens = body.get("max_tokens", 128)
+            expected_decode_tokens = decode_estimator.current_estimate_tokens(
+                fallback_tokens, bytes_per_token)
+            marginal_j = estimate_marginal_energy_j(
+                len(token_ids), expected_decode_tokens, j_per_prefill_token, j_per_decode_token)
+            while budget.would_exceed(peak_cap_w, marginal_j):
+                await asyncio.sleep(peak_recheck_interval_s)
         replica_id = router.route(token_ids)
         is_whale = router.last_is_whale
         target = by_id[replica_id].config
@@ -118,13 +140,17 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
         resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
         await resp.prepare(request)
         url = f"http://{target.host}:{target.port}/v1/completions"
+        response_bytes = 0
         try:
             async with ClientSession(timeout=ClientTimeout(total=None)) as session:
                 async with session.post(url, json=body) as upstream:
                     async for chunk in upstream.content.iter_any():
+                        response_bytes += len(chunk)
                         await resp.write(chunk)
         finally:
             router.complete(replica_id, is_whale)
+            if decode_estimator is not None:
+                decode_estimator.record_completion(response_bytes)
         await resp.write_eof()
         return resp
 
@@ -132,22 +158,31 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
     app.router.add_post("/v1/completions", handle_completions)
     app["states"] = states
     app["router"] = router
+    app["budget"] = budget
+    app["decode_estimator"] = decode_estimator
     return app
 
 
 def run(replica_specs: list, policy: str, model_name: str, host: str, port: int,
         power_interval_s: float = 0.5, assignment_log_path: str = None,
         bs_source: str = "local", bs_poll_interval_s: float = 0.5,
-        whale_token_threshold: int = WHALE_TOKEN_THRESHOLD) -> None:
+        whale_token_threshold: int = WHALE_TOKEN_THRESHOLD,
+        peak_cap_w: float = None, peak_window_s: float = 30.0,
+        peak_recheck_interval_s: float = 1.0, j_per_prefill_token: float = 0.068,
+        j_per_decode_token: float = 2.40, bytes_per_token: float = 3.235) -> None:
     states = build_replica_states(replica_specs)
     gpu_indices = [s.config.gpu_index for s in states]
     reader = NvmlPowerReader(gpu_indices)
     app = make_app(states, policy, model_name, assignment_log_path, bs_source=bs_source,
-                    whale_token_threshold=whale_token_threshold)
+                    whale_token_threshold=whale_token_threshold, peak_cap_w=peak_cap_w,
+                    peak_window_s=peak_window_s, peak_recheck_interval_s=peak_recheck_interval_s,
+                    j_per_prefill_token=j_per_prefill_token, j_per_decode_token=j_per_decode_token,
+                    bytes_per_token=bytes_per_token)
+    budget = app["budget"]
 
     async def _on_startup(app):
         app["power_task"] = asyncio.create_task(
-            power_poll_loop(states, reader, power_interval_s))
+            power_poll_loop(states, reader, power_interval_s, budget))
         if bs_source == "telemetry":
             app["bs_task"] = asyncio.create_task(
                 bs_poll_loop(states, model_name, bs_poll_interval_s))

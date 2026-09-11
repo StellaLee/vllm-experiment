@@ -3,7 +3,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                  "scripts", "eenergy", "router"))
-from proxy_server import build_replica_states, format_assignment_record, fleet_power_w  # noqa: E402
+from proxy_server import (build_replica_states, format_assignment_record, fleet_power_w,  # noqa: E402
+                           build_power_budget)
 
 
 def test_build_replica_states_from_specs():
@@ -67,3 +68,13 @@ def test_fleet_power_w_zero_for_freshly_built_states():
                   max_num_seqs=10, ramp_ceiling_w_per_s=50.0)]
     states = build_replica_states(specs)
     assert fleet_power_w(states) == 0.0
+
+
+def test_build_power_budget_returns_none_when_cap_unset():
+    assert build_power_budget(peak_cap_w=None) is None
+
+
+def test_build_power_budget_returns_configured_budget_when_cap_set():
+    budget = build_power_budget(peak_cap_w=2400.0, peak_window_s=15.0)
+    assert budget is not None
+    assert budget.window_s == 15.0
