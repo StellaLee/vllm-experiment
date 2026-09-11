@@ -1,8 +1,16 @@
-"""Analyzes the isolation calibration run (orchestrate/eenergy/run_prefill_decode_calibration.sh):
-slices the one continuous power trace by phase boundary, computes idle baseline power, then
-computes j_per_prefill_token from the near-zero-decode prefill burst and j_per_decode_token
-from the decode burst (subtracting BOTH idle power and the prefill contribution of that
-phase's own, much shorter, natural-length prompts, using the just-calibrated prefill rate).
+"""Analyzes the isolation calibration run (orchestrate/eenergy/run_prefill_decode_calibration.sh,
+3 trials within one continuous power trace, each trial drawing different conversations AND
+measuring its own fresh idle baseline immediately before its prefill burst -- see the script's
+header comment for why a single fixed pre-experiment idle baseline was replaced: the first
+replicated run showed j_per_prefill_token was not robust (CV=76.8%, monotonic drift across
+trials) because 15s settle windows never actually reached true idle, and residual power was
+itself drifting down across the ~3min experiment).
+
+Each trial's own fresh idle measurement is used for BOTH that trial's prefill and decode
+subtraction -- removes the staleness/drift problem instead of just lengthening the old fixed
+window. Reports per-trial numbers plus mean/std/CV% across trials, and a within-idle-window
+stability check (first half vs second half of each trial's 45s idle window) as a diagnostic on
+whether 45s is now actually long enough.
 """
 import csv
 import json
@@ -12,6 +20,7 @@ from collections import defaultdict
 LOGDIR = "/root/pli/vllm-experiment/logs"
 PREFIX = "calibration"
 OUTNAME = "prefill_decode_calibration"
+TRIALS = (1, 2, 3)
 
 
 def load_phases():
@@ -32,7 +41,6 @@ def load_power_series():
 
 
 def window_energy_j(series, t0, t1):
-    """Trapezoidal-ish integral of fleet power over [t0, t1] using consecutive samples."""
     pts = [(t, p) for t, p in series if t0 <= t <= t1]
     if len(pts) < 2:
         return 0.0, 0.0
@@ -57,44 +65,72 @@ def load_tokens(records_path):
     return prompt_tokens, output_tokens
 
 
+def mean(vals):
+    return sum(vals) / len(vals)
+
+
+def std(vals):
+    if len(vals) < 2:
+        return 0.0
+    mu = mean(vals)
+    return (sum((v - mu) ** 2 for v in vals) / (len(vals) - 1)) ** 0.5
+
+
 def main():
     phases = load_phases()
     series = load_power_series()
 
-    idle_energy, idle_duration = window_energy_j(series, phases["idle_start"], phases["idle_end"])
-    idle_power_w = idle_energy / idle_duration if idle_duration > 0 else 0.0
-    print(f"idle baseline: {idle_power_w:.1f} W (over {idle_duration:.1f}s)")
+    print("idle-window stability check (first half vs second half of each trial's 45s idle "
+          "window -- large gaps mean 45s still isn't reaching true steady state):")
+    for trial in TRIALS:
+        t0, t1 = phases[f"trial{trial}_idle_start"], phases[f"trial{trial}_idle_end"]
+        mid = (t0 + t1) / 2
+        e1, d1 = window_energy_j(series, t0, mid)
+        e2, d2 = window_energy_j(series, mid, t1)
+        p1 = e1 / d1 if d1 else float("nan")
+        p2 = e2 / d2 if d2 else float("nan")
+        print(f"  trial{trial}: first_half={p1:.1f}W  second_half={p2:.1f}W  "
+              f"delta={100*(p2-p1)/p1:.1f}%")
 
-    prefill_energy, prefill_duration = window_energy_j(
-        series, phases["prefill_start"], phases["prefill_end"])
-    prefill_idle_component = idle_power_w * prefill_duration
-    prefill_elevated_j = prefill_energy - prefill_idle_component
-    prefill_tokens, prefill_phase_output_tokens = load_tokens(
-        f"{LOGDIR}/{PREFIX}_records_prefill_burst.jsonl")
-    j_per_prefill_token = prefill_elevated_j / prefill_tokens if prefill_tokens else float("nan")
-    print(f"\nprefill phase: {prefill_duration:.1f}s, energy={prefill_energy:.1f}J, "
-          f"idle_component={prefill_idle_component:.1f}J, elevated={prefill_elevated_j:.1f}J")
-    print(f"prefill tokens={prefill_tokens}, output tokens (should be ~= num requests, "
-          f"max_tokens=1)={prefill_phase_output_tokens}")
-    print(f"j_per_prefill_token = {j_per_prefill_token:.6f} J/token")
+    prefill_rates, decode_rates, ratios = [], [], []
+    for trial in TRIALS:
+        idle_energy, idle_duration = window_energy_j(
+            series, phases[f"trial{trial}_idle_start"], phases[f"trial{trial}_idle_end"])
+        idle_power_w = idle_energy / idle_duration if idle_duration > 0 else 0.0
 
-    decode_energy, decode_duration = window_energy_j(
-        series, phases["decode_start"], phases["decode_end"])
-    decode_idle_component = idle_power_w * decode_duration
-    decode_prompt_tokens, decode_output_tokens = load_tokens(
-        f"{LOGDIR}/{PREFIX}_records_decode_burst.jsonl")
-    decode_prefill_component = j_per_prefill_token * decode_prompt_tokens
-    decode_elevated_j = decode_energy - decode_idle_component - decode_prefill_component
-    j_per_decode_token = decode_elevated_j / decode_output_tokens if decode_output_tokens else float("nan")
-    print(f"\ndecode phase: {decode_duration:.1f}s, energy={decode_energy:.1f}J, "
-          f"idle_component={decode_idle_component:.1f}J, "
-          f"prefill_component={decode_prefill_component:.1f}J (from {decode_prompt_tokens} "
-          f"natural-prompt tokens), elevated={decode_elevated_j:.1f}J")
-    print(f"decode output tokens={decode_output_tokens}")
-    print(f"j_per_decode_token = {j_per_decode_token:.6f} J/token")
+        prefill_energy, prefill_duration = window_energy_j(
+            series, phases[f"trial{trial}_prefill_start"], phases[f"trial{trial}_prefill_end"])
+        prefill_elevated_j = prefill_energy - idle_power_w * prefill_duration
+        prefill_tokens, _ = load_tokens(f"{LOGDIR}/{PREFIX}_records_prefill_burst_t{trial}.jsonl")
+        j_per_prefill_token = prefill_elevated_j / prefill_tokens if prefill_tokens else float("nan")
 
-    print(f"\nratio j_per_decode_token / j_per_prefill_token = "
-          f"{j_per_decode_token / j_per_prefill_token:.2f}x")
+        decode_energy, decode_duration = window_energy_j(
+            series, phases[f"trial{trial}_decode_start"], phases[f"trial{trial}_decode_end"])
+        decode_idle_component = idle_power_w * decode_duration
+        decode_prompt_tokens, decode_output_tokens = load_tokens(
+            f"{LOGDIR}/{PREFIX}_records_decode_burst_t{trial}.jsonl")
+        decode_prefill_component = j_per_prefill_token * decode_prompt_tokens
+        decode_elevated_j = decode_energy - decode_idle_component - decode_prefill_component
+        j_per_decode_token = (decode_elevated_j / decode_output_tokens
+                               if decode_output_tokens else float("nan"))
+
+        ratio = j_per_decode_token / j_per_prefill_token
+        prefill_rates.append(j_per_prefill_token)
+        decode_rates.append(j_per_decode_token)
+        ratios.append(ratio)
+
+        print(f"\ntrial {trial}: idle={idle_power_w:.1f}W  prefill_tokens={prefill_tokens} "
+              f"j_per_prefill_token={j_per_prefill_token:.6f} J/token  "
+              f"decode_tokens={decode_output_tokens} "
+              f"j_per_decode_token={j_per_decode_token:.6f} J/token  ratio={ratio:.2f}x")
+
+    print(f"\n{'metric':<20}{'mean':>12}{'std':>12}{'cv%':>10}")
+    for label, vals in (("j_per_prefill_token", prefill_rates),
+                         ("j_per_decode_token", decode_rates),
+                         ("ratio", ratios)):
+        m, s = mean(vals), std(vals)
+        cv = 100.0 * s / m if m else float("nan")
+        print(f"{label:<20}{m:>12.4f}{s:>12.4f}{cv:>9.1f}%")
 
 
 if __name__ == "__main__":
