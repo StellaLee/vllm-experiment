@@ -217,6 +217,66 @@ was negligible here (gated mean 5.07s vs. no_gate 5.23s) — the ~4.5s of admiss
 dwarfed by the multi-second prefill/decode time these whale requests need regardless of the
 gate.
 
+## Part 12: Multipolicy demo battery — larger effect, policy-independence confirmed empirically
+
+Motivation: Parts 6-11 validated the gate at caps sitting at-or-above sustained mean power
+(2400W no-gate mean ~1979-1945W; 2000W burst-test mean ~1940-1948W) — caps chosen to be
+realistic for a genuine utility constraint, but that also means the demonstrated effect size is
+modest (Part 6: ~1% overshoot reduction; Part 11: ~21% overshoot reduction on an engineered
+worst case). Explicit ask: construct a scenario with a **larger, more visually clear** shaving
+effect, and confirm the gate works **in front of multiple routing policies**
+(`round_robin`, `lmetric`, `drf_no_power`), not just the `drf_no_power` pairing used throughout
+Parts 5-11 — justified by reframing the workload as latency-insensitive batch (not interactive
+serving), which licenses accepting much larger TTFT cost than earlier tests treated as
+acceptable.
+
+**Cap selection, checked before committing hardware time.** Baseline (no gate, all three
+policies, Heavy/CL-long) is nearly policy-invariant: mean power 1940-1948W, max windowed-avg
+(15s) 2169-2174W, raw peak 2429-2467W. A first candidate of cap=1500W was checked against the
+trace-driven admission simulator (`check_peak_shaving_admission_prototype.py`) before running
+anything: 90.2% of requests would need deferral, mean wait ~109s, p95 ~194s — and since the
+existing orchestration scripts use `--request-timeout 180`, a p95 deferral wait alone exceeding
+that timeout risked requests failing outright rather than completing slowly, which would
+undermine the demo rather than support it. Compared 1400-2000W (all trace-simulated, no
+hardware time spent): every cap below 1800W landed in a narrow, saturated band (~89-91%
+deferral, ~105-110s mean wait) once cap dropped below the ~1945W sustained mean — capacity-
+constrained, not peak-constrained, so further lowering the cap stopped changing the picture
+much. **Settled on cap=1800W with `--request-timeout` raised to 300s** — still clearly below
+sustained mean (aggressive, continuous throttling rather than only shaving rare spikes) while
+keeping the predicted wait times inside the raised timeout.
+
+**Battery**: `orchestrate/eenergy/run_pergpu_peak_shaving_multipolicy_demo.sh` — Heavy/CL-long,
+15s window, 6 arms ({`round_robin`, `lmetric`, `drf_no_power`} × {`no_gate`, `gated`}), n=1
+trial each (first look, not yet replicated).
+
+| arm | n completed | mean TTFT | p95 TTFT | max TTFT | mean power | max windowed-avg (15s) | vs. 1800W cap |
+|---|---|---|---|---|---|---|---|
+| round_robin, no gate | 899 | 0.46s | 1.9s | 5.3s | 1912W | 2178.5W | +21% over |
+| round_robin, gated | 893 | 12.2s | 53.5s | 283.0s | 1632W | 2003.8W | +11% over |
+| lmetric, no gate | 899 | 0.44s | 1.9s | 5.5s | 1923W | 2173.2W | +21% over |
+| lmetric, gated | 892 | 14.6s | 61.9s | 266.0s | 1646W | 2017.5W | +12% over |
+| drf_no_power, no gate | 899 | 0.44s | 1.9s | 3.7s | 1927W | 2169.9W | +20% over |
+| drf_no_power, gated | 892 | 13.1s | 51.9s | 294.2s | 1630W | 2006.4W | +11% over |
+
+(1 request failed per arm, consistently — same order of magnitude across all six, not
+systematically different between gated/no-gate, not investigated further.)
+
+**The gate works, consistently, across all three routing policies**: max windowed-average power
+drops ~7-8% (2170-2179W → 2004-2018W) and mean fleet power drops ~15% (1912-1927W → 1630-1646W)
+in every arm, with the effect size within ~1% of itself across policies — the strongest direct
+evidence yet that the gate's routing-independence is real in practice, not just structural
+(it sits before `router.route()` and never touches routing logic). Cost: mean TTFT rises to
+12-15s and p95 to 52-62s, matching the accepted batch-workload framing.
+
+**Caveat, checked rather than assumed**: even gated, max windowed-average power still exceeds
+the 1800W cap by ~11-12% in every arm. Checked *when* the max occurs to rule out a startup
+transient (e.g. six replicas' own power draw during model load, before the gate has 2+ samples
+and fails open): it happens 106-432s into 590-670s trials, well into steady-state operation, not
+at the start. Consistent with the same structural limit found in Part 11 — cap (1800W) sits
+below sustained demand (~1945W baseline mean), so the gate is capacity-constrained rather than
+merely peak-shaving, and admission-pacing without shedding reduces but cannot fully eliminate
+overshoot in that regime.
+
 ## Conclusion / current status
 
 - The core admission-gate mechanism, fully debugged (three real, distinct bugs found and
@@ -225,16 +285,25 @@ gate.
   cap overshoot — confirmed both on natural bursty traffic (Matched, 0/3 violations after the
   fix vs. 2/3 before) and on a deliberately engineered worst-case burst (measurable, visible
   wave-paced throttling).
+- **Routing-policy independence, confirmed empirically, not just structurally** (Part 12): a
+  more aggressive cap (1800W, below sustained mean) produces a consistent ~7-8% reduction in
+  max windowed-average power and ~15% reduction in mean power across all three tested policies
+  (`round_robin`, `lmetric`, `drf_no_power`), within ~1% of each other — strong evidence the
+  gate is a genuinely policy-agnostic layer, at the cost of large TTFT increases accepted under
+  a latency-insensitive batch framing.
 - It is **not a hard guarantee** under sufficiently extreme, concentrated demand without
   shedding — a structural limit of admission-pacing-only designs, not a bug still to chase.
+  Reconfirmed in Part 12 under a sustained (not just bursty) cap-below-mean regime: ~11-12%
+  overshoot persists in steady state across all three policies, not just at trial start.
 - There is a **real, non-trivial tail-latency cost** to correct enforcement under bursty
   conditions (Matched: p95 TTFT ~48-50s with the working reservation ledger) that any
   deployment decision needs to weigh explicitly — the original (broken, under-enforcing) gate
   looked cheaper specifically because it wasn't actually holding the line.
 - Open, not yet done: n=6 replication of the fixed reservation-ledger result (current evidence
-  is n=3 natural + n=1 targeted-burst); tuning `reservation_hold_s` to see if the p95 tail can
-  be cut without reopening cap violations; whether shedding (explicitly out of scope for v1)
-  is worth adding given the demonstrated hard limit.
+  is n=3 natural + n=1 targeted-burst) and of the Part 12 multipolicy battery (currently n=1
+  per arm); tuning `reservation_hold_s` to see if the p95 tail can be cut without reopening cap
+  violations; whether shedding (explicitly out of scope for v1) is worth adding given the
+  demonstrated hard limit.
 
 ## Data and repro
 
@@ -252,7 +321,10 @@ gate.
   `tests/test_eenergy_power_budget.py`, `tests/test_eenergy_proxy_server.py`.
 - Validation batteries: `orchestrate/eenergy/run_pergpu_peak_shaving_validation.sh` (Parts
   5-6), `run_pergpu_peak_shaving_matched_reservation_check.sh` (Parts 7-8),
-  `run_pergpu_peak_shaving_burst_stress_test.sh` (Parts 9-11).
+  `run_pergpu_peak_shaving_burst_stress_test.sh` (Parts 9-11),
+  `run_pergpu_peak_shaving_multipolicy_demo.sh` (Part 12). Analysis:
+  `scripts/eenergy/analyze_multipolicy_demo.py` (max windowed-avg power + TTFT distribution
+  per arm, reused/adapted from the ad-hoc analysis used in Parts 6/8/11).
 
 **Log paths** (remote, `/root/pli/vllm-experiment/logs/`) — note several "before" datasets
 were overwritten by later "after" reruns that reused the same `OUTNAME`/output paths (only the
@@ -275,6 +347,13 @@ of each experiment has full raw data on disk):
   `peak_shaving_burst_stress.driver.log` (v1, confounded) and `_v2.driver.log` (v2, clean).
 - Baseline for comparison (no gate, pre-existing from earlier this session):
   `{closedloopheavylongpergpu,openloopwhalelongoutmatchedpergpu}_*_drf_no_power_t{1,2,3}.*`.
+- Multipolicy demo (Part 12): `closedloopheavylongpergpu_{records,power_trace}_
+  peak_shaving_multipolicy_demo_{round_robin,lmetric,drf_no_power}_{no_gate,gated}.{jsonl,csv}`
+  (no `assignment` log for this battery); driver log
+  `peak_shaving_multipolicy_demo_batch.log`. Cap-selection simulation (no hardware run, purely
+  trace-driven) is reproducible by editing the cap sweep in
+  `check_peak_shaving_admission_prototype.py`'s `simulate()` calls against the
+  `closedloopheavylongpergpu` trace.
 
 **Remote access**: `ssh 183.147.142.123`, repo at `/root/pli/vllm-experiment`, venv at
 `/root/pli/venv-vllm023`. `RAMP_CEILING_PER_GPU="2:450.2,3:509.8,4:449.6,5:409.2,6:512.9,
