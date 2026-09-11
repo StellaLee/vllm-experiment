@@ -1,9 +1,11 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                  "scripts", "eenergy", "router"))
-from power_budget import PowerBudget  # noqa: E402
+from power_budget import PowerBudget, estimate_marginal_energy_j, DecodeByteEstimator  # noqa: E402
 
 
 def test_would_exceed_false_with_fewer_than_two_samples():
@@ -45,3 +47,34 @@ def test_record_keeps_samples_within_window():
     budget.record(t=5.0, fleet_power_w=9000.0)
     budget.record(t=9.0, fleet_power_w=9000.0)  # all three within [t-10, t] = [-1, 9]
     assert budget.would_exceed(cap_w=1000.0, marginal_j=0.0) is True
+
+
+def test_estimate_marginal_energy_j_combines_prefill_and_decode_terms():
+    j = estimate_marginal_energy_j(prompt_tokens=100, expected_decode_tokens=50,
+                                    j_per_prefill_token=0.068, j_per_decode_token=2.40)
+    assert j == pytest.approx(100 * 0.068 + 50 * 2.40)
+
+
+def test_estimate_marginal_energy_j_zero_tokens_is_zero():
+    assert estimate_marginal_energy_j(0, 0, 0.068, 2.40) == 0.0
+
+
+def test_decode_byte_estimator_cold_start_uses_fallback():
+    est = DecodeByteEstimator()
+    assert est.current_estimate_tokens(fallback_tokens=1024, bytes_per_token=3.235) == 1024
+
+
+def test_decode_byte_estimator_first_completion_seeds_estimate():
+    est = DecodeByteEstimator()
+    est.record_completion(response_bytes=970.5)  # ~300 tokens at 3.235 bytes/token
+    tokens = est.current_estimate_tokens(fallback_tokens=1024, bytes_per_token=3.235)
+    assert tokens == pytest.approx(970.5 / 3.235)
+
+
+def test_decode_byte_estimator_blends_subsequent_completions():
+    est = DecodeByteEstimator(smoothing_alpha=0.5)
+    est.record_completion(response_bytes=1000.0)
+    est.record_completion(response_bytes=2000.0)
+    # EMA: 0.5*2000 + 0.5*1000 = 1500
+    tokens = est.current_estimate_tokens(fallback_tokens=99999, bytes_per_token=1.0)
+    assert tokens == pytest.approx(1500.0)

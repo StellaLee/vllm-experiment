@@ -28,3 +28,55 @@ class PowerBudget:
         mean_power_w = sum(p for _, p in self._samples) / len(self._samples)
         projected_avg_w = mean_power_w + marginal_j / self.window_s
         return projected_avg_w > cap_w
+
+
+def estimate_marginal_energy_j(prompt_tokens: int, expected_decode_tokens: float,
+                                j_per_prefill_token: float, j_per_decode_token: float) -> float:
+    """Two-term marginal energy estimate for an admission-gate check, made BEFORE routing.
+    prompt_tokens is the raw, un-cache-discounted prompt length (known immediately from the
+    tokenizer, before routing) -- see docs/superpowers/specs/2026-09-11-peak-shaving-admission-
+    design.md Sec 4.2 for why calling Router.route() speculatively isn't safe here (it has real
+    dispatch-tracking side effects). expected_decode_tokens comes from DecodeByteEstimator
+    below, not from a live tokenizer call on the (not-yet-generated) response.
+
+    j_per_prefill_token/j_per_decode_token are calibrated from a dedicated isolation-burst
+    hardware experiment (orchestrate/eenergy/run_prefill_decode_calibration.sh), not a
+    trial-level regression (which failed -- see the spec). j_per_decode_token is robust
+    (CV~3-8% across 3 replicated trials); j_per_prefill_token is not (CV~61-77%, likely
+    GPU-clock-ramp-confounded) and is deliberately set to the highest observed rate rather
+    than the mean -- a conservative upper bound, not a placeholder for a future fix. See the
+    spec for why this is an acceptable tradeoff: decode costs 37-115x more per token than
+    prefill in every calibration trial, so prefill's imprecision barely moves the estimate for
+    typical short-prompt requests and only meaningfully affects the whale-heavy minority --
+    where erring high is exactly the safe direction."""
+    return prompt_tokens * j_per_prefill_token + expected_decode_tokens * j_per_decode_token
+
+
+class DecodeByteEstimator:
+    """Live EMA of realized response byte-length, updated as requests complete. Tracks BYTES,
+    not tokens, so handle_completions can feed it directly from the byte counts it already
+    sees while streaming a response through -- no mid-stream tokenizer call needed. Converts
+    to a token-count estimate via a caller-supplied bytes-per-token constant at the point of
+    use (current_estimate_tokens), keeping the EMA itself unit-agnostic."""
+
+    def __init__(self, smoothing_alpha: float = 0.3):
+        self.smoothing_alpha = smoothing_alpha
+        self._estimate_bytes = None  # None until warm (no completion observed yet)
+
+    def record_completion(self, response_bytes: int) -> None:
+        if self._estimate_bytes is None:
+            self._estimate_bytes = float(response_bytes)
+        else:
+            self._estimate_bytes = (self.smoothing_alpha * response_bytes
+                                     + (1.0 - self.smoothing_alpha) * self._estimate_bytes)
+
+    def current_estimate_tokens(self, fallback_tokens: float, bytes_per_token: float) -> float:
+        """Live estimate converted to tokens, or fallback_tokens if no completion has been
+        observed yet (cold start). The caller passes the CURRENT request's own max_tokens as
+        the fallback -- a safe-direction default for the brief warmup window only; once warm,
+        the live EMA takes over and is no longer max_tokens-biased (see the spec for why using
+        max_tokens as a steady-state estimate, not just a cold-start fallback, was rejected --
+        it overestimates typical output length by ~3x on this design's target conditions)."""
+        if self._estimate_bytes is None:
+            return fallback_tokens
+        return self._estimate_bytes / bytes_per_token
