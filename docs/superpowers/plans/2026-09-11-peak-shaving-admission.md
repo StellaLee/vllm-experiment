@@ -4,7 +4,7 @@
 
 **Goal:** Add a rolling-window energy-budget admission gate in front of the e-Energy router that defers dispatch when it would push the trailing-window average fleet power over a configured cap, leaving the existing routing logic (compute/load balance) completely unchanged for admitted requests.
 
-**Architecture:** A new, hardware-free `power_budget.py` module (`PowerBudget` tracking, `estimate_marginal_energy_j` estimation) is wired into `proxy_server.py`'s existing request-handling coroutine as a pre-check before the existing `router.route()` call, and into the existing NVML power-poll loop as a feed. Everything is opt-in via new env vars (unset = feature fully disabled, zero behavior change).
+**Architecture:** A new, hardware-free `power_budget.py` module (`PowerBudget` tracking; a two-term `estimate_marginal_energy_j` combining a calibrated prefill-token cost with a live, byte-EMA-tracked decode-token cost via `DecodeByteEstimator`) is wired into `proxy_server.py`'s existing request-handling coroutine as a pre-check before the existing `router.route()` call, and into the existing NVML power-poll loop as a feed. Everything is opt-in via new env vars (unset = feature fully disabled, zero behavior change).
 
 **Tech Stack:** Python 3.10, aiohttp (async request handling), pytest (hardware-free unit tests), bash orchestration scripts, real 8×4090 hardware for final validation.
 
@@ -15,7 +15,8 @@
 - `PowerBudget` and `estimate_marginal_energy_j` must be pure/hardware-free and unit-testable without a GPU, NVML, or network access — matches every existing module in `scripts/eenergy/router/` (router_core.py, scoring.py, ramp.py, etc.).
 - An empty or single-sample `PowerBudget` window must fail **open** (`would_exceed` returns `False`) — never block all traffic at startup before real samples exist.
 - The admission-gate marginal-energy estimate must use **raw prompt token count** (`len(token_ids)`, known before routing), never the cache-discounted P-token from `Router.route()` — calling `route()` speculatively has real side effects (load_tracker, whale_tracker, cache_mirror) that assume the returned replica is actually about to be dispatched to.
-- No shedding/max-wait fallback, no explicit deferral queue, no prefill/decode-aware estimator, no offline re-simulation — v1 scope only, per spec §6.
+- No shedding/max-wait fallback, no explicit deferral queue, no warm-up-controlled prefill recalibration, no offline re-simulation — v1 scope only, per spec §6.
+- `j_per_prefill_token` (default 0.068) is a deliberate conservative upper bound from an under-powered calibration, not a tight estimate — do not "fix" it by averaging or re-deriving without re-reading spec §4.2's reasoning first. `j_per_decode_token` (default 2.40) is the robust, well-calibrated one.
 - Every new env var defaults to preserving current behavior exactly when unset (`PEAK_CAP_W` unset → gate fully disabled).
 - Do not test `make_app`/`run`/`handle_completions` directly — they require a real `AutoTokenizer.from_pretrained` model load, which is why the existing `test_eenergy_proxy_server.py` only tests pure helper functions (`build_replica_states`, `format_assignment_record`). Follow that precedent: factor any new decision logic into a pure, separately-testable function first.
 
@@ -136,7 +137,7 @@ git commit -m "eenergy: add PowerBudget rolling-window tracker for peak-shaving 
 
 ---
 
-### Task 2: Marginal-energy estimator
+### Task 2: Prefill/decode marginal-energy estimator
 
 **Files:**
 - Modify: `scripts/eenergy/router/power_budget.py`
@@ -144,56 +145,126 @@ git commit -m "eenergy: add PowerBudget rolling-window tracker for peak-shaving 
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `estimate_marginal_energy_j(prompt_tokens: int, j_per_token: float) -> float`. Used by Task 4's admission-gate check in `handle_completions`.
+- Produces: `estimate_marginal_energy_j(prompt_tokens: int, expected_decode_tokens: float, j_per_prefill_token: float, j_per_decode_token: float) -> float` and `DecodeByteEstimator` (`.record_completion(response_bytes: int) -> None`, `.current_estimate_tokens(fallback_tokens: float, bytes_per_token: float) -> float`). Used by Task 4's admission-gate check and streaming-completion hook in `handle_completions`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 Append to `tests/test_eenergy_power_budget.py`:
 
 ```python
-from power_budget import PowerBudget, estimate_marginal_energy_j  # noqa: E402  (replace prior import line)
+from power_budget import PowerBudget, estimate_marginal_energy_j, DecodeByteEstimator  # noqa: E402  (replace prior import line)
 
 
-def test_estimate_marginal_energy_j_scales_linearly_with_tokens():
-    assert estimate_marginal_energy_j(prompt_tokens=100, j_per_token=1.4) == 140.0
-    assert estimate_marginal_energy_j(prompt_tokens=0, j_per_token=1.4) == 0.0
+def test_estimate_marginal_energy_j_combines_prefill_and_decode_terms():
+    j = estimate_marginal_energy_j(prompt_tokens=100, expected_decode_tokens=50,
+                                    j_per_prefill_token=0.068, j_per_decode_token=2.40)
+    assert j == pytest.approx(100 * 0.068 + 50 * 2.40)
+
+
+def test_estimate_marginal_energy_j_zero_tokens_is_zero():
+    assert estimate_marginal_energy_j(0, 0, 0.068, 2.40) == 0.0
+
+
+def test_decode_byte_estimator_cold_start_uses_fallback():
+    est = DecodeByteEstimator()
+    assert est.current_estimate_tokens(fallback_tokens=1024, bytes_per_token=3.235) == 1024
+
+
+def test_decode_byte_estimator_first_completion_seeds_estimate():
+    est = DecodeByteEstimator()
+    est.record_completion(response_bytes=970.5)  # ~300 tokens at 3.235 bytes/token
+    tokens = est.current_estimate_tokens(fallback_tokens=1024, bytes_per_token=3.235)
+    assert tokens == pytest.approx(970.5 / 3.235)
+
+
+def test_decode_byte_estimator_blends_subsequent_completions():
+    est = DecodeByteEstimator(smoothing_alpha=0.5)
+    est.record_completion(response_bytes=1000.0)
+    est.record_completion(response_bytes=2000.0)
+    # EMA: 0.5*2000 + 0.5*1000 = 1500
+    tokens = est.current_estimate_tokens(fallback_tokens=99999, bytes_per_token=1.0)
+    assert tokens == pytest.approx(1500.0)
 ```
 
+`pytest` is already imported at the top of this test file (Task 1).
+
 (Replace the existing `from power_budget import PowerBudget  # noqa: E402` line at the top of
-the test file with the two-name import shown above, rather than adding a second import line.)
+the test file with the three-name import shown above, rather than adding a second import
+line.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python3 -m pytest tests/test_eenergy_power_budget.py::test_estimate_marginal_energy_j_scales_linearly_with_tokens -v`
-Expected: FAIL with `ImportError: cannot import name 'estimate_marginal_energy_j'`
+Run: `python3 -m pytest tests/test_eenergy_power_budget.py::test_estimate_marginal_energy_j_combines_prefill_and_decode_terms -v`
+Expected: FAIL with `ImportError: cannot import name 'estimate_marginal_energy_j'` (or, once
+that's fixed, `cannot import name 'DecodeByteEstimator'` for the other three)
 
 - [ ] **Step 3: Write the implementation**
 
 Append to `scripts/eenergy/router/power_budget.py`:
 
 ```python
-def estimate_marginal_energy_j(prompt_tokens: int, j_per_token: float) -> float:
-    """Marginal energy estimate for an admission-gate check, made BEFORE routing:
+def estimate_marginal_energy_j(prompt_tokens: int, expected_decode_tokens: float,
+                                j_per_prefill_token: float, j_per_decode_token: float) -> float:
+    """Two-term marginal energy estimate for an admission-gate check, made BEFORE routing.
     prompt_tokens is the raw, un-cache-discounted prompt length (known immediately from the
-    tokenizer), not the P-token new_tokens count Router.route() computes internally -- see
-    docs/superpowers/specs/2026-09-11-peak-shaving-admission-design.md Sec 4.2 for why calling
-    route() speculatively before an admission decision isn't safe (it has real dispatch-
-    tracking side effects). Using raw prompt length is a deliberate, safe-direction
-    over-estimate: a real cache hit would need less energy than this predicts, so this errs
-    toward more deferral, never less, relative to the true cost."""
-    return prompt_tokens * j_per_token
+    tokenizer, before routing) -- see docs/superpowers/specs/2026-09-11-peak-shaving-admission-
+    design.md Sec 4.2 for why calling Router.route() speculatively isn't safe here (it has real
+    dispatch-tracking side effects). expected_decode_tokens comes from DecodeByteEstimator
+    below, not from a live tokenizer call on the (not-yet-generated) response.
+
+    j_per_prefill_token/j_per_decode_token are calibrated from a dedicated isolation-burst
+    hardware experiment (orchestrate/eenergy/run_prefill_decode_calibration.sh), not a
+    trial-level regression (which failed -- see the spec). j_per_decode_token is robust
+    (CV~3-8% across 3 replicated trials); j_per_prefill_token is not (CV~61-77%, likely
+    GPU-clock-ramp-confounded) and is deliberately set to the highest observed rate rather
+    than the mean -- a conservative upper bound, not a placeholder for a future fix. See the
+    spec for why this is an acceptable tradeoff: decode costs 37-115x more per token than
+    prefill in every calibration trial, so prefill's imprecision barely moves the estimate for
+    typical short-prompt requests and only meaningfully affects the whale-heavy minority --
+    where erring high is exactly the safe direction."""
+    return prompt_tokens * j_per_prefill_token + expected_decode_tokens * j_per_decode_token
+
+
+class DecodeByteEstimator:
+    """Live EMA of realized response byte-length, updated as requests complete. Tracks BYTES,
+    not tokens, so handle_completions can feed it directly from the byte counts it already
+    sees while streaming a response through -- no mid-stream tokenizer call needed. Converts
+    to a token-count estimate via a caller-supplied bytes-per-token constant at the point of
+    use (current_estimate_tokens), keeping the EMA itself unit-agnostic."""
+
+    def __init__(self, smoothing_alpha: float = 0.3):
+        self.smoothing_alpha = smoothing_alpha
+        self._estimate_bytes = None  # None until warm (no completion observed yet)
+
+    def record_completion(self, response_bytes: int) -> None:
+        if self._estimate_bytes is None:
+            self._estimate_bytes = float(response_bytes)
+        else:
+            self._estimate_bytes = (self.smoothing_alpha * response_bytes
+                                     + (1.0 - self.smoothing_alpha) * self._estimate_bytes)
+
+    def current_estimate_tokens(self, fallback_tokens: float, bytes_per_token: float) -> float:
+        """Live estimate converted to tokens, or fallback_tokens if no completion has been
+        observed yet (cold start). The caller passes the CURRENT request's own max_tokens as
+        the fallback -- a safe-direction default for the brief warmup window only; once warm,
+        the live EMA takes over and is no longer max_tokens-biased (see the spec for why using
+        max_tokens as a steady-state estimate, not just a cold-start fallback, was rejected --
+        it overestimates typical output length by ~3x on this design's target conditions)."""
+        if self._estimate_bytes is None:
+            return fallback_tokens
+        return self._estimate_bytes / bytes_per_token
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_eenergy_power_budget.py -v`
-Expected: PASS (6 tests)
+Expected: PASS (9 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add scripts/eenergy/router/power_budget.py tests/test_eenergy_power_budget.py
-git commit -m "eenergy: add marginal-energy estimator for peak-shaving admission gate"
+git commit -m "eenergy: add prefill/decode marginal-energy estimator for peak-shaving admission gate"
 ```
 
 ---
@@ -289,8 +360,8 @@ git commit -m "eenergy: feed fleet-aggregate power into an optional PowerBudget 
 - Test: `tests/test_eenergy_proxy_server.py`
 
 **Interfaces:**
-- Consumes: `PowerBudget` (Task 1), `estimate_marginal_energy_j` (Task 2), `fleet_power_w`/updated `power_poll_loop` (Task 3).
-- Produces: `build_power_budget(peak_cap_w=None, peak_window_s=30.0)`, updated `make_app(...)` and `run(...)` signatures (new keyword-only-by-convention params: `peak_cap_w`, `peak_window_s`, `peak_recheck_interval_s`, `j_per_token`), `app["budget"]`. Used by Task 5 (`run_router.py`).
+- Consumes: `PowerBudget` (Task 1), `estimate_marginal_energy_j`/`DecodeByteEstimator` (Task 2), `fleet_power_w`/updated `power_poll_loop` (Task 3).
+- Produces: `build_power_budget(peak_cap_w=None, peak_window_s=30.0)`, updated `make_app(...)` and `run(...)` signatures (new params: `peak_cap_w`, `peak_window_s`, `peak_recheck_interval_s`, `j_per_prefill_token`, `j_per_decode_token`, `bytes_per_token`), `app["budget"]`, `app["decode_estimator"]`. Used by Task 5 (`run_router.py`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -327,7 +398,7 @@ In `scripts/eenergy/router/proxy_server.py`, add the import and the new function
 Add to the existing import block at the top:
 
 ```python
-from power_budget import PowerBudget, estimate_marginal_energy_j
+from power_budget import PowerBudget, estimate_marginal_energy_j, DecodeByteEstimator
 ```
 
 Add this function near `fleet_power_w`:
@@ -348,12 +419,14 @@ function stays as-is):
 def make_app(states: list, policy: str, model_name: str, assignment_log_path: str = None,
              bs_source: str = "local", whale_token_threshold: int = WHALE_TOKEN_THRESHOLD,
              peak_cap_w: float = None, peak_window_s: float = 30.0,
-             peak_recheck_interval_s: float = 1.0, j_per_token: float = 1.4):
+             peak_recheck_interval_s: float = 1.0, j_per_prefill_token: float = 0.068,
+             j_per_decode_token: float = 2.40, bytes_per_token: float = 3.235):
     router = Router(states, policy, bs_source=bs_source,
                      whale_token_threshold=whale_token_threshold)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     by_id = {s.config.replica_id: s for s in states}
     budget = build_power_budget(peak_cap_w, peak_window_s)
+    decode_estimator = DecodeByteEstimator() if budget is not None else None
     assignment_log = None
     if assignment_log_path:
         # Truncate, not append: each run_router.py invocation is a fresh process (one per
@@ -369,7 +442,11 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
         body = await request.json()
         token_ids = tokenizer.encode(body["prompt"])
         if budget is not None:
-            marginal_j = estimate_marginal_energy_j(len(token_ids), j_per_token)
+            fallback_tokens = body.get("max_tokens", 128)
+            expected_decode_tokens = decode_estimator.current_estimate_tokens(
+                fallback_tokens, bytes_per_token)
+            marginal_j = estimate_marginal_energy_j(
+                len(token_ids), expected_decode_tokens, j_per_prefill_token, j_per_decode_token)
             while budget.would_exceed(peak_cap_w, marginal_j):
                 await asyncio.sleep(peak_recheck_interval_s)
         replica_id = router.route(token_ids)
@@ -387,13 +464,17 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
         resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
         await resp.prepare(request)
         url = f"http://{target.host}:{target.port}/v1/completions"
+        response_bytes = 0
         try:
             async with ClientSession(timeout=ClientTimeout(total=None)) as session:
                 async with session.post(url, json=body) as upstream:
                     async for chunk in upstream.content.iter_any():
+                        response_bytes += len(chunk)
                         await resp.write(chunk)
         finally:
             router.complete(replica_id, is_whale)
+            if decode_estimator is not None:
+                decode_estimator.record_completion(response_bytes)
         await resp.write_eof()
         return resp
 
@@ -402,6 +483,7 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
     app["states"] = states
     app["router"] = router
     app["budget"] = budget
+    app["decode_estimator"] = decode_estimator
     return app
 ```
 
@@ -413,14 +495,16 @@ def run(replica_specs: list, policy: str, model_name: str, host: str, port: int,
         bs_source: str = "local", bs_poll_interval_s: float = 0.5,
         whale_token_threshold: int = WHALE_TOKEN_THRESHOLD,
         peak_cap_w: float = None, peak_window_s: float = 30.0,
-        peak_recheck_interval_s: float = 1.0, j_per_token: float = 1.4) -> None:
+        peak_recheck_interval_s: float = 1.0, j_per_prefill_token: float = 0.068,
+        j_per_decode_token: float = 2.40, bytes_per_token: float = 3.235) -> None:
     states = build_replica_states(replica_specs)
     gpu_indices = [s.config.gpu_index for s in states]
     reader = NvmlPowerReader(gpu_indices)
     app = make_app(states, policy, model_name, assignment_log_path, bs_source=bs_source,
                     whale_token_threshold=whale_token_threshold, peak_cap_w=peak_cap_w,
                     peak_window_s=peak_window_s, peak_recheck_interval_s=peak_recheck_interval_s,
-                    j_per_token=j_per_token)
+                    j_per_prefill_token=j_per_prefill_token, j_per_decode_token=j_per_decode_token,
+                    bytes_per_token=bytes_per_token)
     budget = app["budget"]
 
     async def _on_startup(app):
@@ -459,8 +543,8 @@ git commit -m "eenergy: wire peak-shaving admission gate into handle_completions
 - Modify: `scripts/eenergy/run_router.py`
 
 **Interfaces:**
-- Consumes: `run(...)`'s new `peak_cap_w`, `peak_window_s`, `peak_recheck_interval_s`, `j_per_token` params (Task 4).
-- Produces: `ROUTER_PEAK_CAP_W`, `ROUTER_PEAK_WINDOW_S`, `ROUTER_PEAK_RECHECK_INTERVAL_S`, `ROUTER_J_PER_TOKEN` env vars. Used by Task 6 (`launch_router_experiment.sh`).
+- Consumes: `run(...)`'s new `peak_cap_w`, `peak_window_s`, `peak_recheck_interval_s`, `j_per_prefill_token`, `j_per_decode_token`, `bytes_per_token` params (Task 4).
+- Produces: `ROUTER_PEAK_CAP_W`, `ROUTER_PEAK_WINDOW_S`, `ROUTER_PEAK_RECHECK_INTERVAL_S`, `ROUTER_J_PER_PREFILL_TOKEN`, `ROUTER_J_PER_DECODE_TOKEN`, `ROUTER_BYTES_PER_TOKEN` env vars. Used by Task 6 (`launch_router_experiment.sh`).
 
 No new test for this task: `main()`'s env-var reads are plain `os.environ.get(...)` calls with
 no parsing logic worth unit testing, matching this file's existing precedent — only
@@ -478,8 +562,15 @@ existing `ROUTER_WHALE_TOKEN_THRESHOLD` entry:
                             docs/superpowers/specs/2026-09-11-peak-shaving-admission-design.md.
   ROUTER_PEAK_WINDOW_S       default 30.0. Rolling window (seconds) the cap is averaged over.
   ROUTER_PEAK_RECHECK_INTERVAL_S  default 1.0. How often a deferred request re-checks the budget.
-  ROUTER_J_PER_TOKEN         default 1.4. Marginal-energy constant (J/token) used by the
-                            admission gate's pre-routing estimate.
+  ROUTER_J_PER_PREFILL_TOKEN  default 0.068. Conservative-upper-bound prefill energy constant
+                            (J/token) -- see docs/superpowers/specs/2026-09-11-peak-shaving-
+                            admission-design.md Sec 4.2 for why this is deliberately NOT the
+                            calibrated mean.
+  ROUTER_J_PER_DECODE_TOKEN  default 2.40. Calibrated (robust, CV~3-8%) decode energy constant
+                            (J/token).
+  ROUTER_BYTES_PER_TOKEN     default 3.235. Reused from src/replay_sharegpt.py's existing
+                            --chars-per-token calibration, for converting the live decode-
+                            length byte EMA to a token count.
 ```
 
 - [ ] **Step 2: Update `main()`**
@@ -503,10 +594,12 @@ def main() -> int:
     peak_cap_w = float(peak_cap_w_raw) if peak_cap_w_raw is not None else None
     peak_window_s = float(os.environ.get("ROUTER_PEAK_WINDOW_S", "30.0"))
     peak_recheck_interval_s = float(os.environ.get("ROUTER_PEAK_RECHECK_INTERVAL_S", "1.0"))
-    j_per_token = float(os.environ.get("ROUTER_J_PER_TOKEN", "1.4"))
+    j_per_prefill_token = float(os.environ.get("ROUTER_J_PER_PREFILL_TOKEN", "0.068"))
+    j_per_decode_token = float(os.environ.get("ROUTER_J_PER_DECODE_TOKEN", "2.40"))
+    bytes_per_token = float(os.environ.get("ROUTER_BYTES_PER_TOKEN", "3.235"))
     run(replica_specs, policy, model_name, host, port, power_interval_s, assignment_log_path,
         bs_source, bs_poll_interval_s, whale_token_threshold, peak_cap_w, peak_window_s,
-        peak_recheck_interval_s, j_per_token)
+        peak_recheck_interval_s, j_per_prefill_token, j_per_decode_token, bytes_per_token)
     return 0
 ```
 
@@ -531,7 +624,7 @@ git commit -m "eenergy: add ROUTER_PEAK_* env vars for the peak-shaving admissio
 
 **Interfaces:**
 - Consumes: `ROUTER_PEAK_CAP_W` etc. (Task 5).
-- Produces: `PEAK_CAP_W`, `PEAK_WINDOW_S`, `PEAK_RECHECK_INTERVAL_S`, `J_PER_TOKEN` env vars for orchestration scripts. Used by Task 7.
+- Produces: `PEAK_CAP_W`, `PEAK_WINDOW_S`, `PEAK_RECHECK_INTERVAL_S`, `J_PER_PREFILL_TOKEN`, `J_PER_DECODE_TOKEN`, `BYTES_PER_TOKEN` env vars for orchestration scripts. Used by Task 7.
 
 No automated test for this task (shell orchestration scripts in this project are verified by
 live runs, not unit tests — matches every existing `orchestrate/eenergy/*.sh` script).
@@ -548,7 +641,9 @@ In `orchestrate/eenergy/launch_router_experiment.sh`, add these lines right afte
 PEAK_CAP_W=${PEAK_CAP_W:-}
 PEAK_WINDOW_S=${PEAK_WINDOW_S:-30.0}
 PEAK_RECHECK_INTERVAL_S=${PEAK_RECHECK_INTERVAL_S:-1.0}
-J_PER_TOKEN=${J_PER_TOKEN:-1.4}
+J_PER_PREFILL_TOKEN=${J_PER_PREFILL_TOKEN:-0.068}
+J_PER_DECODE_TOKEN=${J_PER_DECODE_TOKEN:-2.40}
+BYTES_PER_TOKEN=${BYTES_PER_TOKEN:-3.235}
 ```
 
 - [ ] **Step 2: Forward them to run_router.py**
@@ -560,7 +655,10 @@ echo "Starting router (policy=$POLICY) on port $ROUTER_PORT -> assignment log: $
 ROUTER_POLICY="$POLICY" ROUTER_REPLICAS="$REPLICA_SPECS" ROUTER_MODEL_NAME="$MODEL" \
   ROUTER_PORT="$ROUTER_PORT" ROUTER_ASSIGNMENT_LOG="$ASSIGNMENT_LOG" \
   ROUTER_PEAK_CAP_W="$PEAK_CAP_W" ROUTER_PEAK_WINDOW_S="$PEAK_WINDOW_S" \
-  ROUTER_PEAK_RECHECK_INTERVAL_S="$PEAK_RECHECK_INTERVAL_S" ROUTER_J_PER_TOKEN="$J_PER_TOKEN" \
+  ROUTER_PEAK_RECHECK_INTERVAL_S="$PEAK_RECHECK_INTERVAL_S" \
+  ROUTER_J_PER_PREFILL_TOKEN="$J_PER_PREFILL_TOKEN" \
+  ROUTER_J_PER_DECODE_TOKEN="$J_PER_DECODE_TOKEN" \
+  ROUTER_BYTES_PER_TOKEN="$BYTES_PER_TOKEN" \
   python3 scripts/eenergy/run_router.py &
 ROUTER_PID=$!
 ```
@@ -745,14 +843,31 @@ near-zero deferral at this cap/window combination, so TTFT should be largely una
 
 ---
 
-## Self-review notes
+## Self-review notes (updated 2026-09-11 for the two-term estimator revision)
 
-- **Spec coverage:** §3 (architecture/data flow) → Tasks 3-4. §4.1 (PowerBudget) → Task 1.
-  §4.2 (estimator) → Task 2. §4.3 (integration/env vars) → Tasks 4-6. §5 (fail-open) → Task 1's
-  tests. §6 (non-goals) → deliberately not built anywhere in this plan. §7 (testing plan) →
-  Tasks 1-2 unit tests + Task 7 live validation, including the §7-mandated cap/window
-  combination.
-- **Type consistency:** `PowerBudget.would_exceed(cap_w, marginal_j)` signature is identical
-  everywhere it's called (Task 1 tests, Task 4's `handle_completions`). `estimate_marginal_energy_j(prompt_tokens, j_per_token)`
-  likewise. `build_power_budget(peak_cap_w, peak_window_s)` matches its use in `make_app`.
+- **Spec coverage:** §3 (architecture/data flow, now 7 steps) → Tasks 3-4. §4.1 (PowerBudget) →
+  Task 1. §4.2 (calibrated two-term estimator + `DecodeByteEstimator`) → Task 2. §4.3
+  (integration/env vars, now 6 vars including `BYTES_PER_TOKEN`) → Tasks 4-6. §5 (fail-open) →
+  Task 1's tests. §6 (non-goals, now including warm-up-controlled prefill recalibration as
+  explicit future work) → deliberately not built anywhere in this plan. §7 (testing plan) →
+  Tasks 1-2 unit tests (including the 4 new `DecodeByteEstimator` tests) + Task 7 live
+  validation.
+- **Type consistency:** `PowerBudget.would_exceed(cap_w, marginal_j)` unchanged, identical
+  everywhere it's called. `estimate_marginal_energy_j(prompt_tokens, expected_decode_tokens,
+  j_per_prefill_token, j_per_decode_token)` — 4-arg form used consistently in Task 2's tests
+  and Task 4's `handle_completions`. `DecodeByteEstimator.current_estimate_tokens(fallback_tokens,
+  bytes_per_token)` matches between Task 2's tests and Task 4's call site
+  (`decode_estimator.current_estimate_tokens(fallback_tokens, bytes_per_token)`, with
+  `fallback_tokens = body.get("max_tokens", 128)`). `build_power_budget(peak_cap_w,
+  peak_window_s)` unchanged. `make_app`/`run`'s new params (`j_per_prefill_token`,
+  `j_per_decode_token`, `bytes_per_token`) match across both signatures and their call site in
+  Task 4, and their env-var sources in Task 5/6 (`ROUTER_J_PER_PREFILL_TOKEN` ->
+  `J_PER_PREFILL_TOKEN`, etc.).
 - **Placeholder scan:** none found — every step has real, complete code.
+- **Known, deliberate limitation carried into this plan (not a gap to fix during
+  implementation):** `j_per_prefill_token`'s default (0.068) is a conservative upper bound from
+  an under-powered, non-robust calibration (CV~61-77%), not a tight estimate. This is
+  intentional — see spec §4.2 for the quantified reasoning (decode dominates cost per token by
+  37-115x, so prefill imprecision matters little except for whale-heavy requests, where erring
+  high is the safe direction). Do not "improve" this default to the calibrated mean without
+  re-reading that reasoning first.
