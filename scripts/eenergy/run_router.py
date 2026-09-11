@@ -47,6 +47,12 @@ Env:
                             src/replay_sharegpt.py's 3.235 plain-text chars-per-token
                             constant. Converts the live decode-length byte EMA to a token
                             count for the admission gate's marginal-energy estimate.
+  ROUTER_RESERVATION_HOLD_S  default 1.0. How long an admitted request's estimated energy
+                            stays reserved in PowerBudget before being released -- covers
+                            only the brief gap until the next real power_poll_loop sample
+                            reflects it, NOT the request's full processing time (holding it
+                            that long caused a ~10x TTFT regression on first validation --
+                            see proxy_server.py's make_app docstring comment).
 """
 import os
 import sys
@@ -87,9 +93,11 @@ def main() -> int:
     j_per_prefill_token = float(os.environ.get("ROUTER_J_PER_PREFILL_TOKEN", "0.068"))
     j_per_decode_token = float(os.environ.get("ROUTER_J_PER_DECODE_TOKEN", "2.40"))
     bytes_per_token = float(os.environ.get("ROUTER_BYTES_PER_TOKEN", "272.0"))
+    reservation_hold_s = float(os.environ.get("ROUTER_RESERVATION_HOLD_S", "1.0"))
     run(replica_specs, policy, model_name, host, port, power_interval_s, assignment_log_path,
         bs_source, bs_poll_interval_s, whale_token_threshold, peak_cap_w, peak_window_s,
-        peak_recheck_interval_s, j_per_prefill_token, j_per_decode_token, bytes_per_token)
+        peak_recheck_interval_s, j_per_prefill_token, j_per_decode_token, bytes_per_token,
+        reservation_hold_s)
     return 0
 
 

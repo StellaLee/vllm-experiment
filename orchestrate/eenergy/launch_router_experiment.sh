@@ -48,6 +48,11 @@ J_PER_DECODE_TOKEN=${J_PER_DECODE_TOKEN:-2.40}
 # original 3.235 default caused a self-reinforcing admission-gate lockup on first
 # validation).
 BYTES_PER_TOKEN=${BYTES_PER_TOKEN:-272.0}
+# How long a reservation stays active before release -- must cover only the brief gap until
+# the next real power_poll_loop sample, NOT a request's full processing time (holding it that
+# long caused a ~10x TTFT regression on first validation of the reservation ledger). See
+# proxy_server.py's make_app docstring comment.
+RESERVATION_HOLD_S=${RESERVATION_HOLD_S:-1.0}
 
 declare -A GPU_CEILING
 if [ -n "$RAMP_CEILING_PER_GPU" ]; then
@@ -94,6 +99,7 @@ ROUTER_POLICY="$POLICY" ROUTER_REPLICAS="$REPLICA_SPECS" ROUTER_MODEL_NAME="$MOD
   ROUTER_J_PER_PREFILL_TOKEN="$J_PER_PREFILL_TOKEN" \
   ROUTER_J_PER_DECODE_TOKEN="$J_PER_DECODE_TOKEN" \
   ROUTER_BYTES_PER_TOKEN="$BYTES_PER_TOKEN" \
+  ROUTER_RESERVATION_HOLD_S="$RESERVATION_HOLD_S" \
   python3 scripts/eenergy/run_router.py &
 ROUTER_PID=$!
 

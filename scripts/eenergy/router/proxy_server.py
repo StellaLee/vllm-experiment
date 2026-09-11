@@ -96,7 +96,19 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
              bs_source: str = "local", whale_token_threshold: int = WHALE_TOKEN_THRESHOLD,
              peak_cap_w: float = None, peak_window_s: float = 30.0,
              peak_recheck_interval_s: float = 1.0, j_per_prefill_token: float = 0.068,
-             j_per_decode_token: float = 2.40, bytes_per_token: float = 272.0):
+             j_per_decode_token: float = 2.40, bytes_per_token: float = 272.0,
+             reservation_hold_s: float = 1.0):
+    # reservation_hold_s=1.0 (2x the 0.5s default power_interval_s, giving power_poll_loop
+    # at least one real sample to catch up): first live validation of the reservation ledger
+    # released each reservation only at request COMPLETION, not after this short hold -- that
+    # held long-running (whale-heavy) requests' reservations for their entire lifetime instead
+    # of just the brief gap until the next real power sample reflects their draw. Under
+    # Heavy/Matched's bursty, uncapped-concurrency arrivals, many simultaneous long-held
+    # reservations piled up, causing a ~10x TTFT regression (mean 38-46s vs. 3.6-3.7s
+    # baseline) and requests timing out entirely. The reservation only needs to cover the
+    # brief real TOCTOU gap (concurrent admissions within one power_poll_loop interval), not
+    # the request's full processing time -- see docs/superpowers/specs/2026-09-11-peak-
+    # shaving-admission-design.md Sec 4.2.
     # bytes_per_token=272.0 is REAL WIRE BYTES per token (measured directly against this
     # project's actual vLLM streaming endpoint: 272.2 and 272.1 bytes/event across two
     # independent live samples, n_sse_events used as the token-count proxy) -- NOT
@@ -142,8 +154,17 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
             # Reserve immediately on admission, before any real power measurement could
             # reflect this request's draw -- closes a real time-of-check-to-time-of-use gap
             # where several requests arriving close together could each pass against the same
-            # stale reading. See power_budget.PowerBudget.reserve's docstring.
+            # stale reading. See power_budget.PowerBudget.reserve's docstring. Released after
+            # a short fixed delay (NOT at request completion -- see make_app's docstring
+            # comment on reservation_hold_s for why that regressed badly), decoupled from this
+            # request's own lifetime via a separate fire-and-forget task.
             budget.reserve(marginal_j)
+
+            async def _release_reservation_after_delay():
+                await asyncio.sleep(reservation_hold_s)
+                budget.release(marginal_j)
+
+            asyncio.create_task(_release_reservation_after_delay())
         replica_id = router.route(token_ids)
         is_whale = router.last_is_whale
         target = by_id[replica_id].config
@@ -170,8 +191,6 @@ def make_app(states: list, policy: str, model_name: str, assignment_log_path: st
             router.complete(replica_id, is_whale)
             if decode_estimator is not None:
                 decode_estimator.record_completion(response_bytes)
-            if budget is not None:
-                budget.release(marginal_j)
         await resp.write_eof()
         return resp
 
@@ -190,7 +209,8 @@ def run(replica_specs: list, policy: str, model_name: str, host: str, port: int,
         whale_token_threshold: int = WHALE_TOKEN_THRESHOLD,
         peak_cap_w: float = None, peak_window_s: float = 30.0,
         peak_recheck_interval_s: float = 1.0, j_per_prefill_token: float = 0.068,
-        j_per_decode_token: float = 2.40, bytes_per_token: float = 272.0) -> None:
+        j_per_decode_token: float = 2.40, bytes_per_token: float = 272.0,
+        reservation_hold_s: float = 1.0) -> None:
     states = build_replica_states(replica_specs)
     gpu_indices = [s.config.gpu_index for s in states]
     reader = NvmlPowerReader(gpu_indices)
@@ -198,7 +218,7 @@ def run(replica_specs: list, policy: str, model_name: str, host: str, port: int,
                     whale_token_threshold=whale_token_threshold, peak_cap_w=peak_cap_w,
                     peak_window_s=peak_window_s, peak_recheck_interval_s=peak_recheck_interval_s,
                     j_per_prefill_token=j_per_prefill_token, j_per_decode_token=j_per_decode_token,
-                    bytes_per_token=bytes_per_token)
+                    bytes_per_token=bytes_per_token, reservation_hold_s=reservation_hold_s)
     budget = app["budget"]
 
     async def _on_startup(app):
