@@ -20,6 +20,9 @@ class Candidate:
                                              # unlike ramp_ceiling_w_per_s (a calibrated safety
                                              # margin), this is an authoritative, externally-set
                                              # hardware maximum
+    smoothed_ramp_rate_w_per_s: float = 0.0  # EMA of ramp_rate_w_per_s, see ramp.py --
+                                              # appended last to keep positional Candidate(...)
+                                              # construction (e.g. tests' _cand helper) valid
 
 
 def pick_round_robin(candidates: list, last_index: int):
@@ -304,6 +307,43 @@ def pick_drf_peak_power_tiebreak(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def dominant_share_vector_peak_priority_full(c) -> tuple:
+    """Fix for the same Pareto-domination counterexample dominant_share_vector_power_priority
+    had (see dominant_share_vector_power_priority_full's docstring), applied to the peak-
+    power-level variant: dominant_share_vector_peak_priority's 3-tuple (D, share_power_level,
+    share_load) can tie completely even when compute differs, since D collapses all three
+    raw shares into one scalar. Verified directly (not just by analogy): the exact
+    A=(compute=0.3, load=0.9, power_level=0.9) vs B=(compute=0.5, load=0.9, power_level=0.9)
+    construction that broke the ramp-based named rule breaks pick_drf_peak_power_tiebreak
+    too -- it picks the Pareto-DOMINATED B when B comes first in iteration order (verified
+    empirically before this fix was written, contradicting that function's own docstring
+    claim of unmodified Pareto-safety). This appends share_compute as an explicit fourth
+    coordinate: (D, share_power_level, share_load, share_compute), restoring Pareto-non-
+    domination by the identical argument used for dominant_share_vector_power_priority_full."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    spl = share_power_level(c)
+    return (dominant_share_peak(c), spl, share_load, share_compute)
+
+
+def pick_drf_peak_power_tiebreak_full(candidates: list, tie_start: int = 0) -> str:
+    """Provably Pareto-non-dominated counterpart to pick_drf_peak_power_tiebreak -- same
+    relationship as pick_drf_power_tiebreak_full is to pick_drf_power_tiebreak, but targeting
+    peak power draw (share_power_level) instead of ramp rate (share_power). Retargeting
+    Share_power at instantaneous power level rather than ramp rate is a genuine change in
+    what physical hazard the rule defends against: peak/demand-charge and circuit-capacity
+    risk (bounding how hot any one replica runs) instead of grid-transient/frequency-
+    regulation risk (bounding how fast any one replica's draw changes) -- see
+    share_power_level's docstring for why peak power's non-negative, directly-additive
+    structure (P_agg(t) = sum_i P_i(t) always) means per-candidate bounding already tightly
+    bounds the fleet aggregate, unlike ramp rate, where the coincidence-ceiling mechanism was
+    needed to target fleet-aggregate coincident risk specifically."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    best = min(_rotate(candidates, tie_start), key=dominant_share_vector_peak_priority_full)
+    return best.replica_id
+
+
 def weighted_sum_score(c, w_compute: float = 0.33, w_load: float = 0.33, w_power: float = 0.33) -> float:
     """A genuine linear combination over the same three normalized shares the DRF family
     uses -- score = w_compute*Share_compute + w_load*Share_load + w_power*Share_power.
@@ -487,6 +527,21 @@ def pick_drf_power_tiebreak_full(candidates: list, tie_start: int = 0) -> str:
     return best.replica_id
 
 
+def elevated_count(candidates: list, elevated_frac: float = 0.5) -> int:
+    """Raw count of candidates whose share_power currently exceeds elevated_frac. Factored out
+    of coincidence_ceiling_factor so the lagged-elevation-count ablation (see
+    pick_drf_power_tiebreak_full_coincidence_ceiling_lagged_elevation) can reuse the exact same
+    counting logic while sourcing the resulting count from state other than "right now"."""
+    return sum(1 for c in candidates if share_power(c) > elevated_frac)
+
+
+def coincidence_ceiling_factor_from_count(n_elevated: int, beta: float = 1.0) -> float:
+    """The shared-scalar formula itself, factored out of coincidence_ceiling_factor so a
+    caller can supply an n_elevated value computed from state other than the live candidate
+    set (see pick_drf_power_tiebreak_full_coincidence_ceiling_lagged_elevation)."""
+    return 1.0 / (1.0 + beta * max(0, n_elevated - 1))
+
+
 def coincidence_ceiling_factor(candidates: list, elevated_frac: float = 0.5, beta: float = 1.0) -> float:
     """Fleet-wide multiplier (<= 1) on every candidate's ramp ceiling, shared identically
     across the whole candidate set at this decision -- shrinks as more replicas are
@@ -504,8 +559,7 @@ def coincidence_ceiling_factor(candidates: list, elevated_frac: float = 0.5, bet
     Pareto-non-domination and threshold-safety carry over by the same argument, not a new
     proof: nothing about that corollary's reasoning depends on kappa(t) being static,
     windowed, or (as here) reactive to the current round's coincidence count."""
-    n_elevated = sum(1 for c in candidates if share_power(c) > elevated_frac)
-    return 1.0 / (1.0 + beta * max(0, n_elevated - 1))
+    return coincidence_ceiling_factor_from_count(elevated_count(candidates, elevated_frac), beta)
 
 
 def dominant_share_vector_power_priority_full_coincidence_ceiling(c, factor: float) -> tuple:
@@ -527,6 +581,156 @@ def dominant_share_vector_power_priority_full_coincidence_ceiling(c, factor: flo
     return (dominant, sp, share_load, share_compute)
 
 
+def share_power_smoothed(c) -> float:
+    """Same as share_power(c), but reads c.smoothed_ramp_rate_w_per_s (an EMA of the raw
+    two-point ramp estimate, see ramp.update_ramp_state) instead of the raw
+    c.ramp_rate_w_per_s. Motivation: the raw estimate is a single-sample-jitter-sensitive
+    finite difference between two consecutive power samples -- if Share_power reacts to that
+    noise directly, it could be contributing to the routing-decision instability documented
+    in findings/2026-08-31-eenergy-drf-lmetric-roundrobin-comparison.md Part 12/13 (~75-85%
+    decision mismatch between two runs of the identical policy), on top of the already-
+    confirmed state-divergence mechanism. Same physical target (ramp rate, motivated by
+    grid-transient stress, not a switch to peak power or energy) -- only the noise
+    characteristics of the live estimate change."""
+    return max(c.smoothed_ramp_rate_w_per_s, 0.0) / c.ramp_ceiling_w_per_s
+
+
+def coincidence_ceiling_factor_smoothed(candidates: list, elevated_frac: float = 0.5,
+                                         beta: float = 1.0) -> float:
+    """Same as coincidence_ceiling_factor, but "currently elevated" is judged by
+    share_power_smoothed instead of share_power -- keeps the fleet-aggregate coincidence
+    mechanism itself unchanged, only the per-candidate signal it aggregates over."""
+    n_elevated = sum(1 for c in candidates if share_power_smoothed(c) > elevated_frac)
+    return 1.0 / (1.0 + beta * max(0, n_elevated - 1))
+
+
+def dominant_share_vector_power_priority_full_coincidence_ceiling_smoothed_ramp(c, factor: float) -> tuple:
+    """Same as dominant_share_vector_power_priority_full_coincidence_ceiling, but Share_power
+    (and therefore D, its max) is computed from c.smoothed_ramp_rate_w_per_s instead of the
+    raw c.ramp_rate_w_per_s -- see share_power_smoothed's docstring for the motivation."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    effective_ceiling = c.ramp_ceiling_w_per_s * factor
+    sp = max(c.smoothed_ramp_rate_w_per_s, 0.0) / effective_ceiling
+    dominant = max(share_compute, share_load, sp)
+    return (dominant, sp, share_load, share_compute)
+
+
+def coincidence_ceiling_factor_peak(candidates: list, elevated_frac: float = 0.5, beta: float = 1.0) -> float:
+    """Peak-power-level counterpart to coincidence_ceiling_factor: "currently elevated" is
+    judged by share_power_level(c) (fraction of hardware power limit drawn) instead of the
+    ramp-based share_power(c). Same fleet-aggregate coincidence mechanism -- shrinks the
+    shared ceiling once 2+ replicas are simultaneously drawing high power, rather than
+    simultaneously ramping fast -- targeting demand-charge/circuit-capacity coincidence risk
+    instead of grid-transient/frequency-regulation coincidence risk (see share_power_level's
+    docstring for that distinction)."""
+    n_elevated = sum(1 for c in candidates if share_power_level(c) > elevated_frac)
+    return 1.0 / (1.0 + beta * max(0, n_elevated - 1))
+
+
+def dominant_share_vector_peak_priority_full_coincidence_ceiling(c, factor: float) -> tuple:
+    """Same tie-break vector as dominant_share_vector_peak_priority_full (D, share_power_level,
+    share_load, share_compute), but share_power_level (and therefore D, its max) is computed
+    against c's power_level_ceiling_w scaled by the shared peak-coincidence factor (see
+    coincidence_ceiling_factor_peak) instead of the raw, always-fixed ceiling. Peak-power
+    counterpart to dominant_share_vector_power_priority_full_coincidence_ceiling -- same
+    "scale every candidate's ceiling by one shared factor" structure, just targeting
+    instantaneous draw instead of ramp rate."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    effective_ceiling = c.power_level_ceiling_w * factor
+    spl = c.power_w / effective_ceiling
+    dominant = max(share_compute, share_load, spl)
+    return (dominant, spl, share_load, share_compute)
+
+
+def pick_drf_peak_power_tiebreak_full_coincidence_ceiling(candidates: list, tie_start: int = 0) -> str:
+    """drf_peak_power_tiebreak_full, with the fleet-aggregate coincidence-ceiling mechanism
+    applied to the power-LEVEL ceiling instead of the ramp ceiling -- the peak-power
+    counterpart to pick_drf_power_tiebreak_full_coincidence_ceiling. Motivation: the "does
+    power-awareness help" investigation (findings/2026-08-31-eenergy-drf-lmetric-roundrobin-
+    comparison.md, "does power-awareness help?" thread) found the ramp-based Share_power is a
+    noisy, LAGGING readout of a compute step that already landed (dP/dt observed now reflects
+    a burst from ~1 ramp-time-constant ago -- confirmed via lagged cross-correlation on real
+    hardware traces, peak r~0.39 at +2-3s, near-zero at lag 0: incoming compute predicts
+    ramp 2-3s later, not the reverse), which is why drf_no_power (ignoring power entirely)
+    matches or beats the ramp-based rule outside sustained-pressure conditions. Instantaneous
+    power LEVEL is a level, not a derivative of a noisy signal -- structurally lower-noise
+    (see share_power_level's docstring on P_agg(t) always being a sum of non-negative terms),
+    and empirically this project's one clean, significant power-related result to date (Table
+    1, p=0.0017) is peak-power-based, not ramp-based. Inherits Pareto-non-domination and
+    threshold-safety from the same "any shared kappa(t)" corollary (Sec 4.3) the ramp-based
+    version relies on -- the proof doesn't depend on which live signal feeds the ceiling
+    scaling, only on the factor being one scalar shared identically across candidates."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    factor = coincidence_ceiling_factor_peak(candidates)
+    rotated = _rotate(candidates, tie_start)
+    best = min(rotated,
+               key=lambda c: dominant_share_vector_peak_priority_full_coincidence_ceiling(c, factor))
+    return best.replica_id
+
+
+def pick_drf_power_tiebreak_full_coincidence_ceiling_smoothed_ramp(candidates: list, tie_start: int = 0) -> str:
+    """drf_power_tiebreak_full_coincidence_ceiling, but every place that reads live ramp
+    state (share_power inside coincidence_ceiling_factor, and Share_power in the tie-break
+    vector itself) uses the smoothed (EMA) ramp estimate instead of the raw two-point
+    finite-difference derivative. Tests the hypothesis that a noisy INPUT signal (not just
+    real hardware timing divergence) contributes to this project's documented ~75-85%
+    decision-mismatch noise floor, without changing what Share_power physically represents
+    (still ramp rate, still motivated by grid-transient stress -- see share_power_smoothed).
+    Pareto-safety/threshold-safety are unaffected: the proofs go through the "any shared
+    kappa(t) inherits safety" structural corollary (Sec 4.3) and the underlying dominant-
+    share-vector sorted comparison, neither of which depends on which specific live signal
+    feeds Share_power, only on the ratio-to-ceiling structure being preserved (unchanged
+    here)."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    factor = coincidence_ceiling_factor_smoothed(candidates)
+    rotated = _rotate(candidates, tie_start)
+    best = min(rotated,
+               key=lambda c: dominant_share_vector_power_priority_full_coincidence_ceiling_smoothed_ramp(c, factor))
+    return best.replica_id
+
+
+def dominant_share_vector_power_priority_full_coincidence_ceiling_random_tiebreak(c, factor: float, rng) -> tuple:
+    """Diagnostic ablation of dominant_share_vector_power_priority_full_coincidence_ceiling:
+    D(c) (the primary sort key) is computed identically -- real, coincidence-ceiling-adjusted
+    share_power -- so which candidate has genuinely higher pressure is unaffected. Only the
+    SECONDARY tie-break coordinate (normally share_power itself, used once D ties) is replaced
+    with an independent random draw per candidate. Tests whether share_power's specific value
+    carries real tie-break information beyond its contribution to D, or is noise-equivalent to
+    random -- see the "noisy ramp_rate ~ random selection" discussion this was built to
+    answer directly rather than infer from aggregate effects."""
+    share_compute = c.new_tokens / c.token_budget
+    share_load = c.in_flight_after / c.max_num_seqs
+    effective_ceiling = c.ramp_ceiling_w_per_s * factor
+    sp = max(c.ramp_rate_w_per_s, 0.0) / effective_ceiling
+    dominant = max(share_compute, share_load, sp)
+    random_tiebreak = rng.random()
+    return (dominant, random_tiebreak, share_load, share_compute)
+
+
+def pick_drf_power_tiebreak_full_coincidence_ceiling_random_power(candidates: list, rng,
+                                                                    tie_start: int = 0) -> str:
+    """Diagnostic ablation of drf_power_tiebreak_full_coincidence_ceiling: identical primary
+    criterion (route to lowest real, coincidence-ceiling-adjusted D), but the power tie-break
+    coordinate is replaced with independent random noise per decision. NOT Pareto-safe in
+    general -- randomizing the tie-break coordinate can select a Pareto-dominated candidate
+    when D ties for a reason unrelated to power, since Corollary 1's proof requires the
+    tie-break to correctly resolve using each coordinate's REAL value, not a random one. This
+    is an analysis-only rule to test whether share_power's tie-break information is real or
+    noise-equivalent to random -- never proposed for deployment, never claimed safe."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    factor = coincidence_ceiling_factor(candidates)
+    rotated = _rotate(candidates, tie_start)
+    best = min(rotated, key=lambda c:
+               dominant_share_vector_power_priority_full_coincidence_ceiling_random_tiebreak(
+                   c, factor, rng))
+    return best.replica_id
+
+
 def pick_drf_power_tiebreak_full_coincidence_ceiling(candidates: list, tie_start: int = 0) -> str:
     """drf_power_tiebreak_full, but Share_power is computed against a ceiling that shrinks
     with the CURRENT round's fleet-wide coincidence count (coincidence_ceiling_factor)
@@ -544,6 +748,69 @@ def pick_drf_power_tiebreak_full_coincidence_ceiling(candidates: list, tie_start
     best = min(rotated,
                key=lambda c: dominant_share_vector_power_priority_full_coincidence_ceiling(c, factor))
     return best.replica_id
+
+
+def pick_drf_power_tiebreak_full_coincidence_ceiling_with_factor(candidates: list, factor: float,
+                                                                    tie_start: int = 0) -> str:
+    """Same routing/tie-break logic as pick_drf_power_tiebreak_full_coincidence_ceiling, but
+    the coincidence factor is supplied by the caller instead of computed live from the current
+    candidate set -- lets a caller (e.g. the lagged-elevation-count ablation below) drive the
+    ceiling scaling from state other than "right now" without duplicating the routing logic."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    rotated = _rotate(candidates, tie_start)
+    best = min(rotated,
+               key=lambda c: dominant_share_vector_power_priority_full_coincidence_ceiling(c, factor))
+    return best.replica_id
+
+
+# Number of decisions the lagged-elevation-count ablation holds a n_elevated reading back
+# before using it. Chosen from check_compute_leads_ramp_lag_correlation.py's finding that the
+# compute-ramp lag correlation decays to near-zero by ~10-20s on Heavy/Closed-Loop-long
+# (peak r~0.39 at +2-3s). Heavy/CL-long runs ~900 requests over ~225-232s (~3.9 req/s,
+# compare_closedloopheavy_duration.py), so 75 decisions ~= 19s -- comfortably past the point
+# where the real signal has decorrelated from itself, while still being the SAME underlying
+# process (not synthetic noise), just time-shifted.
+LAGGED_ELEVATION_DEPTH = 75
+
+
+def pick_drf_power_tiebreak_full_coincidence_ceiling_lagged_elevation(candidates: list, lag_buffer: list,
+                                                                         tie_start: int = 0) -> str:
+    """Elevation-count ablation: same D and tie-break as pick_drf_power_tiebreak_full_
+    coincidence_ceiling (both computed for real, unrandomized -- unlike the random-power-
+    tiebreak ablation, which only randomizes the tie-break coordinate), but the coincidence
+    factor is computed from an n_elevated value read from LAGGED_ELEVATION_DEPTH decisions ago
+    (lag_buffer, a plain list the caller owns and this function mutates as a FIFO queue)
+    instead of the current candidate set.
+
+    Motivation: the random-power-tiebreak ablation (findings/2026-08-31-eenergy-drf-lmetric-
+    roundrobin-comparison.md Part 29) only tested whether the SECONDARY tie-break's precise
+    power value matters -- it left coincidence_ceiling_factor's live n_elevated count (which
+    drives D's PRIMARY criterion, not a tie-break) completely real and untouched. This
+    ablation targets that other, structurally distinct piece directly: does it matter that the
+    ceiling squeeze fires exactly WHEN a real simultaneous-pressure event is happening, or
+    would squeezing on the same long-run frequency/magnitude at the WRONG moments work just as
+    well? Reading n_elevated from lag_buffer's oldest entry (rather than a synthetic random
+    draw) preserves the real signal's exact marginal distribution -- it's the identical
+    underlying process, merely time-shifted -- so any performance difference is attributable
+    to timing, not to a change in how often or how strongly the ceiling gets squeezed overall.
+
+    Pareto-non-domination and threshold-safety are unaffected by this ablation for the same
+    reason they're unaffected by every other coincidence-ceiling variant in this project: the
+    "any shared kappa(t) inherits safety" corollary (Sec 4.3) only requires kappa(t) be one
+    scalar shared identically by every candidate at decision time, regardless of how it's
+    computed -- a lagged reading of the real signal satisfies that exactly as well as a live
+    one."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    real_n_elevated = elevated_count(candidates)
+    lag_buffer.append(real_n_elevated)
+    if len(lag_buffer) > LAGGED_ELEVATION_DEPTH:
+        lagged_n_elevated = lag_buffer.pop(0)
+    else:
+        lagged_n_elevated = real_n_elevated  # warmup: buffer not yet full, fall back to live
+    factor = coincidence_ceiling_factor_from_count(lagged_n_elevated)
+    return pick_drf_power_tiebreak_full_coincidence_ceiling_with_factor(candidates, factor, tie_start)
 
 
 def weighted_sum_score_coincidence_ceiling(c, factor: float, w_compute: float = 0.33,
@@ -677,6 +944,27 @@ def pick_lmetric_power_pareto_epsilon_small_coincidence_ceiling(candidates: list
     factor = coincidence_ceiling_factor(candidates)
     best = min(_rotate(candidates, tie_start),
                key=lambda c: lmetric_power_pareto_epsilon_score_coincidence_ceiling(c, factor, epsilon=0.001))
+    return best.replica_id
+
+
+def pick_lmetric_power_pareto_epsilon_zero_coincidence_ceiling(candidates: list, tie_start: int = 0) -> str:
+    """Diagnostic-only: epsilon=0.0 in lmetric_power_pareto_epsilon_score_coincidence_ceiling.
+    NOT Pareto-safe -- the proof requires every factor strictly positive, and epsilon=0 lets
+    (epsilon+share_compute) hit exactly 0 whenever share_compute=0 (a full cache hit),
+    reproducing Claim 2's exact cache-hit score-collapse failure mode. Included only to check
+    a prediction from the epsilon-shrinking analysis: since share_compute=new_tokens/token_budget
+    and share_load=in_flight_after/max_num_seqs share the same constant denominators across all
+    candidates in one routing decision, epsilon=0 reduces (up to a constant rescaling that
+    doesn't change the argmin) to new_tokens x in_flight_after x (1+share_power) -- i.e. it
+    should reproduce lmetric_power_coincidence_ceiling's routing decisions, not
+    lmetric_power_pareto_coincidence_ceiling's (which is this family's epsilon=1 case, not its
+    epsilon=0 case). Never use this in place of an epsilon>0 variant for anything but this
+    specific empirical check."""
+    if not candidates:
+        raise ValueError("no candidates to route to")
+    factor = coincidence_ceiling_factor(candidates)
+    best = min(_rotate(candidates, tie_start),
+               key=lambda c: lmetric_power_pareto_epsilon_score_coincidence_ceiling(c, factor, epsilon=0.0))
     return best.replica_id
 
 

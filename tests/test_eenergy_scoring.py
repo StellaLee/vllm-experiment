@@ -17,6 +17,7 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       pick_drf_coincidence_tiebreak,
                       share_power_level, dominant_share_peak,
                       dominant_share_vector_peak_priority, pick_drf_peak_power_tiebreak,
+                      dominant_share_vector_peak_priority_full, pick_drf_peak_power_tiebreak_full,
                       pick_drf_power_tiebreak_p2c, pick_compute_only, pick_load_only,
                       dominant_share_vector_power_priority_full, pick_drf_power_tiebreak_full,
                       weighted_sum_score, pick_weighted_sum,
@@ -35,15 +36,29 @@ from scoring import (Candidate, pick_round_robin, pick_lmetric, dominant_share, 
                       pick_lmetric_power_pareto_epsilon_coincidence_ceiling,
                       pick_lmetric_power_pareto_epsilon_small_coincidence_ceiling,
                       lmetric_power_pareto_epsilon_all_score_coincidence_ceiling,
-                      pick_lmetric_power_pareto_epsilon_all_coincidence_ceiling)
+                      pick_lmetric_power_pareto_epsilon_all_coincidence_ceiling,
+                      pick_lmetric_power_pareto_epsilon_zero_coincidence_ceiling,
+                      share_power_smoothed, coincidence_ceiling_factor_smoothed,
+                      dominant_share_vector_power_priority_full_coincidence_ceiling_smoothed_ramp,
+                      pick_drf_power_tiebreak_full_coincidence_ceiling_smoothed_ramp,
+                      pick_drf_power_tiebreak_full_coincidence_ceiling_random_power,
+                      coincidence_ceiling_factor_peak,
+                      dominant_share_vector_peak_priority_full_coincidence_ceiling,
+                      pick_drf_peak_power_tiebreak_full_coincidence_ceiling,
+                      elevated_count, coincidence_ceiling_factor_from_count,
+                      pick_drf_power_tiebreak_full_coincidence_ceiling_with_factor,
+                      LAGGED_ELEVATION_DEPTH,
+                      pick_drf_power_tiebreak_full_coincidence_ceiling_lagged_elevation)
 
 
 def _cand(replica_id, new_tokens=0, in_flight_after=1, token_budget=100,
            max_num_seqs=10, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0,
-           active_whale_count_after=0, power_w=0.0, power_level_ceiling_w=450.0):
+           active_whale_count_after=0, power_w=0.0, power_level_ceiling_w=450.0,
+           smoothed_ramp_rate_w_per_s=0.0):
     return Candidate(replica_id, new_tokens, in_flight_after, token_budget,
                       max_num_seqs, ramp_rate_w_per_s, ramp_ceiling_w_per_s,
-                      active_whale_count_after, power_w, power_level_ceiling_w)
+                      active_whale_count_after, power_w, power_level_ceiling_w,
+                      smoothed_ramp_rate_w_per_s)
 
 
 class _FakeRng:
@@ -520,6 +535,37 @@ def test_lmetric_power_pareto_epsilon_small_still_distinguishes_two_cache_hits()
 def test_lmetric_power_pareto_epsilon_small_raises_on_empty_candidates():
     with pytest.raises(ValueError):
         pick_lmetric_power_pareto_epsilon_small_coincidence_ceiling([])
+
+
+def test_lmetric_power_pareto_epsilon_zero_collapses_on_cache_hits():
+    """Unlike every epsilon>0 variant, epsilon=0 reproduces Claim 2's cache-hit score
+    collapse: both candidates have new_tokens=0 so share_compute=0 for both, and epsilon=0
+    means the whole score is exactly 0 for both regardless of load/power -- so it picks
+    whichever comes first in rotation (r0), NOT the correct answer (r1, which has far lower
+    load and power). This is the expected, diagnostic failure -- confirms epsilon=0 is not
+    Pareto-safe, unlike its epsilon>0 siblings tested just above."""
+    r0 = _cand("r0", new_tokens=0, in_flight_after=9, max_num_seqs=10,
+               ramp_rate_w_per_s=9.0, ramp_ceiling_w_per_s=10.0)
+    r1 = _cand("r1", new_tokens=0, in_flight_after=1, max_num_seqs=10,
+               ramp_rate_w_per_s=1.0, ramp_ceiling_w_per_s=10.0)
+    assert pick_lmetric_power_pareto_epsilon_zero_coincidence_ceiling([r0, r1]) == "r0"
+
+
+def test_lmetric_power_pareto_epsilon_zero_agrees_with_lmetric_power_on_non_cache_hit():
+    """When new_tokens>0 (no collapse), epsilon=0's score is a constant rescaling of
+    lmetric_power_score_coincidence_ceiling's (both candidates share the same token_budget/
+    max_num_seqs denominators), so the two pickers should agree on which replica wins."""
+    r0 = _cand("r0", new_tokens=40, in_flight_after=8, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0)
+    r1 = _cand("r1", new_tokens=40, in_flight_after=2, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=2.0, ramp_ceiling_w_per_s=10.0)
+    assert (pick_lmetric_power_pareto_epsilon_zero_coincidence_ceiling([r0, r1])
+            == pick_lmetric_power_coincidence_ceiling([r0, r1]) == "r1")
+
+
+def test_lmetric_power_pareto_epsilon_zero_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_lmetric_power_pareto_epsilon_zero_coincidence_ceiling([])
 
 
 def test_lmetric_power_pareto_epsilon_all_score_shifts_power_term_too():
@@ -1099,3 +1145,284 @@ def test_p2c_whale_with_real_rng_distributes_across_replicas():
     rng = random.Random(42)
     chosen = {pick_p2c_whale(cands, is_whale=True, rng=rng) for _ in range(30)}
     assert chosen == {"r0", "r1", "r2"}
+
+
+def test_share_power_smoothed_reads_smoothed_field_not_raw():
+    c = _cand("r0", ramp_rate_w_per_s=100.0, smoothed_ramp_rate_w_per_s=20.0,
+              ramp_ceiling_w_per_s=10.0)
+    assert share_power_smoothed(c) == pytest.approx(2.0)  # 20.0 / 10.0, ignores raw=100.0
+
+
+def test_share_power_smoothed_clamps_negative_to_zero():
+    c = _cand("r0", smoothed_ramp_rate_w_per_s=-5.0, ramp_ceiling_w_per_s=10.0)
+    assert share_power_smoothed(c) == 0.0
+
+
+def test_coincidence_ceiling_factor_smoothed_uses_smoothed_field():
+    """A candidate with a huge raw spike but a small smoothed value should NOT count as
+    elevated -- confirms the smoothed variant of the mechanism reads the smoothed signal
+    throughout, not a mix of raw and smoothed."""
+    two_elevated_by_raw_only = [
+        _cand("r0", ramp_rate_w_per_s=100.0, smoothed_ramp_rate_w_per_s=1.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r1", ramp_rate_w_per_s=100.0, smoothed_ramp_rate_w_per_s=1.0, ramp_ceiling_w_per_s=10.0),
+    ]
+    assert coincidence_ceiling_factor_smoothed(two_elevated_by_raw_only) == 1.0  # not elevated by smoothed
+
+    two_elevated_by_smoothed = [
+        _cand("r0", ramp_rate_w_per_s=1.0, smoothed_ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r1", ramp_rate_w_per_s=1.0, smoothed_ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0),
+    ]
+    assert coincidence_ceiling_factor_smoothed(two_elevated_by_smoothed) == pytest.approx(0.5)
+
+
+def test_pick_drf_power_tiebreak_full_coincidence_ceiling_smoothed_ramp_routes_on_smoothed_signal():
+    """Two candidates tied on raw ramp but distinguished on smoothed ramp -- the smoothed
+    picker must route away from the one the smoothed signal flags as loaded, unlike the raw
+    picker which would see them as tied on Share_power and fall through to load/compute."""
+    r0 = _cand("r0", new_tokens=5, in_flight_after=5, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=5.0, smoothed_ramp_rate_w_per_s=9.0, ramp_ceiling_w_per_s=10.0)
+    r1 = _cand("r1", new_tokens=5, in_flight_after=5, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=5.0, smoothed_ramp_rate_w_per_s=1.0, ramp_ceiling_w_per_s=10.0)
+    assert pick_drf_power_tiebreak_full_coincidence_ceiling_smoothed_ramp([r0, r1]) == "r1"
+
+
+def test_pick_drf_power_tiebreak_full_coincidence_ceiling_smoothed_ramp_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_power_tiebreak_full_coincidence_ceiling_smoothed_ramp([])
+
+
+class _FixedRandomSequence:
+    """Deterministic stand-in for random.Random -- .random() returns values from a fixed,
+    caller-specified sequence in order, so the random-power-tiebreak ablation's per-candidate
+    draws can be controlled exactly in tests instead of depending on real randomness."""
+    def __init__(self, values):
+        self._values = list(values)
+
+    def random(self):
+        return self._values.pop(0)
+
+
+def test_pick_drf_power_tiebreak_full_coincidence_ceiling_random_power_matches_real_rule_when_D_not_tied():
+    """When D doesn't tie, the random-power ablation must pick the same candidate as the real
+    rule -- randomization only replaces the SECONDARY (power) tie-break coordinate, never the
+    primary D comparison, so safety-relevant pressure avoidance is unaffected by this
+    diagnostic variant regardless of which random values are drawn."""
+    r0 = _cand("r0", new_tokens=90, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)  # D=0.9 (compute-bound)
+    r1 = _cand("r1", new_tokens=10, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)  # D=0.1 (compute-bound)
+    # Even a random draw that would favor r0 if it mattered can't override r1's lower D.
+    rng = _FixedRandomSequence([0.01, 0.99])
+    assert pick_drf_power_tiebreak_full_coincidence_ceiling_random_power([r0, r1], rng) == "r1"
+
+
+def test_pick_drf_power_tiebreak_full_coincidence_ceiling_random_power_randomizes_among_D_ties():
+    """Two candidates tied on D (both compute-bound at 0.5, power/load negligible for both) but
+    differing on real share_power -- the real rule (dominant_share_vector_power_priority_full_
+    coincidence_ceiling) would deterministically prefer whichever has lower share_power. This
+    ablation must NOT: it should follow the random draw instead, picking either one depending
+    on which random value is smaller, confirming the real power value is not consulted at all
+    once D ties."""
+    r0 = _cand("r0", new_tokens=50, in_flight_after=1, token_budget=100, max_num_seqs=100,
+               ramp_rate_w_per_s=3.0, ramp_ceiling_w_per_s=10.0)  # D=0.5 (compute), power=0.3
+    r1 = _cand("r1", new_tokens=50, in_flight_after=1, token_budget=100, max_num_seqs=100,
+               ramp_rate_w_per_s=1.0, ramp_ceiling_w_per_s=10.0)  # D=0.5 (compute), power=0.1
+    # Sanity: the REAL rule prefers r1 (lower share_power) when D ties.
+    factor = 1.0
+    real_key_r0 = dominant_share_vector_power_priority_full_coincidence_ceiling(r0, factor)
+    real_key_r1 = dominant_share_vector_power_priority_full_coincidence_ceiling(r1, factor)
+    assert real_key_r0[0] == pytest.approx(real_key_r1[0]) == 0.5  # D ties
+    assert min([r0, r1], key=lambda c:
+               dominant_share_vector_power_priority_full_coincidence_ceiling(c, factor)
+               ).replica_id == "r1"  # real rule: r1 (lower power) wins
+
+    # Random draw favoring r0 (smaller random value) makes the ablation pick r0 instead --
+    # the opposite of what the real power-aware rule would do.
+    rng_favors_r0 = _FixedRandomSequence([0.01, 0.99])
+    assert pick_drf_power_tiebreak_full_coincidence_ceiling_random_power(
+        [r0, r1], rng_favors_r0) == "r0"
+
+    # Random draw favoring r1 matches the real rule's pick here, but for a coincidental
+    # reason (random luck), not because the real power value was consulted.
+    rng_favors_r1 = _FixedRandomSequence([0.99, 0.01])
+    assert pick_drf_power_tiebreak_full_coincidence_ceiling_random_power(
+        [r0, r1], rng_favors_r1) == "r1"
+
+
+def test_pick_drf_power_tiebreak_full_coincidence_ceiling_random_power_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_power_tiebreak_full_coincidence_ceiling_random_power([], _FixedRandomSequence([]))
+
+
+def test_pick_drf_peak_power_tiebreak_reproduces_the_pareto_domination_counterexample():
+    """Confirms the pre-existing pick_drf_peak_power_tiebreak has the SAME Pareto-safety bug
+    as the original (pre-fix) pick_drf_power_tiebreak, despite dominant_share_peak's docstring
+    claiming Lemma 1's proof applies unmodified -- that claim was wrong. Same instance as
+    test_drf_power_tiebreak_full_resolves_the_pareto_domination_counterexample, with
+    share_power_level in place of share_power: A=(compute=0.3, load=0.9, power_level=0.9)
+    Pareto-dominates B=(compute=0.5, load=0.9, power_level=0.9), but the 3-tuple (D,
+    power_level, load) ties completely for both, so with B first in iteration order the old
+    rule selects the dominated B."""
+    a = _cand("A", new_tokens=30, in_flight_after=90, token_budget=100, max_num_seqs=100,
+              power_w=405.0, power_level_ceiling_w=450.0)
+    b = _cand("B", new_tokens=50, in_flight_after=90, token_budget=100, max_num_seqs=100,
+              power_w=405.0, power_level_ceiling_w=450.0)
+    assert pick_drf_peak_power_tiebreak([b, a]) == "B"
+
+
+def test_pick_drf_peak_power_tiebreak_full_resolves_the_pareto_domination_counterexample():
+    a = _cand("A", new_tokens=30, in_flight_after=90, token_budget=100, max_num_seqs=100,
+              power_w=405.0, power_level_ceiling_w=450.0)
+    b = _cand("B", new_tokens=50, in_flight_after=90, token_budget=100, max_num_seqs=100,
+              power_w=405.0, power_level_ceiling_w=450.0)
+    assert pick_drf_peak_power_tiebreak_full([b, a]) == "A"
+    assert pick_drf_peak_power_tiebreak_full([a, b]) == "A"
+
+
+def test_pick_drf_peak_power_tiebreak_full_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_peak_power_tiebreak_full([])
+
+
+def test_coincidence_ceiling_factor_peak_is_one_when_zero_or_one_replica_elevated():
+    """Peak-power counterpart to test_coincidence_ceiling_factor_is_one_when_zero_or_one_
+    replica_elevated -- same structure, "elevated" judged by draw level instead of ramp."""
+    none_elevated = [_cand("r0", power_w=0.0, power_level_ceiling_w=10.0),
+                      _cand("r1", power_w=0.0, power_level_ceiling_w=10.0)]
+    assert coincidence_ceiling_factor_peak(none_elevated) == 1.0
+
+    one_elevated = [_cand("r0", power_w=8.0, power_level_ceiling_w=10.0),
+                     _cand("r1", power_w=0.0, power_level_ceiling_w=10.0)]
+    assert coincidence_ceiling_factor_peak(one_elevated) == 1.0
+
+
+def test_coincidence_ceiling_factor_peak_shrinks_with_more_simultaneously_elevated_replicas():
+    two_elevated = [_cand("r0", power_w=8.0, power_level_ceiling_w=10.0),
+                     _cand("r1", power_w=8.0, power_level_ceiling_w=10.0),
+                     _cand("r2", power_w=0.0, power_level_ceiling_w=10.0)]
+    assert coincidence_ceiling_factor_peak(two_elevated) == pytest.approx(0.5)
+
+    three_elevated = [_cand("r0", power_w=8.0, power_level_ceiling_w=10.0),
+                       _cand("r1", power_w=8.0, power_level_ceiling_w=10.0),
+                       _cand("r2", power_w=8.0, power_level_ceiling_w=10.0)]
+    assert coincidence_ceiling_factor_peak(three_elevated) == pytest.approx(1.0 / 3.0)
+
+
+def test_peak_coincidence_ceiling_pick_matches_plain_full_when_no_coincidence():
+    """Away from any coincidence event (factor=1.0), must be behaviorally identical to
+    drf_peak_power_tiebreak_full -- mirrors test_coincidence_ceiling_pick_matches_plain_full_
+    when_no_coincidence for the peak-power variant."""
+    cands = [
+        _cand("r0", new_tokens=1000, in_flight_after=5, power_w=0.0, power_level_ceiling_w=10.0),
+        _cand("r1", new_tokens=10, in_flight_after=2, power_w=0.0, power_level_ceiling_w=10.0),
+        _cand("r2", new_tokens=50, in_flight_after=50, power_w=0.0, power_level_ceiling_w=10.0),
+    ]
+    assert (pick_drf_peak_power_tiebreak_full_coincidence_ceiling(cands)
+            == pick_drf_peak_power_tiebreak_full(cands) == "r1")
+
+
+def test_peak_coincidence_ceiling_flips_the_decision_when_fleet_is_coincidentally_pressured():
+    """Peak-power counterpart to test_coincidence_ceiling_flips_the_decision_when_fleet_is_
+    coincidentally_pressured -- identical construction (same shares), power_w/power_level_
+    ceiling_w in place of ramp_rate_w_per_s/ramp_ceiling_w_per_s."""
+    r0 = _cand("r0", new_tokens=10, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               power_w=4.0, power_level_ceiling_w=10.0)   # compute=0.1, load=0.1, power=0.4
+    r1 = _cand("r1", new_tokens=60, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               power_w=0.0, power_level_ceiling_w=10.0)   # compute=0.6, load=0.1, power=0.0
+    r2 = _cand("r2", new_tokens=90, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               power_w=8.0, power_level_ceiling_w=10.0)   # compute=0.9, power=0.8 (elevated)
+    r3 = _cand("r3", new_tokens=90, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               power_w=8.0, power_level_ceiling_w=10.0)   # compute=0.9, power=0.8 (elevated)
+
+    assert pick_drf_peak_power_tiebreak_full([r0, r1, r2, r3]) == "r0"
+    assert pick_drf_peak_power_tiebreak_full_coincidence_ceiling([r0, r1, r2, r3]) == "r1"
+
+
+def test_peak_coincidence_ceiling_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_peak_power_tiebreak_full_coincidence_ceiling([])
+
+
+def test_elevated_count_counts_only_candidates_above_threshold():
+    cands = [
+        _cand("r0", ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0),   # share=0.8, elevated
+        _cand("r1", ramp_rate_w_per_s=3.0, ramp_ceiling_w_per_s=10.0),   # share=0.3, not
+        _cand("r2", ramp_rate_w_per_s=6.0, ramp_ceiling_w_per_s=10.0),   # share=0.6, elevated
+    ]
+    assert elevated_count(cands) == 2
+
+
+def test_coincidence_ceiling_factor_from_count_matches_original_formula():
+    """coincidence_ceiling_factor(candidates) must equal coincidence_ceiling_factor_from_count
+    applied to elevated_count(candidates) -- the refactor must be behavior-preserving."""
+    cands = [_cand("r0", ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0),
+             _cand("r1", ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0),
+             _cand("r2", ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)]
+    assert (coincidence_ceiling_factor(cands)
+            == coincidence_ceiling_factor_from_count(elevated_count(cands)) == pytest.approx(0.5))
+
+
+def test_pick_with_factor_matches_the_real_rule_when_given_the_real_factor():
+    cands = [
+        _cand("r0", new_tokens=1000, in_flight_after=5, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r1", new_tokens=10, in_flight_after=2, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+        _cand("r2", new_tokens=50, in_flight_after=50, ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0),
+    ]
+    real_factor = coincidence_ceiling_factor(cands)
+    assert (pick_drf_power_tiebreak_full_coincidence_ceiling_with_factor(cands, real_factor)
+            == pick_drf_power_tiebreak_full_coincidence_ceiling(cands) == "r1")
+
+
+def test_pick_with_factor_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_power_tiebreak_full_coincidence_ceiling_with_factor([], 1.0)
+
+
+def _coincidence_flip_candidates():
+    """The same flip construction used by test_coincidence_ceiling_flips_the_decision_when_
+    fleet_is_coincidentally_pressured: under the real, live mechanism this flips the pick from
+    r0 to r1 due to a genuine multi-replica coincidence (r2, r3 both elevated)."""
+    r0 = _cand("r0", new_tokens=10, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=4.0, ramp_ceiling_w_per_s=10.0)
+    r1 = _cand("r1", new_tokens=60, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=0.0, ramp_ceiling_w_per_s=10.0)
+    r2 = _cand("r2", new_tokens=90, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0)
+    r3 = _cand("r3", new_tokens=90, in_flight_after=1, token_budget=100, max_num_seqs=10,
+               ramp_rate_w_per_s=8.0, ramp_ceiling_w_per_s=10.0)
+    return [r0, r1, r2, r3]
+
+
+def test_lagged_elevation_falls_back_to_live_signal_during_buffer_warmup():
+    """Buffer empty (not yet full) -> falls back to the real, live n_elevated count, so the
+    decision matches the real (unlagged) mechanism exactly."""
+    cands = _coincidence_flip_candidates()
+    buffer = []
+    assert pick_drf_power_tiebreak_full_coincidence_ceiling_lagged_elevation(cands, buffer) == "r1"
+
+
+def test_lagged_elevation_uses_stale_buffer_value_not_live_state_once_full():
+    """Buffer pre-loaded with a run of 'zero elevated' history (a calm recent past), length >
+    LAGGED_ELEVATION_DEPTH. Even though the CURRENT candidate set has a genuine coincidence
+    (which flips the decision to r1 under the real, live mechanism -- see
+    test_coincidence_ceiling_flips_the_decision_when_fleet_is_coincidentally_pressured), the
+    lagged rule must use the buffer's oldest (popped) value instead, reproducing the
+    NON-coincidence decision (r0)."""
+    cands = _coincidence_flip_candidates()
+    buffer = [0] * (LAGGED_ELEVATION_DEPTH + 1)
+    assert pick_drf_power_tiebreak_full_coincidence_ceiling_lagged_elevation(cands, buffer) == "r0"
+
+
+def test_lagged_elevation_buffer_grows_during_warmup_then_stays_bounded():
+    cands = _coincidence_flip_candidates()
+    buffer = []
+    for _ in range(LAGGED_ELEVATION_DEPTH):
+        pick_drf_power_tiebreak_full_coincidence_ceiling_lagged_elevation(cands, buffer)
+    assert len(buffer) == LAGGED_ELEVATION_DEPTH
+    pick_drf_power_tiebreak_full_coincidence_ceiling_lagged_elevation(cands, buffer)
+    assert len(buffer) == LAGGED_ELEVATION_DEPTH
+
+
+def test_lagged_elevation_raises_on_empty_candidates():
+    with pytest.raises(ValueError):
+        pick_drf_power_tiebreak_full_coincidence_ceiling_lagged_elevation([], [])

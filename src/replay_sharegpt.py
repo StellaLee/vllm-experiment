@@ -299,6 +299,14 @@ def main():
     ap.add_argument("--trace-max-tokens", type=int, default=2048,
                     help="Clamp ceiling on max_tokens in --trace-csv mode (protects against a "
                          "pathologically long real response_tokens value dominating a trial).")
+    ap.add_argument("--trace-rate-scale", type=float, default=1.0,
+                    help="Load-amplification factor for --trace-csv mode: divides every "
+                         "arrival_s offset by this value, compressing inter-arrival gaps "
+                         "(e.g. 1.5 = 1.5x the real trace's request rate). Prompt/response "
+                         "token counts and their order are untouched -- only arrival timing is "
+                         "scaled. 1.0 (default) replays the real trace's own timing exactly. "
+                         "Any value != 1.0 means this is no longer an unmodified real-trace "
+                         "replay and must be reported as such.")
     ap.add_argument("--num-convs", type=int, default=50, help="Conversations to replay")
     ap.add_argument("--conv-offset", type=int, default=0,
                     help="Start index into the filtered conversation pool (mod pool size). "
@@ -374,9 +382,13 @@ def main():
     if args.trace_csv:
         import csv as _csv
         with open(args.trace_csv) as f:
-            trace_rows = [(float(r["arrival_s"]), int(r["prompt_tokens"]), int(r["response_tokens"]))
+            trace_rows = [(float(r["arrival_s"]) / args.trace_rate_scale,
+                           int(r["prompt_tokens"]), int(r["response_tokens"]))
                           for r in _csv.DictReader(f)]
-        print(f"[replay] trace-csv mode: {len(trace_rows)} real-trace arrivals from {args.trace_csv}")
+        scale_note = (f", rate-scaled {args.trace_rate_scale}x (NOT the trace's own timing)"
+                      if args.trace_rate_scale != 1.0 else ", real trace timing unmodified")
+        print(f"[replay] trace-csv mode: {len(trace_rows)} real-trace arrivals from "
+              f"{args.trace_csv}{scale_note}")
         records = []
         records_lock = threading.Lock()
         print_lock = threading.Lock()

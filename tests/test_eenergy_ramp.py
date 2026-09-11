@@ -35,3 +35,35 @@ def test_update_ramp_state_second_sample_computes_real_ramp():
     update_ramp_state(s, power_w=200.0, ts=10.0)
     update_ramp_state(s, power_w=210.0, ts=11.0)
     assert s.ramp_rate_w_per_s == 10.0
+
+
+def test_update_ramp_state_first_sample_smoothed_ramp_is_also_zero():
+    s = _state()
+    update_ramp_state(s, power_w=200.0, ts=10.0)
+    assert s.smoothed_ramp_rate_w_per_s == 0.0
+
+
+def test_update_ramp_state_smoothed_ramp_is_ema_of_raw():
+    s = _state()
+    update_ramp_state(s, power_w=200.0, ts=10.0, smoothing_alpha=0.3)
+    update_ramp_state(s, power_w=210.0, ts=11.0, smoothing_alpha=0.3)  # raw ramp = 10.0
+    assert s.smoothed_ramp_rate_w_per_s == 0.3 * 10.0 + 0.7 * 0.0
+    update_ramp_state(s, power_w=240.0, ts=12.0, smoothing_alpha=0.3)  # raw ramp = 30.0
+    expected = 0.3 * 30.0 + 0.7 * (0.3 * 10.0)
+    assert abs(s.smoothed_ramp_rate_w_per_s - expected) < 1e-9
+
+
+def test_update_ramp_state_smoothed_ramp_damps_a_single_spike_vs_raw():
+    """A one-sample spike moves the raw estimate by its full size but only a fraction of
+    that into the smoothed estimate -- the whole motivation for trying this variant."""
+    s = _state()
+    update_ramp_state(s, power_w=200.0, ts=10.0)
+    update_ramp_state(s, power_w=200.0, ts=11.0)  # steady, raw ramp = 0.0
+    update_ramp_state(s, power_w=500.0, ts=12.0, smoothing_alpha=0.3)  # spike, raw ramp = 300.0
+    assert s.ramp_rate_w_per_s == 300.0
+    assert s.smoothed_ramp_rate_w_per_s == 0.3 * 300.0
+    assert s.smoothed_ramp_rate_w_per_s < s.ramp_rate_w_per_s
+
+    update_ramp_state(s, power_w=500.0, ts=13.0, smoothing_alpha=0.3)  # back to steady, raw ramp = 0.0
+    assert s.ramp_rate_w_per_s == 0.0
+    assert s.smoothed_ramp_rate_w_per_s > 0.0  # spike's effect lingers, damped

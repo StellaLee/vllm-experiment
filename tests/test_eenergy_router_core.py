@@ -5,7 +5,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                  "scripts", "eenergy", "router"))
-from router_core import Router, WHALE_TOKEN_THRESHOLD  # noqa: E402
+from router_core import Router, WHALE_TOKEN_THRESHOLD, LAGGED_ELEVATION_DEPTH  # noqa: E402
 from replica_state import ReplicaConfig, ReplicaState  # noqa: E402
 
 
@@ -420,6 +420,118 @@ def test_complete_without_is_whale_stays_backward_compatible():
     chosen = r.route(token_ids=[1])
     r.complete(chosen)  # no is_whale arg -- must not raise, must not touch whale_tracker
     assert r.whale_tracker.active_whale_count(chosen) == 0
+
+
+def _threshold_violation_states():
+    """Reproduces Theorem 5's exact construction: S=(1,1,1) (D=1, safe) vs U=(~0,~0,2) (D=2,
+    unsafe). r1's raw share_power (0.3) stays below elevated_frac (0.5) so it doesn't count
+    toward n_elevated -- only r2 is elevated, which coincidence_ceiling_factor treats as not a
+    coincidence (factor stays 1.0), keeping D unchanged by the adjustment for this
+    construction and letting the same states exercise both plain and _coincidence_ceiling
+    policies identically."""
+    cfgs = [
+        ReplicaConfig(replica_id="r1", host="h", port=1, gpu_index=0,
+                       token_budget=1000, max_num_seqs=1, ramp_ceiling_w_per_s=100.0),
+        ReplicaConfig(replica_id="r2", host="h", port=2, gpu_index=1,
+                       token_budget=1_000_000, max_num_seqs=1000, ramp_ceiling_w_per_s=100.0),
+    ]
+    states = [ReplicaState(config=c) for c in cfgs]
+    states[0].ramp_rate_w_per_s = 30.0   # share_power = 0.3 -- below elevated_frac
+    states[1].ramp_rate_w_per_s = 200.0  # share_power = 2.0 -- D(r2) = 2.0, unsafe
+    return states
+
+
+def test_weighted_sum_coincidence_ceiling_reproduces_theorem5_avoidable_violation():
+    states = _threshold_violation_states()
+    r = Router(states, policy="weighted_sum_coincidence_ceiling")
+    chosen = r.route(token_ids=list(range(1000)))  # r1: new_tokens=1000 -> Share_compute=1.0
+    assert chosen == "r2"  # picks the UNSAFE candidate, exactly Theorem 5's failure mode
+    assert r.last_avoidable_threshold_violation is True
+    assert r.last_D_chosen == pytest.approx(2.0)
+    assert r.last_min_D_available == pytest.approx(1.0)
+
+
+def test_drf_power_tiebreak_full_coincidence_ceiling_never_flags_avoidable_violation_on_the_same_states():
+    states = _threshold_violation_states()
+    r = Router(states, policy="drf_power_tiebreak_full_coincidence_ceiling")
+    chosen = r.route(token_ids=list(range(1000)))
+    assert chosen == "r1"  # picks the SAFE candidate, exactly Theorem 4's guarantee
+    assert r.last_avoidable_threshold_violation is False
+
+
+def _threshold_violation_states_peak():
+    """Peak-power counterpart to _threshold_violation_states: same Theorem 5 construction
+    (S=(1,1,1) vs U=(~0,~0,2)), but pressure is read from power_w/power_level_ceiling_w
+    instead of ramp_rate_w_per_s/ramp_ceiling_w_per_s."""
+    cfgs = [
+        ReplicaConfig(replica_id="r1", host="h", port=1, gpu_index=0,
+                       token_budget=1000, max_num_seqs=1, ramp_ceiling_w_per_s=100.0,
+                       power_level_ceiling_w=100.0),
+        ReplicaConfig(replica_id="r2", host="h", port=2, gpu_index=1,
+                       token_budget=1_000_000, max_num_seqs=1000, ramp_ceiling_w_per_s=100.0,
+                       power_level_ceiling_w=100.0),
+    ]
+    states = [ReplicaState(config=c) for c in cfgs]
+    states[0].last_power_w = 30.0   # share_power_level = 0.3 -- below elevated_frac
+    states[1].last_power_w = 200.0  # share_power_level = 2.0 -- D(r2) = 2.0, unsafe
+    return states
+
+
+def test_drf_peak_power_tiebreak_full_coincidence_ceiling_never_flags_avoidable_violation_on_the_same_states():
+    states = _threshold_violation_states_peak()
+    r = Router(states, policy="drf_peak_power_tiebreak_full_coincidence_ceiling")
+    chosen = r.route(token_ids=list(range(1000)))
+    assert chosen == "r1"  # picks the SAFE candidate, exactly Theorem 4's guarantee
+    assert r.last_avoidable_threshold_violation is False
+    assert r.last_D_chosen == pytest.approx(1.0)
+    assert r.last_min_D_available == pytest.approx(1.0)
+
+
+def test_drf_power_tiebreak_full_coincidence_ceiling_lagged_elevation_warms_up_then_bounds_buffer():
+    """Smoke test at the Router level: policy is wired correctly, produces a valid decision,
+    populates last_D_chosen using the reused (not double-consumed) lagged factor, and the
+    router's own _elevation_lag_buffer grows during warmup then stays bounded -- mirrors the
+    scoring-level buffer tests but confirms Router's inline bookkeeping (not the scoring.py
+    convenience wrapper) behaves the same way."""
+    states = _threshold_violation_states()
+    r = Router(states, policy="drf_power_tiebreak_full_coincidence_ceiling_lagged_elevation")
+    chosen = r.route(token_ids=list(range(1000)))
+    assert chosen in ("r1", "r2")
+    assert r.last_D_chosen is not None
+    assert len(r._elevation_lag_buffer) == 1  # first call: warmup append, no pop yet
+
+    for _ in range(200):
+        r.route(token_ids=list(range(1000)))
+    assert len(r._elevation_lag_buffer) == LAGGED_ELEVATION_DEPTH
+
+
+def test_drf_power_tiebreak_full_coincidence_ceiling_random_power_uses_router_rng():
+    """Integration-level smoke test: the random-power-tiebreak ablation policy dispatches
+    through Router using its own self.rng, and D itself (hence Theorem-4-relevant pressure
+    avoidance, per last_avoidable_threshold_violation) is unaffected by the ablation --
+    scoring-function-level randomization behavior is covered in test_eenergy_scoring.py."""
+    states = _threshold_violation_states()
+    r = Router(states, policy="drf_power_tiebreak_full_coincidence_ceiling_random_power")
+    chosen = r.route(token_ids=list(range(1000)))
+    assert chosen in ("r1", "r2")
+    # D is computed identically to the real rule regardless of the ablation's randomized
+    # tie-break, so the threshold-violation diagnostic still reflects genuine pressure.
+    assert r.last_D_chosen is not None
+
+
+def test_round_robin_still_reports_avoidable_violation_diagnostics():
+    """The diagnostic is policy-independent -- computed generically from the candidate set,
+    not tied to any one rule's own decision logic, so it also flags round_robin's blind
+    picks when they happen to land on an unsafe candidate with a safe one available."""
+    states = _threshold_violation_states()
+    r = Router(states, policy="round_robin")
+    first = r.route(token_ids=list(range(1000)))  # round_robin picks r1 first (index 0) -- safe
+    assert r.last_avoidable_threshold_violation is False
+    r.complete(first)  # reset r1's in-flight count so it's still the safe candidate below,
+                        # isolating the assertion from load_tracker state instead of
+                        # conflating it with a second, different unsafe-candidate scenario
+    r.route(token_ids=list(range(1000)))  # then r2 -- unsafe, but a safe one (r1) was available
+    assert r.last_avoidable_threshold_violation is True
 
 
 def test_pressure_switch_matches_lmetric_when_fleet_is_not_pressured():
