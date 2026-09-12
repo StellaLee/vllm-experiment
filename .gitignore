@@ -16,27 +16,7 @@ data/
 # Paper
 paper-mlsys/
 paper-pes-im/
-paper-eenergy-old/
-paper-eenergy-power-ramp/
-
-# LaTeX build artifacts (paper-eenergy/ and paper-eenergy-peakshaving/ are tracked; keep
-# .tex/.bib/.pdf, drop the rest)
-paper-eenergy/*.aux
-paper-eenergy/*.log
-paper-eenergy/*.bbl
-paper-eenergy/*.blg
-paper-eenergy/*.out
-paper-eenergy/*.fls
-paper-eenergy/*.fdb_latexmk
-paper-eenergy/*.synctex.gz
-paper-eenergy-peakshaving/*.aux
-paper-eenergy-peakshaving/*.log
-paper-eenergy-peakshaving/*.bbl
-paper-eenergy-peakshaving/*.blg
-paper-eenergy-peakshaving/*.out
-paper-eenergy-peakshaving/*.fls
-paper-eenergy-peakshaving/*.fdb_latexmk
-paper-eenergy-peakshaving/*.synctex.gz
+paper-eenergy*
 
 # macOS
 .DS_Store
