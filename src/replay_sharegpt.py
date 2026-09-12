@@ -140,7 +140,16 @@ def stream_request(host, port, prompt, max_tokens, model, request_timeout=120):
                 except json.JSONDecodeError:
                     pass
         total = time.monotonic() - t0
-    except urllib.error.URLError as e:
+    except (urllib.error.URLError, TimeoutError) as e:
+        # TimeoutError (raised at the socket-read level when the response body stalls past
+        # request_timeout, e.g. an admission gate holding a request) is NOT a URLError
+        # subclass, so it must be caught explicitly here too -- otherwise it propagates
+        # uncaught out of a bare threading.Thread target (the --rate open-loop path has no
+        # wrapping try/except at the spawn site), silently killing the thread with no record
+        # ever written for that conversation. Found via a real, reproducible case: an
+        # aggressive admission gate pushed ~11% of open-loop Poisson requests over
+        # request_timeout, and they vanished from the output entirely instead of appearing
+        # as recorded failures.
         raise RuntimeError(f"Request failed: {e}")
     output_text = "".join(output_parts)
     # Prefer the server's real token count; fall back to a word-count proxy
@@ -194,6 +203,17 @@ def replay_trace_request(seq, prompt_tokens, response_tokens, args, records, rec
         with print_lock:
             print(f"  [trace {seq}] prompt_tok~{prompt_tokens} ttft={ttft_str}s lat={total:.3f}s")
     except RuntimeError as e:
+        # Record the failure (ttft=None, matching the existing null-ttft convention used for
+        # successful-but-tokenless responses) instead of only printing -- a dropped
+        # conversation that never appears in the output file can't be counted by downstream
+        # analysis (n_failed) or distinguished from one that was never attempted.
+        with records_lock:
+            records.append({
+                "conv_id": seq, "turn": 1, "history_turns": 0,
+                "prompt_tokens_approx": len(prompt.split()), "pad_chars": n_chars,
+                "output_tokens": 0, "tokens_exact": False, "ttft": None, "tpot": None,
+                "tbt_ms": [], "latency": None, "ts": time.time(), "error": str(e),
+            })
         with print_lock:
             print(f"  [trace {seq}] SKIP: {e}")
 
@@ -273,6 +293,17 @@ def replay_conversation(ci, conv, args, records, records_lock, print_lock, force
                 print(f"  [conv {ci+1}] turn {turn_num+1}: ttft={ttft_str}s  tpot={tpot_str}/tok  lat={total:.3f}s")
 
         except RuntimeError as e:
+            # See replay_trace_request's matching except block for why this record is
+            # appended rather than just printed -- without it, this conversation vanishes
+            # from the output entirely instead of being a countable failure.
+            with records_lock:
+                records.append({
+                    "conv_id": conv.get("id", ci), "turn": turn_num + 1,
+                    "history_turns": len(history), "prompt_tokens_approx": len(prompt.split()),
+                    "pad_chars": pad_len, "output_tokens": 0, "tokens_exact": False,
+                    "ttft": None, "tpot": None, "tbt_ms": [], "latency": None,
+                    "ts": time.time(), "error": str(e),
+                })
             with print_lock:
                 print(f"  [conv {ci+1}] turn {turn_num+1} SKIP: {e}")
 

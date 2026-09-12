@@ -58,6 +58,7 @@ def pctile(sorted_vals, p):
 
 def load_ttft(path):
     ttfts = []
+    tpots = []
     n_records = 0
     n_failed = 0
     with open(path) as f:
@@ -68,11 +69,14 @@ def load_ttft(path):
             n_records += 1
             rec = json.loads(line)
             ttft = rec.get("ttft")
+            tpot = rec.get("tpot")
             if isinstance(ttft, (int, float)):
                 ttfts.append(ttft)
             else:
                 n_failed += 1
-    return n_records, n_failed, sorted(ttfts)
+            if isinstance(tpot, (int, float)):
+                tpots.append(tpot)
+    return n_records, n_failed, sorted(ttfts), tpots
 
 
 def main():
@@ -83,11 +87,12 @@ def main():
         max_win = max_windowed_avg(times, powers, WINDOW_S)
         print(f"{pool}: mean_power_w={mean_pow:.1f} max_windowed_avg_{int(WINDOW_S)}s_w={max_win:.1f}")
 
-    n_records, n_failed, ttfts = load_ttft(f"logs/{outname}_records.jsonl")
+    n_records, n_failed, ttfts, tpots = load_ttft(f"logs/{outname}_records.jsonl")
     mean_ttft = sum(ttfts) / len(ttfts) if ttfts else float("nan")
+    mean_tpot = sum(tpots) / len(tpots) if tpots else float("nan")
     print(f"n_records={n_records} n_failed={n_failed} mean_ttft={mean_ttft:.3f} "
           f"p50_ttft={pctile(ttfts, 0.50):.3f} p95_ttft={pctile(ttfts, 0.95):.3f} "
-          f"max_ttft={ttfts[-1] if ttfts else float('nan'):.3f}")
+          f"max_ttft={ttfts[-1] if ttfts else float('nan'):.3f} mean_tpot_ms={mean_tpot*1000:.2f}")
 
 
 if __name__ == "__main__":
