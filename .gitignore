@@ -26,14 +26,5 @@ paper-eenergy*
 # Use dir/* (not dir/) so git still descends far enough to see the negations below --
 # a plain "dir/" pattern blocks traversal entirely and negations can't reach inside it.
 findings/*
-!findings/2026-08-31-eenergy-drf-lmetric-roundrobin-comparison.md
 docs/*
-!docs/superpowers/
-docs/superpowers/*
-!docs/superpowers/specs/
-docs/superpowers/specs/*
-!docs/superpowers/specs/2026-08-30-eenergy-routing-design.md
-!docs/superpowers/plans/
-docs/superpowers/plans/*
-!docs/superpowers/plans/2026-08-30-eenergy-routing-implementation.md
 
